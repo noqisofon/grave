@@ -1,6 +1,8 @@
 mod keymap;
+mod watch;
 
 use std::io::{self, Write};
+use std::time::Duration;
 
 use colonrogue_core::map::{H, W};
 use colonrogue_core::{Game, COMMAND_NAMES};
@@ -246,58 +248,143 @@ impl App {
     }
 
     fn draw(&self, out: &mut impl Write) -> io::Result<()> {
-        queue!(out, Clear(ClearType::All), MoveTo(0, 0))?;
-        queue!(
-            out,
-            Print(format!(
-                "地下{}階  ターン{}",
-                self.game.depth(),
-                self.game.turn()
-            ))
-        )?;
-        for y in 0..H {
-            queue!(out, MoveTo(0, (y + 1) as u16))?;
-            for x in 0..W {
-                let c = self.game.cell(x, y);
-                let color = if c.ch == '@' {
-                    Color::Yellow
-                } else if c.ch == '>' {
-                    Color::Green
-                } else if c.visible {
-                    Color::White
-                } else {
-                    Color::DarkGrey
-                };
-                queue!(out, SetForegroundColor(color), Print(c.ch))?;
-            }
-            queue!(out, ResetColor)?;
-        }
-        let log_top = (H + 2) as u16;
-        let log = self.game.log();
-        let start = log.len().saturating_sub(4);
-        for (i, e) in log[start..].iter().enumerate() {
-            queue!(
-                out,
-                MoveTo(0, log_top + i as u16),
-                Print(format!("[{}] {}", e.turn, e.text))
-            )?;
-        }
-        let bottom = log_top + 5;
-        queue!(out, MoveTo(0, bottom))?;
-        match self.mode {
-            Mode::Command => queue!(out, Print(format!(":{}", self.cmdline)), Show)?,
+        let footer = match self.mode {
+            Mode::Command => format!(":{}", self.cmdline),
             Mode::Normal => {
-                let count = self.count.map(|c| format!("{c}")).unwrap_or_default();
-                queue!(out, Hide, Print(format!("{}  {}", self.status, count)))?
+                let count = self.count.map(|c| c.to_string()).unwrap_or_default();
+                format!("{}  {}", self.status, count)
             }
-        }
-        out.flush()
+        };
+        draw_scene(out, &self.game, None, &footer, self.mode == Mode::Command)
     }
 }
 
+fn clip(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+/// マップ・ログ・（観戦時は）思考・最下行を描く。
+fn draw_scene(
+    out: &mut impl Write,
+    game: &Game,
+    thoughts: Option<&[(u32, String)]>,
+    footer: &str,
+    cursor: bool,
+) -> io::Result<()> {
+    // 全角文字は2桁ぶん使うので、文字数の上限は桁数の半分にしておく
+    let cap = terminal::size().map(|(c, _)| c as usize / 2).unwrap_or(40);
+    queue!(out, Clear(ClearType::All), MoveTo(0, 0))?;
+    queue!(
+        out,
+        Print(format!("地下{}階  ターン{}", game.depth(), game.turn()))
+    )?;
+    for y in 0..H {
+        queue!(out, MoveTo(0, (y + 1) as u16))?;
+        for x in 0..W {
+            let c = game.cell(x, y);
+            let color = if c.ch == '@' {
+                Color::Yellow
+            } else if c.ch == '>' {
+                Color::Green
+            } else if c.visible {
+                Color::White
+            } else {
+                Color::DarkGrey
+            };
+            queue!(out, SetForegroundColor(color), Print(c.ch))?;
+        }
+        queue!(out, ResetColor)?;
+    }
+    let log_top = (H + 2) as u16;
+    let log = game.log();
+    let start = log.len().saturating_sub(4);
+    for (i, e) in log[start..].iter().enumerate() {
+        queue!(
+            out,
+            MoveTo(0, log_top + i as u16),
+            Print(clip(&format!("[{}] {}", e.turn, e.text), cap))
+        )?;
+    }
+    let mut bottom = log_top + 5;
+    if let Some(ts) = thoughts {
+        let start = ts.len().saturating_sub(3);
+        for (i, (turn, t)) in ts[start..].iter().enumerate() {
+            queue!(
+                out,
+                MoveTo(0, log_top + 4 + i as u16),
+                SetForegroundColor(Color::Cyan),
+                Print(clip(&format!("思[{turn}] {t}"), cap)),
+                ResetColor
+            )?;
+        }
+        bottom += 3;
+    }
+    queue!(out, MoveTo(0, bottom), Print(clip(footer, cap)))?;
+    if cursor {
+        queue!(out, Show)?;
+    } else {
+        queue!(out, Hide)?;
+    }
+    out.flush()
+}
+
+fn run_watch(path: &str) -> io::Result<()> {
+    let mut w = watch::Watcher::new(path);
+    terminal::enable_raw_mode()?;
+    let mut out = io::stdout();
+    execute!(out, EnterAlternateScreen, Hide)?;
+
+    let result = (|| -> io::Result<()> {
+        let mut dirty = true;
+        loop {
+            if w.poll()? {
+                dirty = true;
+            }
+            if dirty {
+                let state = if !w.started {
+                    "  (記録待ち)"
+                } else if w.desync {
+                    "  ※再現がずれている"
+                } else {
+                    ""
+                };
+                let footer = format!("観戦中: {path}{state}  (q で終了)");
+                draw_scene(&mut out, &w.game, Some(&w.thoughts), &footer, false)?;
+                dirty = false;
+            }
+            if event::poll(Duration::from_millis(200))? {
+                match event::read()? {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => {
+                        let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL)
+                            && k.code == KeyCode::Char('c');
+                        if ctrl_c || matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
+                            break;
+                        }
+                    }
+                    Event::Resize(..) => dirty = true,
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    })();
+
+    execute!(out, Show, LeaveAlternateScreen)?;
+    terminal::disable_raw_mode()?;
+    result
+}
+
 fn main() -> io::Result<()> {
-    let seed = std::env::args()
-        .nth(1)
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--watch") {
+        let path = args
+            .get(i + 1)
+            .map(String::as_str)
+            .unwrap_or("colonrogue-record.jsonl");
+        return run_watch(path);
+    }
+    let seed = args
+        .first()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| {
             std::time::SystemTime::now()

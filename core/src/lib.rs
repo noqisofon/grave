@@ -6,6 +6,7 @@
 pub mod command;
 pub mod game;
 pub mod map;
+pub mod record;
 pub mod rng;
 
 pub use command::{Command, Dir, TravelTarget, COMMAND_HELP, COMMAND_NAMES};

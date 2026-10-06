@@ -17,6 +17,9 @@ pub struct Outcome {
     pub command: String,
     pub ok: bool,
     pub message: String,
+    /// 実行直後の階とターン
+    pub depth: u32,
+    pub turn: u32,
 }
 
 /// 描画用の1マス。
@@ -169,6 +172,8 @@ impl Game {
                 command: line.trim().to_string(),
                 ok: false,
                 message: msg,
+                depth: self.depth,
+                turn: self.turn,
             },
         }
     }
@@ -230,6 +235,8 @@ impl Game {
             command: cmd.to_string(),
             ok,
             message,
+            depth: self.depth,
+            turn: self.turn,
         }
     }
 
