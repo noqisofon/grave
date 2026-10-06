@@ -138,7 +138,7 @@ impl Map {
     }
 
     /// bresenham で a から b まで壁に遮られず見通せるか。壁そのものは見える。
-    fn los(&self, a: (i32, i32), b: (i32, i32)) -> bool {
+    pub fn los(&self, a: (i32, i32), b: (i32, i32)) -> bool {
         let (mut x, mut y) = a;
         let dx = (b.0 - a.0).abs();
         let dy = -(b.1 - a.1).abs();

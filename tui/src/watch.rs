@@ -82,11 +82,14 @@ impl Watcher {
                 thought,
                 depth,
                 turn,
+                hp,
                 ..
             }) => {
                 self.started = true;
                 self.game.run(&command);
-                if (self.game.depth(), self.game.turn()) != (depth, turn) {
+                if (self.game.depth(), self.game.turn()) != (depth, turn)
+                    || hp.is_some_and(|h| h != self.game.hp())
+                {
                     self.desync = true;
                 }
                 if let Some(t) = thought {
@@ -115,24 +118,31 @@ mod tests {
 
         let mut live = Game::new(5);
         let mut lines = vec![Event::NewGame { seed: 5 }.to_line()];
-        for o in live.run_script("explore; travel >") {
-            lines.push(Event::from_outcome(&o, Some("階段を探そう")).to_line());
+        for o in live.run_script("wait; wait; wait") {
+            lines.push(Event::from_outcome(&o, Some("様子を見よう")).to_line());
         }
+        assert_eq!(lines.len(), 4);
 
         let mut w = Watcher::new(path.to_str().unwrap());
         assert!(!w.poll().unwrap()); // ファイルがまだない
 
         let mut f = std::fs::File::create(&path).unwrap();
-        // 最初の2行を書き、3行目は途中までしか書かない
+        // 最初の2行を書き、3行目は日本語の文字の途中（UTF-8 のバイト境界の途中）まで書く
         writeln!(f, "{}", lines[0]).unwrap();
         writeln!(f, "{}", lines[1]).unwrap();
-        let (head, tail) = lines[2].split_at(lines[2].len() / 2);
-        write!(f, "{head}").unwrap();
+        let bytes = lines[2].as_bytes();
+        let cut = (bytes.len() / 2..bytes.len())
+            .find(|&i| !lines[2].is_char_boundary(i))
+            .expect("日本語を含むので必ず見つかる");
+        f.write_all(&bytes[..cut]).unwrap();
         assert!(w.poll().unwrap());
-        assert_eq!(w.thoughts.len(), 1);
+        assert_eq!(w.thoughts.len(), 1); // 途中の行はまだ反映されない
 
-        writeln!(f, "{tail}").unwrap();
+        f.write_all(&bytes[cut..]).unwrap();
+        f.write_all(b"\n").unwrap();
+        writeln!(f, "{}", lines[3]).unwrap();
         assert!(w.poll().unwrap());
+        assert_eq!(w.thoughts.len(), 3);
         assert!(!w.desync);
         assert_eq!(w.game.observe_text(100), live.observe_text(100));
 

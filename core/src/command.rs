@@ -74,6 +74,7 @@ pub enum TravelTarget {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     Move(Dir),
+    Attack(Dir),
     Descend,
     Travel(TravelTarget),
     Explore,
@@ -85,6 +86,7 @@ impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Command::Move(d) => write!(f, "move {}", d.name()),
+            Command::Attack(d) => write!(f, "attack {}", d.name()),
             Command::Descend => write!(f, "descend"),
             Command::Travel(TravelTarget::Stairs) => write!(f, "travel >"),
             Command::Explore => write!(f, "explore"),
@@ -95,15 +97,19 @@ impl fmt::Display for Command {
 }
 
 /// 補完用のコマンド名（正本）。
-pub const COMMAND_NAMES: &[&str] = &["move", "descend", "travel", "explore", "wait", "look"];
+pub const COMMAND_NAMES: &[&str] = &[
+    "move", "attack", "descend", "travel", "explore", "wait", "look",
+];
 
 pub const COMMAND_HELP: &str = "\
 move <dir>     1歩移動 (north/south/east/west/northeast/northwest/southeast/southwest, 略: n s e w ne nw se sw)
+               敵のいる方向へ move すると攻撃になる
+attack <dir>   その方向の敵を攻撃する (敵がいなければ失敗、ターン消費なし)
 descend        足元の階段で下の階へ降りる
 travel >       既知の階段まで自動移動
-explore        未探索の場所へ自動移動 (階段を見つけたら止まる)
+explore        未探索の場所へ自動移動 (階段を見つける・敵が見える・攻撃を受けると止まる。敵が見えている間は使えない)
 wait           1ターン待つ
-look           階段の見える位置などを調べる (ターン消費なし)
+look           階段や見えている敵の位置を調べる (ターン消費なし)
 複数のコマンドは ; で区切って連続実行できる (失敗したらそこで止まる)";
 
 pub fn parse(line: &str) -> Result<Command, String> {
@@ -117,6 +123,14 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 .ok_or("move には方角が必要です (例: move west)")?;
             Dir::parse(d)
                 .map(Command::Move)
+                .ok_or_else(|| format!("不明な方角: {d}"))
+        }
+        "attack" | "a" => {
+            let d = args
+                .first()
+                .ok_or("attack には方角が必要です (例: attack east)")?;
+            Dir::parse(d)
+                .map(Command::Attack)
                 .ok_or_else(|| format!("不明な方角: {d}"))
         }
         "descend" | "d" => Ok(Command::Descend),
@@ -148,8 +162,9 @@ mod tests {
     #[test]
     fn display_roundtrips() {
         for d in Dir::ALL {
-            let c = Command::Move(d);
-            assert_eq!(parse(&c.to_string()), Ok(c));
+            for c in [Command::Move(d), Command::Attack(d)] {
+                assert_eq!(parse(&c.to_string()), Ok(c));
+            }
         }
         for c in [
             Command::Descend,

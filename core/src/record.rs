@@ -21,6 +21,8 @@ pub enum Event {
         /// 実行後の状態（観戦側の再現がずれていないか確かめるため）
         depth: u32,
         turn: u32,
+        /// 古い記録には無い
+        hp: Option<i32>,
     },
 }
 
@@ -33,6 +35,7 @@ impl Event {
             message: outcome.message.clone(),
             depth: outcome.depth,
             turn: outcome.turn,
+            hp: Some(outcome.hp),
         }
     }
 
@@ -46,6 +49,7 @@ impl Event {
                 message,
                 depth,
                 turn,
+                hp,
             } => {
                 let mut v = json!({
                     "kind": "command",
@@ -57,6 +61,9 @@ impl Event {
                 });
                 if let Some(t) = thought {
                     v["thought"] = Value::String(t.clone());
+                }
+                if let Some(h) = hp {
+                    v["hp"] = json!(h);
                 }
                 v
             }
@@ -79,6 +86,7 @@ impl Event {
                 message: s("message").unwrap_or_default(),
                 depth: n("depth").unwrap_or(0) as u32,
                 turn: n("turn").unwrap_or(0) as u32,
+                hp: v.get("hp").and_then(Value::as_i64).map(|h| h as i32),
             }),
             other => Err(format!("不明な kind: {other:?}")),
         }
@@ -101,6 +109,7 @@ mod tests {
                 message: "westへ進んだ。".into(),
                 depth: 1,
                 turn: 3,
+                hp: Some(18),
             },
             Event::Command {
                 command: "descend".into(),
@@ -109,6 +118,7 @@ mod tests {
                 message: "ここに階段はない。".into(),
                 depth: 1,
                 turn: 3,
+                hp: None,
             },
         ];
         for e in evs {
@@ -138,11 +148,13 @@ mod tests {
                     command,
                     depth,
                     turn,
+                    hp,
                     ..
                 } => {
                     let g = replay.as_mut().unwrap();
                     g.run(&command);
                     assert_eq!((g.depth(), g.turn()), (depth, turn));
+                    assert_eq!(Some(g.hp()), hp);
                 }
             }
         }

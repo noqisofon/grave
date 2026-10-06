@@ -16,7 +16,7 @@ use crossterm::{
 use keymap::Keymap;
 
 /// ゲームコマンド以外の、TUI 側で処理する組み込みコマンド。
-const BUILTINS: &[&str] = &["map", "unmap", "quit", "help"];
+const BUILTINS: &[&str] = &["map", "unmap", "new", "quit", "help"];
 
 #[derive(PartialEq)]
 enum Mode {
@@ -66,7 +66,17 @@ impl App {
                 true
             }
             "help" => {
-                self.status = "キー: hjklyubn 移動 / > 降りる / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :q".to_string();
+                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / > 降りる / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new :q".to_string();
+                true
+            }
+            "new" => {
+                let seed = args
+                    .first()
+                    .and_then(|a| a.parse().ok())
+                    .unwrap_or_else(random_seed);
+                self.game = Game::new(seed);
+                self.last = None;
+                self.status = format!("新しい冒険 (seed {seed})");
                 true
             }
             "map" => {
@@ -276,7 +286,14 @@ fn draw_scene(
     queue!(out, Clear(ClearType::All), MoveTo(0, 0))?;
     queue!(
         out,
-        Print(format!("地下{}階  ターン{}", game.depth(), game.turn()))
+        Print(format!(
+            "地下{}階  ターン{}  HP {}/{}{}",
+            game.depth(),
+            game.turn(),
+            game.hp().max(0),
+            game.max_hp(),
+            if game.is_dead() { "  ★ゲームオーバー (:new で再開)" } else { "" }
+        ))
     )?;
     for y in 0..H {
         queue!(out, MoveTo(0, (y + 1) as u16))?;
@@ -286,6 +303,8 @@ fn draw_scene(
                 Color::Yellow
             } else if c.ch == '>' {
                 Color::Green
+            } else if c.ch.is_ascii_alphabetic() {
+                Color::Red
             } else if c.visible {
                 Color::White
             } else {
@@ -374,6 +393,13 @@ fn run_watch(path: &str) -> io::Result<()> {
     result
 }
 
+fn random_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1)
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(i) = args.iter().position(|a| a == "--watch") {
@@ -386,12 +412,7 @@ fn main() -> io::Result<()> {
     let seed = args
         .first()
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(1)
-        });
+        .unwrap_or_else(random_seed);
     let mut app = App::new(seed);
 
     terminal::enable_raw_mode()?;
@@ -459,6 +480,16 @@ mod tests {
         press(&mut app, ":wait");
         app.on_key_command(KeyCode::Enter);
         assert_eq!(app.game.turn(), t0 + 2);
+    }
+
+    #[test]
+    fn new_restarts_with_the_given_seed() {
+        let mut app = App::new(1);
+        press(&mut app, "zzz");
+        press(&mut app, ":new 5");
+        app.on_key_command(KeyCode::Enter);
+        assert_eq!(app.game.seed(), 5);
+        assert_eq!(app.game.turn(), 0);
     }
 
     #[test]
