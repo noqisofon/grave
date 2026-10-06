@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 
-use colonrogue_core::record::Event;
-use colonrogue_core::Game;
+use grave_core::record::Event;
+use grave_core::Game;
 
 const MAX_THOUGHTS: usize = 50;
 
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn follows_appended_lines_and_partial_writes() {
-        let dir = std::env::temp_dir().join(format!("colonrogue-watch-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("grave-watch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rec.jsonl");
         let _ = std::fs::remove_file(&path);

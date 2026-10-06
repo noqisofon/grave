@@ -4,8 +4,8 @@ mod watch;
 use std::io::{self, Write};
 use std::time::Duration;
 
-use colonrogue_core::map::{H, W};
-use colonrogue_core::{Game, COMMAND_NAMES};
+use grave_core::map::{H, W};
+use grave_core::{Game, COMMAND_NAMES};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -84,7 +84,7 @@ impl App {
                 match (chars.next(), chars.next(), args.len() > 1) {
                     (Some(c), None, true) => {
                         let cmd = args[1..].join(" ");
-                        match colonrogue_core::command::parse(&cmd) {
+                        match grave_core::command::parse(&cmd) {
                             Ok(_) => {
                                 self.keymap.set(c, cmd.clone());
                                 self.status = format!("{c} → {cmd}");
@@ -380,7 +380,7 @@ fn main() -> io::Result<()> {
         let path = args
             .get(i + 1)
             .map(String::as_str)
-            .unwrap_or("colonrogue-record.jsonl");
+            .unwrap_or("grave-record.jsonl");
         return run_watch(path);
     }
     let seed = args

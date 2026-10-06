@@ -3,12 +3,12 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Write};
 
-use colonrogue_core::record::Event;
-use colonrogue_core::{Game, COMMAND_HELP};
+use grave_core::record::Event;
+use grave_core::{Game, COMMAND_HELP};
 use serde_json::{json, Value};
 
 const LOG_LINES: usize = 8;
-const DEFAULT_RECORD_PATH: &str = "colonrogue-record.jsonl";
+const DEFAULT_RECORD_PATH: &str = "grave-record.jsonl";
 
 /// セッション記録 (JSONL)。書き込みに失敗してもゲームは止めない。
 struct Recorder {
@@ -22,7 +22,7 @@ impl Recorder {
                 .create(true)
                 .append(true)
                 .open(p)
-                .map_err(|e| eprintln!("colonrogue-mcp: 記録ファイルを開けない ({p}): {e}"))
+                .map_err(|e| eprintln!("grave-mcp: 記録ファイルを開けない ({p}): {e}"))
                 .ok()
         });
         Recorder { file }
@@ -137,7 +137,7 @@ fn handle(game: &mut Game, rec: &mut Recorder, req: &Value) -> Option<Value> {
             json!({
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "colonrogue", "version": env!("CARGO_PKG_VERSION") }
+                "serverInfo": { "name": "grave", "version": env!("CARGO_PKG_VERSION") }
             })
         }
         "ping" => json!({}),

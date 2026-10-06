@@ -1,4 +1,4 @@
-# colonrogue
+# grave
 
 vim 風コロンコマンドで遊ぶ古典的ローグライク。人間もAIエージェントも同じゲームを遊べる。
 
@@ -11,7 +11,7 @@ vim 風コロンコマンドで遊ぶ古典的ローグライク。人間もAI�
 ## 遊ぶ
 
 ```sh
-cargo run -p colonrogue-tui -- [seed]
+cargo run -p grave-tui -- [seed]
 ```
 
 | キー | 動作 |
@@ -32,8 +32,8 @@ cargo run -p colonrogue-tui -- [seed]
 ## エージェントから遊ぶ (MCP)
 
 ```sh
-cargo build --release -p colonrogue-mcp
-claude mcp add colonrogue -- ./target/release/colonrogue-mcp
+cargo build --release -p grave-mcp
+claude mcp add grave -- ./target/release/grave-mcp
 ```
 
 ツール: `command`（`;` 区切りで連続実行、失敗で停止）、`observe`、`new_game`（seed指定可）、`help`。
@@ -42,13 +42,13 @@ claude mcp add colonrogue -- ./target/release/colonrogue-mcp
 
 ## 記録と観戦
 
-MCPサーバーは全ての行動を JSONL に追記する（既定は `colonrogue-record.jsonl`。`--record <path>` で変更、`--no-record` で無効）。
+MCPサーバーは全ての行動を JSONL に追記する（既定は `grave-record.jsonl`。`--record <path>` で変更、`--no-record` で無効）。
 1行1イベントで、`new_game`（seed）と `command`（コマンド・結果・`thought`・実行後の階/ターン）の2種類。
 ゲームは seed とコマンド列から完全に再現できるので、マップは記録しない。
 
 ```sh
 # 別の端末で、エージェントのプレイを観戦する
-cargo run -p colonrogue-tui -- --watch colonrogue-record.jsonl
+cargo run -p grave-tui -- --watch grave-record.jsonl
 ```
 
 観戦側は記録を追いかけて同じゲームを再現し、`thought` を画面下部に表示する。

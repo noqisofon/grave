@@ -1,12 +1,12 @@
 [package]
-name = "colonrogue-mcp"
+name = "grave-mcp"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "colonrogue-mcp"
+name = "grave-mcp"
 path = "src/main.rs"
 
 [dependencies]
-colonrogue-core = { path = "../core" }
+grave-core = { path = "../core" }
 serde_json = "1"

@@ -67,7 +67,7 @@ mod tests {
     fn every_default_binding_is_a_valid_command() {
         let km = Keymap::with_defaults();
         for (_, cmd) in km.list() {
-            assert!(colonrogue_core::command::parse(cmd).is_ok(), "{cmd}");
+            assert!(grave_core::command::parse(cmd).is_ok(), "{cmd}");
         }
     }
 }

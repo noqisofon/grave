@@ -1,12 +1,12 @@
 [package]
-name = "colonrogue-tui"
+name = "grave-tui"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "colonrogue"
+name = "grave"
 path = "src/main.rs"
 
 [dependencies]
-colonrogue-core = { path = "../core" }
+grave-core = { path = "../core" }
 crossterm = "0.28"

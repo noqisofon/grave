@@ -1,5 +1,5 @@
 [package]
-name = "colonrogue-core"
+name = "grave-core"
 version.workspace = true
 edition.workspace = true
 
