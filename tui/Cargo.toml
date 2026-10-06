@@ -1,0 +1,12 @@
+[package]
+name = "colonrogue-tui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "colonrogue"
+path = "src/main.rs"
+
+[dependencies]
+colonrogue-core = { path = "../core" }
+crossterm = "0.28"

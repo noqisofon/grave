@@ -1,0 +1,6 @@
+[package]
+name = "colonrogue-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
