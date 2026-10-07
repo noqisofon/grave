@@ -79,6 +79,10 @@ pub enum Command {
     /// 持ち物の文字と、（識別の巻物のための）任意の対象
     Use(char, Option<char>),
     Inventory,
+    /// 持ち物の文字の武器・防具を身につける
+    Equip(char),
+    /// 装備中の武器・防具をはずす
+    Unequip(char),
     Travel(TravelTarget),
     Explore,
     Wait,
@@ -94,6 +98,8 @@ impl fmt::Display for Command {
             Command::Use(c, None) => write!(f, "use {c}"),
             Command::Use(c, Some(t)) => write!(f, "use {c} {t}"),
             Command::Inventory => write!(f, "inventory"),
+            Command::Equip(c) => write!(f, "equip {c}"),
+            Command::Unequip(c) => write!(f, "unequip {c}"),
             Command::Travel(TravelTarget::Stairs) => write!(f, "travel >"),
             Command::Explore => write!(f, "explore"),
             Command::Wait => write!(f, "wait"),
@@ -109,6 +115,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "descend",
     "use",
     "inventory",
+    "equip",
+    "unequip",
     "travel",
     "explore",
     "wait",
@@ -121,14 +129,17 @@ move <dir>     1歩移動 (north/south/east/west/northeast/northwest/southeast/s
 attack <dir>   その方向の敵を攻撃する (敵がいなければ失敗、ターン消費なし)
 descend        足元の階段で下の階へ降りる
 use <文字> [対象]  持ち物を使う (薬は飲む、巻物は読む)。識別の巻物は対象の文字を指定できる
-inventory      持ち物の一覧 (ターン消費なし)
+inventory      持ち物の一覧 (ターン消費なし。装備中のものには (装備中) と付く)
+equip <文字>   武器や防具を身につける (武器・防具はそれぞれ1つずつ。付け替えもこれ)
+unequip <文字> 装備をはずす
 travel >       既知の階段まで自動移動
 explore        未探索の場所へ自動移動 (階段を見つける・敵が見える・攻撃を受けると止まる。敵が見えている間は使えない)
 wait           1ターン待つ
 look           階段や見えている敵の位置を調べる (ターン消費なし)
 複数のコマンドは ; で区切って連続実行できる (失敗したらそこで止まる)
+武器は攻撃のダメージを、防具は受けるダメージ(最低1)を変える。素手は攻撃 2〜4。
 アイテムの上を歩くと自動で拾う。薬と巻物は最初は未識別で、使うと正体が分かる (ゲームごとに見た目と効果の対応が変わる)
-凡例: @ 自分  > 階段  ! 薬  ? 巻物  s スライム  b コウモリ  g ゴブリン  O オーガ";
+凡例: @ 自分  > 階段  ! 薬  ? 巻物  ) 武器  [ 防具  s スライム  b コウモリ  g ゴブリン  O オーガ";
 
 pub fn parse(line: &str) -> Result<Command, String> {
     let mut it = line.split_whitespace();
@@ -171,6 +182,26 @@ pub fn parse(line: &str) -> Result<Command, String> {
             };
             Ok(Command::Use(letter, target))
         }
+        "equip" | "e" | "wield" | "wear" | "unequip" | "r" | "remove" => {
+            let equip = matches!(head, "equip" | "e" | "wield" | "wear");
+            let letter = args
+                .first()
+                .and_then(|a| {
+                    let mut c = a.chars();
+                    match (c.next(), c.next()) {
+                        (Some(ch), None) if ch.is_ascii_lowercase() => Some(ch),
+                        _ => None,
+                    }
+                })
+                .ok_or_else(|| {
+                    format!("{head} には持ち物の文字が必要です (例: {head} a)")
+                })?;
+            Ok(if equip {
+                Command::Equip(letter)
+            } else {
+                Command::Unequip(letter)
+            })
+        }
         "travel" | "t" => match args.first().copied() {
             Some(">") | Some("stairs") => Ok(Command::Travel(TravelTarget::Stairs)),
             Some(other) => Err(format!("不明な移動先: {other} (travel > のみ対応)")),
@@ -208,6 +239,8 @@ mod tests {
             Command::Use('a', None),
             Command::Use('b', Some('a')),
             Command::Inventory,
+            Command::Equip('c'),
+            Command::Unequip('c'),
             Command::Travel(TravelTarget::Stairs),
             Command::Explore,
             Command::Wait,

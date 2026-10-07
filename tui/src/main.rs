@@ -316,6 +316,8 @@ fn draw_scene(
                 Color::Magenta
             } else if c.ch == '?' {
                 Color::Cyan
+            } else if c.ch == ')' || c.ch == '[' {
+                Color::Blue
             } else if c.ch.is_ascii_alphabetic() {
                 Color::Red
             } else if c.visible {

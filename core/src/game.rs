@@ -79,9 +79,12 @@ pub struct Game {
     floor_items: Vec<((i32, i32), ItemKind)>,
     inventory: Vec<Stack>,
     /// 種類ごとの見た目（未識別名）。ゲームごとにシャッフルされる。
-    looks: [&'static str; 6],
+    looks: [&'static str; ItemKind::COUNT],
     /// 種類ごとに、正体を知っているか
-    known: [bool; 6],
+    known: [bool; ItemKind::COUNT],
+    /// 装備中の武器と防具
+    weapon: Option<ItemKind>,
+    armor: Option<ItemKind>,
     /// 眠りなど、このコマンドのあとに追加で経過するターン
     extra_turns: u32,
     log: Vec<LogEntry>,
@@ -96,15 +99,17 @@ fn shuffle<T>(rng: &mut Rng, v: &mut [T]) {
     }
 }
 
-fn roll_looks(rng: &mut Rng) -> [&'static str; 6] {
+fn roll_looks(rng: &mut Rng) -> [&'static str; ItemKind::COUNT] {
     let mut potions = POTION_LOOKS;
     let mut scrolls = SCROLL_LOOKS;
     shuffle(rng, &mut potions);
     shuffle(rng, &mut scrolls);
-    let mut looks = [""; 6];
+    let mut looks = [""; ItemKind::COUNT];
     let (mut pi, mut si) = (0, 0);
     for k in ItemKind::ALL {
-        if k.is_potion() {
+        if k.is_equipment() {
+            looks[k.index()] = k.true_name();
+        } else if k.is_potion() {
             looks[k.index()] = potions[pi];
             pi += 1;
         } else {
@@ -148,7 +153,9 @@ impl Game {
             floor_items: Vec::new(),
             inventory: Vec::new(),
             looks,
-            known: [false; 6],
+            known: ItemKind::ALL.map(|k| k.is_equipment()),
+            weapon: None,
+            armor: None,
             extra_turns: 0,
             log: Vec::new(),
             events: Vec::new(),
@@ -211,7 +218,12 @@ impl Game {
     fn spawn_items(&mut self) {
         self.floor_items.clear();
         let want = 3 + if self.depth >= 3 { 1 } else { 0 };
-        let total: u32 = ItemKind::ALL.iter().map(|k| k.weight()).sum();
+        let kinds: Vec<ItemKind> = ItemKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| k.min_depth() <= self.depth)
+            .collect();
+        let total: u32 = kinds.iter().map(|k| k.weight()).sum();
         for _ in 0..300 {
             if self.floor_items.len() >= want {
                 break;
@@ -227,7 +239,7 @@ impl Game {
             }
             let mut roll = self.rng.range(0, total as i32) as u32;
             let mut kind = ItemKind::Healing;
-            for k in ItemKind::ALL {
+            for k in kinds.iter().copied() {
                 if roll < k.weight() {
                     kind = k;
                     break;
@@ -296,6 +308,12 @@ impl Game {
                 if !self.known[s.kind.index()] {
                     line.push_str(" (未識別)");
                 }
+                if s.kind.is_equipment() {
+                    line.push_str(&format!(" [{}]", s.kind.stats_text()));
+                    if self.weapon == Some(s.kind) || self.armor == Some(s.kind) {
+                        line.push_str(" (装備中)");
+                    }
+                }
                 line
             })
             .collect()
@@ -307,6 +325,9 @@ impl Game {
             return (false, format!("持ち物 {letter} はない。"), false);
         };
         let kind = self.inventory[si].kind;
+        if kind.is_equipment() {
+            return self.equip(letter);
+        }
         let k = kind.index();
         let was_known = self.known[k];
         let verb = if kind.is_potion() { "飲んだ" } else { "読んだ" };
@@ -363,6 +384,13 @@ impl Game {
                 self.map.update_fov(self.pos, FOV_RADIUS);
                 "景色が一変した。".to_string()
             }
+            // 装備品は上で equip に回している
+            ItemKind::Dagger
+            | ItemKind::Sword
+            | ItemKind::Axe
+            | ItemKind::Leather
+            | ItemKind::Chain
+            | ItemKind::Plate => unreachable!(),
             ItemKind::Identify => {
                 let ti = match target {
                     Some(t) if t == letter => {
@@ -401,6 +429,56 @@ impl Game {
             self.inventory.remove(si);
         }
         (true, format!("{prefix} {body}"), true)
+    }
+
+    /// 武器の攻撃範囲（含む）。装備がなければ素手。
+    fn attack_range(&self) -> (i32, i32) {
+        self.weapon.and_then(|w| w.weapon_dmg()).unwrap_or((2, 4))
+    }
+
+    fn defense(&self) -> i32 {
+        self.armor.map_or(0, |a| a.armor())
+    }
+
+    /// 武器・防具を身につける。(成功か, メッセージ, 1ターン消費するか)
+    fn equip(&mut self, letter: char) -> (bool, String, bool) {
+        let Some(s) = self.inventory.iter().find(|s| s.letter == letter) else {
+            return (false, format!("持ち物 {letter} はない。"), false);
+        };
+        let kind = s.kind;
+        if !kind.is_equipment() {
+            return (false, format!("{}は装備できない。", self.display_name(kind)), false);
+        }
+        let slot = if kind.is_weapon() { &mut self.weapon } else { &mut self.armor };
+        if *slot == Some(kind) {
+            return (false, format!("{}はすでに装備している。", kind.true_name()), false);
+        }
+        let old = slot.replace(kind);
+        let mut msg = format!("{}を装備した。({})", kind.true_name(), kind.stats_text());
+        if let Some(o) = old {
+            msg.push_str(&format!(" {}をはずした。", o.true_name()));
+        }
+        (true, msg, true)
+    }
+
+    /// 装備をはずす。
+    fn unequip(&mut self, letter: char) -> (bool, String, bool) {
+        let Some(s) = self.inventory.iter().find(|s| s.letter == letter) else {
+            return (false, format!("持ち物 {letter} はない。"), false);
+        };
+        let kind = s.kind;
+        let slot = if kind.is_weapon() {
+            &mut self.weapon
+        } else if kind.is_armor() {
+            &mut self.armor
+        } else {
+            return (false, format!("{}は装備品ではない。", self.display_name(kind)), false);
+        };
+        if *slot != Some(kind) {
+            return (false, format!("{}は装備していない。", kind.true_name()), false);
+        }
+        *slot = None;
+        (true, format!("{}をはずした。", kind.true_name()), true)
     }
 
     fn spawn_monsters(&mut self) {
@@ -537,7 +615,8 @@ impl Game {
         let (dx, dy) = (self.pos.0 - mpos.0, self.pos.1 - mpos.1);
         if dx.abs() <= 1 && dy.abs() <= 1 {
             let bonus = (self.depth as i32 - 1) / 3;
-            let dmg = self.rng.range(kind.dmg.0, kind.dmg.1 + 1 + bonus);
+            let raw = self.rng.range(kind.dmg.0, kind.dmg.1 + 1 + bonus);
+            let dmg = (raw - self.defense()).max(1);
             self.hp -= dmg;
             let msg = format!(
                 "{name}の攻撃！ {dmg}のダメージを受けた。(HP {}/{})",
@@ -610,7 +689,8 @@ impl Game {
     }
 
     fn attack_monster(&mut self, i: usize) -> String {
-        let dmg = self.rng.range(2, 5);
+        let (lo, hi) = self.attack_range();
+        let dmg = self.rng.range(lo, hi + 1);
         self.monsters[i].hp -= dmg;
         let (name, hp, max_hp) = {
             let m = &self.monsters[i];
@@ -765,6 +845,8 @@ impl Game {
             }
             Command::Wait => (true, "1ターン待った。".to_string(), true),
             Command::Use(letter, target) => self.use_item(letter, target),
+            Command::Equip(letter) => self.equip(letter),
+            Command::Unequip(letter) => self.unequip(letter),
             Command::Inventory => {
                 let lines = self.inventory_lines();
                 let msg = if lines.is_empty() {
@@ -965,8 +1047,16 @@ impl Game {
     /// エージェント向けのテキスト観測。ログは直近 `log_lines` 件。
     pub fn observe_text(&self, log_lines: usize) -> String {
         let mut s = format!(
-            "== 地下{}階 / ターン{} / HP {}/{} / 位置({},{}) ==\n",
-            self.depth, self.turn, self.hp, self.max_hp, self.pos.0, self.pos.1
+            "== 地下{}階 / ターン{} / HP {}/{} / 攻撃 {}〜{} / 防御 {} / 位置({},{}) ==\n",
+            self.depth,
+            self.turn,
+            self.hp,
+            self.max_hp,
+            self.attack_range().0,
+            self.attack_range().1,
+            self.defense(),
+            self.pos.0,
+            self.pos.1
         );
         for line in self.map_lines() {
             s.push_str(line.trim_end());
@@ -1044,6 +1134,122 @@ mod tests {
         assert!(g.map.tile(p.0, p.1).walkable());
         g.monsters.push(monster(kind, p, 1000));
         g
+    }
+
+    /// 持ち物に装備品を直接入れた静かなゲーム。
+    fn with_gear(kinds: &[ItemKind]) -> Game {
+        let mut g = quiet(2);
+        for k in kinds {
+            g.take(*k).unwrap();
+        }
+        g
+    }
+
+    #[test]
+    fn equip_weapon_changes_attack_range() {
+        let mut g = with_gear(&[ItemKind::Axe]);
+        let o = g.run("equip a");
+        assert!(o.ok, "{}", o.message);
+        assert!(o.message.contains("斧を装備した"), "{}", o.message);
+        assert!(g.inventory_lines()[0].contains("(装備中)"));
+        assert!(g.observe_text(3).contains("攻撃 5〜9"));
+        // 敵の隣で殴る: ダメージは 5..=9
+        let p = (g.pos.0 + 1, g.pos.1);
+        let mut seen = std::collections::HashSet::new();
+        for seed_off in 0..40 {
+            g.monsters.clear();
+            g.monsters.push(monster(&crate::monster::OGRE, p, 1000));
+            g.hp = 1000;
+            g.max_hp = 1000;
+            let _ = seed_off;
+            let before = g.monsters[0].hp;
+            g.run("attack east");
+            seen.insert(before - g.monsters[0].hp);
+        }
+        assert!(seen.iter().all(|d| (5..=9).contains(d)), "{seen:?}");
+        assert!(seen.len() > 1);
+    }
+
+    #[test]
+    fn equip_replaces_same_slot_and_unequip_works() {
+        let mut g = with_gear(&[ItemKind::Dagger, ItemKind::Sword, ItemKind::Leather]);
+        assert!(g.run("equip a").ok);
+        let o = g.run("equip b");
+        assert!(o.ok && o.message.contains("短剣をはずした"), "{}", o.message);
+        assert!(g.run("equip c").ok); // 防具は別枠
+        let lines = g.inventory_lines();
+        assert!(!lines[0].contains("(装備中)"));
+        assert!(lines[1].contains("(装備中)"));
+        assert!(lines[2].contains("(装備中)"));
+        // すでに装備している・装備していないものは失敗してターンを使わない
+        let t = g.turn();
+        assert!(!g.run("equip b").ok);
+        assert!(!g.run("unequip a").ok);
+        assert_eq!(g.turn(), t);
+        assert!(g.run("unequip b").ok);
+        assert!(g.observe_text(3).contains("攻撃 2〜4"));
+        assert_eq!(g.turn(), t + 1);
+    }
+
+    #[test]
+    fn use_on_gear_equips_and_non_gear_cannot_be_equipped() {
+        let mut g = with_gear(&[ItemKind::Plate, ItemKind::Healing]);
+        assert!(g.run("use a").message.contains("板金鎧を装備した"));
+        let o = g.run("equip b");
+        assert!(!o.ok);
+        assert!(!g.run("unequip b").ok);
+        assert!(!g.run("equip z").ok);
+    }
+
+    #[test]
+    fn armor_reduces_damage_but_never_below_one() {
+        let mut g = with_adjacent(3, &crate::monster::OGRE);
+        g.take(ItemKind::Plate);
+        g.run("equip a");
+        let mut dmgs = std::collections::HashSet::new();
+        for _ in 0..40 {
+            let before = g.hp;
+            g.run("wait");
+            if before != g.hp {
+                dmgs.insert(before - g.hp);
+            }
+        }
+        // オーガ 3..=6 から 3 引いて、最低 1
+        assert!(dmgs.iter().all(|d| (1..=3).contains(d)), "{dmgs:?}");
+        let mut g = with_adjacent(3, &crate::monster::BAT);
+        g.take(ItemKind::Plate);
+        g.run("equip a");
+        for _ in 0..20 {
+            let before = g.hp;
+            g.run("wait");
+            let d = before - g.hp;
+            assert!(d >= 0);
+        }
+        assert!(g.hp < 1000, "最低1ダメージは通るはず");
+    }
+
+    #[test]
+    fn gear_spawns_by_depth_and_is_known_on_pickup() {
+        let mut seen = std::collections::HashSet::new();
+        for seed in 0..80 {
+            let mut g = Game::new(seed);
+            for depth in [1u32, 5] {
+                g.depth = depth;
+                g.spawn_items();
+                for (_, k) in &g.floor_items {
+                    assert!(k.min_depth() <= depth, "{k:?} at {depth}");
+                    seen.insert(*k);
+                }
+            }
+        }
+        for k in ItemKind::ALL {
+            assert!(seen.contains(&k), "{k:?} が出なかった");
+        }
+        let mut g = quiet(4);
+        let p = (g.pos.0 + 1, g.pos.1);
+        g.floor_items.push((p, ItemKind::Sword));
+        let o = g.run("move east");
+        assert!(o.message.contains("剣を拾った"), "{}", o.message);
     }
 
     #[test]
@@ -1316,11 +1522,13 @@ mod tests {
         let a = Game::new(9);
         let b = Game::new(9);
         assert_eq!(a.looks, b.looks);
-        assert!(a.known.iter().all(|k| !k));
+        for k in ItemKind::ALL {
+            assert_eq!(a.known[k.index()], k.is_equipment(), "{k:?}");
+        }
         for pot in [true, false] {
             let names: Vec<_> = ItemKind::ALL
                 .iter()
-                .filter(|k| k.is_potion() == pot)
+                .filter(|k| !k.is_equipment() && k.is_potion() == pot)
                 .map(|k| a.looks[k.index()])
                 .collect();
             for (i, x) in names.iter().enumerate() {

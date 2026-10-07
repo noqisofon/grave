@@ -18,6 +18,7 @@ const MARKERS: &[&str] = &[
     "分かった",
     "力尽きた",
     "現れて",
+    "装備した",
 ];
 
 struct Section {
