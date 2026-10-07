@@ -66,11 +66,11 @@ impl ItemKind {
     }
 
     pub fn is_weapon(self) -> bool {
-        self.weapon_dmg().is_some()
+        matches!(self, ItemKind::Dagger | ItemKind::Sword | ItemKind::Axe)
     }
 
     pub fn is_armor(self) -> bool {
-        self.armor() > 0
+        matches!(self, ItemKind::Leather | ItemKind::Chain | ItemKind::Plate)
     }
 
     pub fn is_equipment(self) -> bool {
@@ -99,10 +99,12 @@ impl ItemKind {
 
     /// 装備品の性能の説明。
     pub fn stats_text(self) -> String {
-        match (self.weapon_dmg(), self.armor()) {
-            (Some((lo, hi)), _) => format!("攻撃 {lo}〜{hi}"),
-            (None, a) if a > 0 => format!("防御 {a}"),
-            _ => String::new(),
+        if let Some((lo, hi)) = self.weapon_dmg() {
+            format!("攻撃 {lo}〜{hi}")
+        } else if self.is_armor() {
+            format!("防御 {}", self.armor())
+        } else {
+            String::new()
         }
     }
 
@@ -159,3 +161,29 @@ pub const SCROLL_LOOKS: [&str; 5] = [
     "「ポロ」の巻物",
     "「ミト」の巻物",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_lists_every_variant_in_index_order() {
+        for (i, k) in ItemKind::ALL.iter().enumerate() {
+            assert_eq!(k.index(), i, "{k:?}");
+        }
+        // 最後のバリアント (Plate) の番号が COUNT-1 なら、数え間違いはない
+        assert_eq!(ItemKind::Plate.index(), ItemKind::COUNT - 1);
+    }
+
+    #[test]
+    fn gear_stats_are_consistent_with_its_category() {
+        for k in ItemKind::ALL {
+            assert_eq!(k.weapon_dmg().is_some(), k.is_weapon(), "{k:?}");
+            assert_eq!(k.armor() > 0, k.is_armor(), "{k:?}");
+            assert!(k.weight() > 0, "{k:?}");
+            if k.is_equipment() {
+                assert!(!k.is_potion() && !k.stats_text().is_empty(), "{k:?}");
+            }
+        }
+    }
+}

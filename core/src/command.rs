@@ -141,6 +141,15 @@ look           階段や見えている敵の位置を調べる (ターン消費
 アイテムの上を歩くと自動で拾う。薬と巻物は最初は未識別で、使うと正体が分かる (ゲームごとに見た目と効果の対応が変わる)
 凡例: @ 自分  > 階段  ! 薬  ? 巻物  ) 武器  [ 防具  s スライム  b コウモリ  g ゴブリン  O オーガ";
 
+/// 持ち物の文字（小文字1つ）。
+fn letter_arg(s: &str) -> Option<char> {
+    let mut c = s.chars();
+    match (c.next(), c.next()) {
+        (Some(ch), None) if ch.is_ascii_lowercase() => Some(ch),
+        _ => None,
+    }
+}
+
 pub fn parse(line: &str) -> Result<Command, String> {
     let mut it = line.split_whitespace();
     let head = it.next().ok_or("コマンドが空です")?;
@@ -165,19 +174,12 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "descend" | "d" => Ok(Command::Descend),
         "inventory" | "i" => Ok(Command::Inventory),
         "use" | "u" | "drink" | "read" => {
-            let one = |s: &str| {
-                let mut c = s.chars();
-                match (c.next(), c.next()) {
-                    (Some(ch), None) if ch.is_ascii_lowercase() => Some(ch),
-                    _ => None,
-                }
-            };
             let letter = args
                 .first()
-                .and_then(|a| one(a))
+                .and_then(|a| letter_arg(a))
                 .ok_or("use には持ち物の文字が必要です (例: use a)")?;
             let target = match args.get(1) {
-                Some(a) => Some(one(a).ok_or_else(|| format!("不正な対象: {a}"))?),
+                Some(a) => Some(letter_arg(a).ok_or_else(|| format!("不正な対象: {a}"))?),
                 None => None,
             };
             Ok(Command::Use(letter, target))
@@ -186,13 +188,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
             let equip = matches!(head, "equip" | "e" | "wield" | "wear");
             let letter = args
                 .first()
-                .and_then(|a| {
-                    let mut c = a.chars();
-                    match (c.next(), c.next()) {
-                        (Some(ch), None) if ch.is_ascii_lowercase() => Some(ch),
-                        _ => None,
-                    }
-                })
+                .and_then(|a| letter_arg(a))
                 .ok_or_else(|| {
                     format!("{head} には持ち物の文字が必要です (例: {head} a)")
                 })?;
