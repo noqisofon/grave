@@ -13,7 +13,10 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute, queue,
     style::{Color, Print, ResetColor, SetForegroundColor},
-    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate,
+        EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
 use keymap::Keymap;
 
@@ -345,11 +348,32 @@ fn draw_scene(
     cursor: bool,
     show_inventory: bool,
 ) -> io::Result<()> {
+    // ちらつき対策: 1フレームぶんを一度に組み立てて、1回の書き込みで送る
+    let mut frame: Vec<u8> = Vec::with_capacity(8 * 1024);
+    render_scene(&mut frame, game, thoughts, footer, cursor, show_inventory)?;
+    out.write_all(&frame)?;
+    out.flush()
+}
+
+fn render_scene(
+    out: &mut Vec<u8>,
+    game: &Game,
+    thoughts: Option<&[(u32, String)]>,
+    footer: &str,
+    cursor: bool,
+    show_inventory: bool,
+) -> io::Result<()> {
     // 全角文字は2桁ぶん使うので、文字数の上限は桁数の半分にしておく
     let (cols, rows) = terminal::size().unwrap_or((80, 30));
     let cap = cols as usize / 2;
     let lay = layout(rows, thoughts.is_some());
-    queue!(out, Clear(ClearType::All), MoveTo(0, 0))?;
+    // 画面全体は消さない（消すとちらつく）。変わる行を、その場で消して描き直す。
+    // 対応する端末では、フレームが描き終わるまで画面の更新を保留する。
+    queue!(out, BeginSynchronizedUpdate, Hide)?;
+    for y in std::iter::once(0).chain((H as u16 + 1)..=lay.footer) {
+        queue!(out, MoveTo(0, y), Clear(ClearType::CurrentLine))?;
+    }
+    queue!(out, MoveTo(0, 0))?;
     queue!(
         out,
         Print(format!(
@@ -387,7 +411,8 @@ fn draw_scene(
             };
             queue!(out, SetForegroundColor(color), Print(c.ch))?;
         }
-        queue!(out, ResetColor)?;
+        // 行の右側に前のフレームの文字が残らないように
+        queue!(out, ResetColor, Clear(ClearType::UntilNewLine))?;
     }
     let log = game.log();
     let start = log.len().saturating_sub(LOG_LINES);
@@ -410,6 +435,10 @@ fn draw_scene(
             )?;
         }
     }
+    // プロンプトより下に前のフレームの残りがあれば消す（最下行を消さないように注意）
+    if lay.footer + 1 < rows {
+        queue!(out, MoveTo(0, lay.footer + 1), Clear(ClearType::FromCursorDown))?;
+    }
     queue!(out, MoveTo(0, lay.footer), Print(clip(footer, cap)))?;
     if show_inventory {
         draw_inventory_overlay(out, game, cols)?;
@@ -419,7 +448,8 @@ fn draw_scene(
     } else {
         queue!(out, Hide)?;
     }
-    out.flush()
+    queue!(out, EndSynchronizedUpdate)?;
+    Ok(())
 }
 
 /// 全角を2桁として数えた表示幅。
@@ -731,6 +761,20 @@ mod tests {
         assert_eq!(clip_cols("持ち物です", 6), "持ち物");
         assert_eq!(clip_cols("持ち物です", 7), "持ち物");
         assert_eq!(clip_cols("短い", 20), "短い");
+    }
+
+    #[test]
+    fn a_frame_does_not_clear_the_whole_screen() {
+        // 全画面を消すとちらつく。行ごとにその場で描き直し、更新を保留で囲む
+        let app = App::new(1);
+        let mut frame = Vec::new();
+        render_scene(&mut frame, &app.game, None, "footer", false, false).unwrap();
+        let text = String::from_utf8_lossy(&frame);
+        assert!(!text.contains("\x1b[2J"), "全画面クリアが残っている");
+        assert!(text.starts_with("\x1b[?2026h"), "{:?}", &text[..text.len().min(20)]);
+        assert!(text.ends_with("\x1b[?2026l"));
+        // 行末まで消す指示が、マップの各行に入っている
+        assert!(text.matches("\x1b[K").count() >= H as usize);
     }
 
     #[test]
