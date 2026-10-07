@@ -37,6 +37,8 @@ struct App {
     last: Option<(String, u32)>,
     status: String,
     quit: bool,
+    /// 持ち物を、マップの右上に重ねて出している（次のキーで閉じる）
+    overlay: bool,
 }
 
 impl App {
@@ -52,6 +54,7 @@ impl App {
             last: None,
             status: "h/j/k/l で移動、: でコマンド、:help で一覧".to_string(),
             quit: false,
+            overlay: false,
         }
     }
 
@@ -139,6 +142,10 @@ impl App {
                 if let Some(last) = outs.last() {
                     self.status = format!(":{}  {}", last.command, last.message);
                 }
+                // `inventory` を実行したときだけ、持ち物をマップの上に重ねる
+                if outs.iter().any(|o| o.command == "inventory") {
+                    self.overlay = true;
+                }
                 ok
             }
         }
@@ -154,6 +161,13 @@ impl App {
     }
 
     fn on_key_normal(&mut self, code: KeyCode) {
+        if self.overlay {
+            self.overlay = false;
+            // 閉じるためのキーはそれだけで終わり。ほかのキーは閉じたうえで普通に働く
+            if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('i') | KeyCode::Char(' ')) {
+                return;
+            }
+        }
         match code {
             // `:` が正本。打ちにくい人向けに `` ` `` も同じ意味で受け付ける
             KeyCode::Char(':') | KeyCode::Char('`') => {
@@ -275,7 +289,7 @@ impl App {
                 format!("{}  {}", self.status, count)
             }
         };
-        draw_scene(out, &self.game, None, &footer, self.mode == Mode::Command)
+        draw_scene(out, &self.game, None, &footer, self.mode == Mode::Command, self.overlay)
     }
 }
 
@@ -301,35 +315,22 @@ fn clip(s: &str, max: usize) -> String {
 /// 画面に出すログの行数。
 const LOG_LINES: usize = 3;
 
-/// 持ち物パネルを右上に出すのに必要な、端末の最小の桁数。
-/// マップ (W桁) の右に、全角で十数文字ぶんの幅が残るときだけ出す。
-const PANEL_MIN_COLS: u16 = W as u16 + 2 + 32;
-
-/// 端末の幅が足りて、持ち物を右上のパネルに出せるか。
-fn has_panel(cols: u16) -> bool {
-    cols >= PANEL_MIN_COLS
-}
-
 /// 画面の行の割り当て。
 struct Layout {
     log_top: u16,
-    inventory: u16,
     thoughts_top: u16,
     /// 最下行（プロンプト）
     footer: u16,
 }
 
 /// 端末の高さ `rows` に合わせた行の割り当て。プロンプトは端末の一番下に置く。
-/// 高さが足りないときは、持ち物の次の行（または思考の次の行）に置く。
-fn layout(rows: u16, with_thoughts: bool, inventory_row: bool) -> Layout {
+/// 高さが足りないときは、ログ（または思考）の次の行に置く。
+fn layout(rows: u16, with_thoughts: bool) -> Layout {
     let log_top = (H + 2) as u16;
-    let inventory = log_top + LOG_LINES as u16;
-    // 持ち物をパネルに出すときは、持ち物の1行は要らない
-    let thoughts_top = inventory + if inventory_row { 1 } else { 0 };
+    let thoughts_top = log_top + LOG_LINES as u16;
     let natural = thoughts_top + if with_thoughts { 3 } else { 0 };
     Layout {
         log_top,
-        inventory,
         thoughts_top,
         footer: natural.max(rows.saturating_sub(1)),
     }
@@ -342,12 +343,12 @@ fn draw_scene(
     thoughts: Option<&[(u32, String)]>,
     footer: &str,
     cursor: bool,
+    show_inventory: bool,
 ) -> io::Result<()> {
     // 全角文字は2桁ぶん使うので、文字数の上限は桁数の半分にしておく
     let (cols, rows) = terminal::size().unwrap_or((80, 30));
     let cap = cols as usize / 2;
-    let panel = has_panel(cols);
-    let lay = layout(rows, thoughts.is_some(), !panel);
+    let lay = layout(rows, thoughts.is_some());
     queue!(out, Clear(ClearType::All), MoveTo(0, 0))?;
     queue!(
         out,
@@ -397,43 +398,6 @@ fn draw_scene(
             Print(clip(&format!("[{}] {}", e.turn, e.text), cap))
         )?;
     }
-    let inv = game.inventory_lines();
-    if panel {
-        // 右上のパネル。マップの右側に並べる
-        let x0 = W as u16 + 2;
-        let width = (cols - x0) as usize;
-        queue!(
-            out,
-            MoveTo(x0, 1),
-            SetForegroundColor(Color::Cyan),
-            Print(clip_cols("持ち物", width)),
-            ResetColor
-        )?;
-        if inv.is_empty() {
-            queue!(out, MoveTo(x0, 2), Print(clip_cols("(なし)", width)))?;
-        }
-        for (i, line) in inv.iter().take(H as usize - 1).enumerate() {
-            let color = if line.contains("(装備中)") {
-                Color::Yellow
-            } else {
-                Color::White
-            };
-            queue!(
-                out,
-                MoveTo(x0, 2 + i as u16),
-                SetForegroundColor(color),
-                Print(clip_cols(line, width)),
-                ResetColor
-            )?;
-        }
-    } else {
-        let inv_text = if inv.is_empty() {
-            "持ち物: (なし)".to_string()
-        } else {
-            format!("持ち物: {}", inv.join("  "))
-        };
-        queue!(out, MoveTo(0, lay.inventory), Print(clip(&inv_text, cap)))?;
-    }
     if let Some(ts) = thoughts {
         let start = ts.len().saturating_sub(3);
         for (i, (turn, t)) in ts[start..].iter().enumerate() {
@@ -447,12 +411,51 @@ fn draw_scene(
         }
     }
     queue!(out, MoveTo(0, lay.footer), Print(clip(footer, cap)))?;
+    if show_inventory {
+        draw_inventory_overlay(out, game, cols)?;
+    }
     if cursor {
         queue!(out, Show)?;
     } else {
         queue!(out, Hide)?;
     }
     out.flush()
+}
+
+/// 全角を2桁として数えた表示幅。
+fn display_width(s: &str) -> usize {
+    s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
+}
+
+/// 持ち物を、マップの右上に重ねて描く。
+fn draw_inventory_overlay(out: &mut impl Write, game: &Game, cols: u16) -> io::Result<()> {
+    let items = game.inventory_lines();
+    let mut lines: Vec<(String, Color)> = vec![("持ち物".to_string(), Color::Cyan)];
+    if items.is_empty() {
+        lines.push(("(なし)".to_string(), Color::White));
+    }
+    for l in items.iter().take(H as usize - 2) {
+        let color = if l.contains("(装備中)") { Color::Yellow } else { Color::White };
+        lines.push((l.clone(), color));
+    }
+    lines.push(("(Esc か i で閉じる)".to_string(), Color::DarkGrey));
+    // マップの右端にそろえる。端末が狭ければ端末の右端まで
+    let right = (W as u16).min(cols) as usize;
+    let inner = lines.iter().map(|(l, _)| display_width(l)).max().unwrap_or(0);
+    let width = (inner + 2).min(right);
+    let x0 = (right - width) as u16;
+    for (i, (text, color)) in lines.iter().enumerate() {
+        let body = clip_cols(text, width - 2);
+        let pad = width - 2 - display_width(&body);
+        queue!(
+            out,
+            MoveTo(x0, 1 + i as u16),
+            SetForegroundColor(color.to_owned()),
+            Print(format!(" {body}{} ", " ".repeat(pad))),
+            ResetColor
+        )?;
+    }
+    Ok(())
 }
 
 /// 全角は2桁として、`cols` 桁で折り返す。
@@ -525,6 +528,7 @@ fn run_watch(path: &str) -> io::Result<()> {
     let result = (|| -> io::Result<()> {
         let mut dirty = true;
         let mut show_journal = false;
+        let mut show_inv = false;
         loop {
             if w.poll()? {
                 dirty = true;
@@ -545,8 +549,8 @@ fn run_watch(path: &str) -> io::Result<()> {
                         ""
                     };
                     let diary = if w.journals.is_empty() { "" } else { "  (j で日誌)" };
-                    let footer = format!("観戦中: {path}{state}{diary}  (q で終了)");
-                    draw_scene(&mut out, &w.game, Some(&w.thoughts), &footer, false)?;
+                    let footer = format!("観戦中: {path}{state}{diary}  (i で持ち物 / q で終了)");
+                    draw_scene(&mut out, &w.game, Some(&w.thoughts), &footer, false, show_inv)?;
                 }
                 dirty = false;
             }
@@ -557,6 +561,10 @@ fn run_watch(path: &str) -> io::Result<()> {
                             && k.code == KeyCode::Char('c');
                         if ctrl_c || matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
                             break;
+                        }
+                        if k.code == KeyCode::Char('i') {
+                            show_inv = !show_inv;
+                            dirty = true;
                         }
                         if k.code == KeyCode::Char('j') && !w.journals.is_empty() {
                             show_journal = !show_journal;
@@ -684,24 +692,37 @@ mod tests {
 
     #[test]
     fn prompt_sits_on_the_bottom_row_when_the_terminal_is_tall_enough() {
-        // 高さが十分なら最下行。足りなければ持ち物の次の行
-        let tall = layout(40, false, true);
-        assert_eq!(tall.footer, 39);
-        let tight = layout(24, false, true);
-        assert_eq!(tight.footer, tight.inventory + 1);
-        assert_eq!(tight.inventory, tight.log_top + LOG_LINES as u16);
-        // 持ち物をパネルに出すときは、持ち物の1行ぶん詰まる
-        assert_eq!(layout(24, false, false).footer, tight.footer - 1);
+        // 高さが十分なら最下行。足りなければログの次の行
+        assert_eq!(layout(40, false).footer, 39);
+        let tight = layout(24, false);
+        assert_eq!(tight.footer, tight.log_top + LOG_LINES as u16);
         // 観戦では思考の3行ぶんだけ下がる
-        assert_eq!(layout(24, true, true).footer, layout(24, false, true).footer + 3);
+        assert_eq!(layout(24, true).footer, tight.footer + 3);
         assert_eq!(LOG_LINES, 3);
     }
 
     #[test]
-    fn inventory_panel_needs_a_wide_terminal() {
-        assert!(!has_panel(80));
-        assert!(has_panel(W as u16 + 2 + 32));
-        assert!(has_panel(120));
+    fn inventory_overlay_opens_only_with_the_inventory_command_and_closes_on_a_key() {
+        let mut app = App::new(1);
+        assert!(!app.overlay);
+        press(&mut app, "z");
+        assert!(!app.overlay, "ふつうのコマンドでは出ない");
+        press(&mut app, "i");
+        assert!(app.overlay);
+        // 閉じるキーはそれだけで終わる（移動しない）
+        let t = app.game.turn();
+        app.on_key_normal(KeyCode::Esc);
+        assert!(!app.overlay);
+        assert_eq!(app.game.turn(), t);
+        // ほかのキーは閉じたうえで働く
+        press(&mut app, "i");
+        press(&mut app, "z");
+        assert!(!app.overlay);
+        assert_eq!(app.game.turn(), t + 1);
+        // :inventory でも出る
+        press(&mut app, ":inventory");
+        app.on_key_command(KeyCode::Enter);
+        assert!(app.overlay);
     }
 
     #[test]
