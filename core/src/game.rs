@@ -1060,11 +1060,13 @@ impl Game {
         self.outcome(cmd.to_string(), ok, message)
     }
 
-    /// その場に `n` ターン留まる。襲われたり、体力が危なくなったら途中で止まる。
+    /// その場に `n` ターン留まる。足元のアイテムを拾う。襲われたり、体力が危なくなったら途中で止まる。
     /// （動かない間は、敵は見えているときしか近づいてこないので「敵が現れる」ことはない）
     fn stay(&mut self, n: u32) -> (bool, String) {
         self.hit = false;
         self.alert = None;
+        // 留まるときは、足元にあるアイテムを拾う（拾うこと自体はターンを使わない）
+        self.pickup_here();
         for done in 1..=n {
             self.pass_turn();
             let why = if self.dead {
@@ -1481,6 +1483,24 @@ mod tests {
         assert!(o.message.contains("1ターン留まったところで、攻撃を受けて中断した"), "{}", o.message);
         assert_eq!(g.turn(), t + 1);
 
+    }
+
+    #[test]
+    fn stay_picks_up_the_item_underfoot_but_wait_does_not() {
+        let mut g = quiet(1);
+        let here = g.pos;
+        g.floor_items.push((here, ItemKind::Healing));
+        let o = g.run("wait");
+        assert!(o.ok && g.inventory.is_empty() && g.floor_items.len() == 1, "{}", o.message);
+        let t = g.turn();
+        let o = g.run("stay 2");
+        assert!(o.message.contains("を拾った"), "{}", o.message);
+        assert!(g.floor_items.is_empty());
+        assert_eq!(g.inventory.len(), 1);
+        assert_eq!(g.turn(), t + 2); // 拾うのにターンは使わない
+        // 何もなければ、ただ留まるだけ
+        let o = g.run("stay");
+        assert!(!o.message.contains("拾った"), "{}", o.message);
     }
 
     /// 開始位置の東 `dist` の床が見えている seed を探す。
