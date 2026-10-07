@@ -11,7 +11,7 @@ use crate::game::Outcome;
 /// 生成や抽選、ダメージ計算、乱数の使い方など）をしたら、必ず 1 上げる。
 /// 記録の `new_game` に入り、観戦側が「古いルールで録られた記録」を見分けるのに使う。
 /// 上げ忘れは `rules_version_matches_golden_run` が検出する。
-pub const RULES_VERSION: u32 = 1;
+pub const RULES_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -146,13 +146,29 @@ pub fn golden_player(seed: u64, steps: usize, mut sink: impl FnMut(&crate::game:
                 }
             }
             None => match step % 4 {
-                0 => "equip a; equip b; equip c; use a".to_string(),
+                0 => {
+                    // 装備を試し、食べられそうなものがあれば食べる
+                    let eat = g
+                        .inventory_lines()
+                        .iter()
+                        .find(|l| l.contains("キノコ") || l.contains("パン") || l.contains("干し肉"))
+                        .and_then(|l| l.chars().next());
+                    let mut c = "equip a; equip b; equip c".to_string();
+                    if let Some(letter) = eat {
+                        c.push_str(&format!("; use {letter}"));
+                    }
+                    c
+                }
                 1 | 3 => "explore".to_string(),
                 _ => "travel >; descend".to_string(),
             },
         };
-        for o in g.run_script(&cmd) {
-            sink(&o);
+        // 失敗しても止めず、1つずつ実行する
+        for part in cmd.split(';') {
+            if g.is_dead() {
+                break;
+            }
+            sink(&g.run(part.trim()));
         }
     }
 }
@@ -248,8 +264,8 @@ mod tests {
     /// 落ちたら、意図した変更なら RULES_VERSION を上げて GOLDEN_* を更新する。
     #[test]
     fn rules_version_matches_golden_run() {
-        const GOLDEN_RULES: u32 = 1;
-        const GOLDEN_HASH: u64 = 951801025463756219;
+        const GOLDEN_RULES: u32 = 2;
+        const GOLDEN_HASH: u64 = 4192745230199048955;
         let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
         let mut feed = |bytes: &[u8]| {
             for b in bytes {
@@ -258,6 +274,7 @@ mod tests {
             }
         };
         let (mut hits, mut kills, mut equips, mut deepest) = (0, 0, 0, 0);
+        let (mut meals, mut poisoned) = (0, 0);
         for seed in 1u64..=12 {
             golden_player(seed, 400, |o| {
                 feed(o.message.as_bytes());
@@ -265,11 +282,15 @@ mod tests {
                 hits += o.message.matches("の攻撃！").count();
                 kills += o.message.matches("を倒した").count();
                 equips += o.message.matches("を装備した").count();
+                meals += o.message.matches("満腹度が").count();
+                poisoned += o.message.matches("毒を受けた").count();
                 deepest = deepest.max(o.depth);
             });
         }
         // 指紋が何も踏んでいないと、ルールが変わっても気づけない
-        assert!(hits > 20 && kills > 10 && equips >= 2 && deepest >= 3, "{hits} {kills} {equips} {deepest}");
+        assert!(hits > 20 && kills > 10 && equips >= 2 && deepest >= 3 && meals >= 3 && poisoned >= 1,
+            "{hits} {kills} {equips} {deepest} {meals} {poisoned}"
+        );
         if RULES_VERSION == GOLDEN_RULES {
             assert_eq!(
                 h, GOLDEN_HASH,

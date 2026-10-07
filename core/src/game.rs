@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::command::{self, Command, Dir, TravelTarget};
-use crate::item::{ItemKind, POTION_LOOKS, SCROLL_LOOKS};
+use crate::item::{ItemKind, MUSHROOM_LOOKS, POTION_LOOKS, SCROLL_LOOKS};
 use crate::map::{idx, Map, Tile, H, W};
 use crate::monster::{MonsterKind, KINDS};
 use crate::rng::Rng;
@@ -11,6 +11,13 @@ const EXPLORE_STEP_LIMIT: u32 = 1000;
 const PLAYER_MAX_HP: i32 = 20;
 /// 敵が見えていないとき、このターン数ごとにHPが1回復する。
 const REGEN_INTERVAL: u32 = 10;
+/// 満腹度の上限と、空腹の段階
+const MAX_FOOD: i32 = 300;
+const HUNGRY_AT: i32 = 100;
+const WEAK_AT: i32 = 30;
+/// この HP 以下で毒や飢えが続くと、自動移動を止めて知らせる
+const DANGER_HP: i32 = 5;
+const MAX_POISON: u32 = 15;
 const MAX_MONSTERS: usize = 6;
 
 pub struct LogEntry {
@@ -85,6 +92,13 @@ pub struct Game {
     /// 装備中の武器と防具
     weapon: Option<ItemKind>,
     armor: Option<ItemKind>,
+    /// 満腹度。時間とともに減り、0 になると体力が削られる
+    food: i32,
+    /// 毒の残りターン。1ターンごとに1ダメージ
+    poison: u32,
+    /// 実行中の自動移動を止めるべき出来事（被弾など）
+    hit: bool,
+    alert: Option<String>,
     /// 眠りなど、このコマンドのあとに追加で経過するターン
     extra_turns: u32,
     log: Vec<LogEntry>,
@@ -102,13 +116,18 @@ fn shuffle<T>(rng: &mut Rng, v: &mut [T]) {
 fn roll_looks(rng: &mut Rng) -> [&'static str; ItemKind::COUNT] {
     let mut potions = POTION_LOOKS;
     let mut scrolls = SCROLL_LOOKS;
+    let mut shrooms = MUSHROOM_LOOKS;
     shuffle(rng, &mut potions);
     shuffle(rng, &mut scrolls);
+    shuffle(rng, &mut shrooms);
     let mut looks = [""; ItemKind::COUNT];
-    let (mut pi, mut si) = (0, 0);
+    let (mut pi, mut si, mut mi) = (0, 0, 0);
     for k in ItemKind::ALL {
-        if k.is_equipment() {
+        if k.is_equipment() || k.is_food() {
             looks[k.index()] = k.true_name();
+        } else if k.is_mushroom() {
+            looks[k.index()] = shrooms[mi];
+            mi += 1;
         } else if k.is_potion() {
             looks[k.index()] = potions[pi];
             pi += 1;
@@ -153,9 +172,13 @@ impl Game {
             floor_items: Vec::new(),
             inventory: Vec::new(),
             looks,
-            known: ItemKind::ALL.map(|k| k.is_equipment()),
+            known: ItemKind::ALL.map(|k| k.is_equipment() || k.is_food()),
             weapon: None,
             armor: None,
+            food: MAX_FOOD - 50,
+            poison: 0,
+            hit: false,
+            alert: None,
             extra_turns: 0,
             log: Vec::new(),
             events: Vec::new(),
@@ -248,6 +271,24 @@ impl Game {
             }
             self.floor_items.push(((x, y), kind));
         }
+        // 飢え死にしないよう、どの階にも食べ物を1つは置く
+        let food = if self.depth >= 2 && self.rng.range(0, 4) == 0 {
+            ItemKind::Jerky
+        } else {
+            ItemKind::Bread
+        };
+        for _ in 0..300 {
+            let x = self.rng.range(1, W - 1);
+            let y = self.rng.range(1, H - 1);
+            if self.map.tile(x, y) == Tile::Floor
+                && (x, y) != self.pos
+                && self.item_at((x, y)).is_none()
+                && self.monster_at((x, y)).is_none()
+            {
+                self.floor_items.push(((x, y), food));
+                break;
+            }
+        }
     }
 
     fn item_at(&self, p: (i32, i32)) -> Option<ItemKind> {
@@ -330,7 +371,13 @@ impl Game {
         }
         let k = kind.index();
         let was_known = self.known[k];
-        let verb = if kind.is_potion() { "飲んだ" } else { "読んだ" };
+        let verb = if kind.is_potion() {
+            "飲んだ"
+        } else if kind.is_scroll() {
+            "読んだ"
+        } else {
+            "食べた"
+        };
         let prefix = if was_known {
             format!("{}を{verb}。", kind.true_name())
         } else {
@@ -345,7 +392,39 @@ impl Game {
             ItemKind::Healing => {
                 let gained = (self.max_hp - self.hp).min(10);
                 self.hp += gained;
-                format!("HPが{gained}回復した。(HP {}/{})", self.hp, self.max_hp)
+                let mut s = format!("HPが{gained}回復した。(HP {}/{})", self.hp, self.max_hp);
+                if self.poison > 0 {
+                    self.poison = 0;
+                    s.push_str(" 毒が抜けた。");
+                }
+                s
+            }
+            ItemKind::Bread => {
+                // 6個に1個くらいは腐っている
+                if self.rng.range(0, 6) == 0 {
+                    self.food = (self.food + 30).min(MAX_FOOD);
+                    self.poison = (self.poison + 6).min(MAX_POISON);
+                    "腐っていた！ 毒を受けた。".to_string()
+                } else {
+                    self.gain_food(kind.nutrition())
+                }
+            }
+            ItemKind::Jerky => self.gain_food(kind.nutrition()),
+            ItemKind::EdibleShroom => {
+                format!("おいしい。{}", self.gain_food(kind.nutrition()))
+            }
+            ItemKind::PoisonShroom => {
+                self.poison = (self.poison + 8).min(MAX_POISON);
+                format!("毒を受けた。{}", self.gain_food(kind.nutrition()))
+            }
+            ItemKind::VigorShroom => {
+                let gained = (self.max_hp - self.hp).min(8);
+                self.hp += gained;
+                let food = self.gain_food(kind.nutrition());
+                format!(
+                    "力が湧いてきた。HPが{gained}回復した。(HP {}/{}) {food}",
+                    self.hp, self.max_hp
+                )
             }
             ItemKind::Poison => {
                 self.hp -= 5;
@@ -429,6 +508,39 @@ impl Game {
             self.inventory.remove(si);
         }
         (true, format!("{prefix} {body}"), true)
+    }
+
+    /// 満腹度を増やす。結果の説明を返す。
+    fn gain_food(&mut self, n: i32) -> String {
+        let before = self.food;
+        self.food = (self.food + n).min(MAX_FOOD);
+        format!(
+            "満腹度が{}回復した。(満腹度 {}/{})",
+            self.food - before,
+            self.food,
+            MAX_FOOD
+        )
+    }
+
+    fn hunger_label(&self) -> Option<&'static str> {
+        match self.food {
+            f if f <= 0 => Some("飢餓"),
+            f if f <= WEAK_AT => Some("ひどい空腹"),
+            f if f <= HUNGRY_AT => Some("空腹"),
+            _ => None,
+        }
+    }
+
+    /// 満腹度と毒の状態（観測やTUIの見出し用）。
+    pub fn status_text(&self) -> String {
+        let mut s = format!("満腹度 {}/{}", self.food, MAX_FOOD);
+        if let Some(l) = self.hunger_label() {
+            s.push_str(&format!("({l})"));
+        }
+        if self.poison > 0 {
+            s.push_str(&format!(" 毒{}", self.poison));
+        }
+        s
     }
 
     /// 武器の攻撃範囲（含む）。装備がなければ素手。
@@ -570,13 +682,63 @@ impl Game {
     /// 1ターン進める。敵が動き、HPが自然回復する。
     fn pass_turn(&mut self) {
         self.turn += 1;
+        self.tick_body();
+        if self.dead {
+            return;
+        }
         if self.turn % REGEN_INTERVAL == 0
             && self.hp < self.max_hp
+            && self.poison == 0
+            && self.food > 0
             && self.visible_monster_indices().is_empty()
         {
             self.hp += 1;
         }
         self.monsters_act();
+    }
+
+    /// 1ターンぶんの空腹と毒。
+    fn tick_body(&mut self) {
+        if self.food > 0 {
+            self.food -= 1;
+            match self.food {
+                HUNGRY_AT => {
+                    self.note("お腹が空いてきた。");
+                    self.alert = Some("お腹が空いてきた。".to_string());
+                }
+                WEAK_AT => {
+                    self.note("ひどく空腹だ。何か食べないと倒れる。");
+                    self.alert = Some("ひどく空腹になって中断した。".to_string());
+                }
+                0 => {
+                    self.note("飢えて体力が削られていく…。");
+                    self.alert = Some("飢えて中断した。".to_string());
+                }
+                _ => {}
+            }
+        }
+        let mut cause = None;
+        if self.food == 0 {
+            self.hp -= 1;
+            cause = Some("飢え");
+        }
+        if self.poison > 0 {
+            self.poison -= 1;
+            self.hp -= 1;
+            cause = Some("毒");
+        }
+        let Some(cause) = cause else { return };
+        let msg = format!("{cause}で1ダメージ。(HP {}/{})", self.hp.max(0), self.max_hp);
+        self.note(&msg);
+        if self.poison == 0 && cause == "毒" && self.hp > 0 {
+            self.note("毒が抜けた。");
+        }
+        if self.hp <= 0 {
+            self.dead = true;
+            self.note(&format!("{cause}で力尽きた…。ゲームオーバー。"));
+        } else if self.hp <= DANGER_HP {
+            self.alert = Some("体力が危ない。".to_string());
+        }
     }
 
     fn monsters_act(&mut self) {
@@ -618,12 +780,17 @@ impl Game {
             let raw = self.rng.range(kind.dmg.0, kind.dmg.1 + 1 + bonus);
             let dmg = (raw - self.defense()).max(1);
             self.hp -= dmg;
+            self.hit = true;
             let msg = format!(
                 "{name}の攻撃！ {dmg}のダメージを受けた。(HP {}/{})",
                 self.hp.max(0),
                 self.max_hp
             );
             self.note(&msg);
+            if kind.poisons && self.hp > 0 && self.rng.range(0, 2) == 0 {
+                self.poison = (self.poison + 5).min(MAX_POISON);
+                self.note("毒を受けた！");
+            }
             if self.hp <= 0 {
                 self.dead = true;
                 self.note("あなたは力尽きた…。ゲームオーバー。");
@@ -903,7 +1070,8 @@ impl Game {
         let Some(path) = self.find_path(&|p| p == stairs) else {
             return (false, "階段までの道がつながっていない。".to_string());
         };
-        let hp0 = self.hp;
+        self.hit = false;
+        self.alert = None;
         let mut n = 0;
         for p in path {
             if let Some(i) = self.monster_at(p) {
@@ -914,7 +1082,7 @@ impl Game {
             }
             self.step_to(p);
             n += 1;
-            if let Some(why) = self.interruption(hp0) {
+            if let Some(why) = self.interruption() {
                 return (true, format!("階段へ向かう途中({n}歩)、{why}"));
             }
         }
@@ -922,12 +1090,17 @@ impl Game {
     }
 
     /// 自動移動を止めるべき事情（死亡・被弾・新たな敵の出現）。
-    fn interruption(&self, hp0: i32) -> Option<String> {
+    fn interruption(&mut self) -> Option<String> {
+        let hit = std::mem::take(&mut self.hit);
+        let alert = self.alert.take();
         if self.dead {
             return Some("力尽きた。".to_string());
         }
-        if self.hp < hp0 {
+        if hit {
             return Some("攻撃を受けて中断した。".to_string());
+        }
+        if let Some(a) = alert {
+            return Some(a);
         }
         self.visible_monster_indices()
             .first()
@@ -939,7 +1112,8 @@ impl Game {
             return (false, m);
         }
         let stairs_known_before = self.map.is_seen(self.stairs.0, self.stairs.1);
-        let hp0 = self.hp;
+        self.hit = false;
+        self.alert = None;
         let mut steps = 0;
         loop {
             if steps >= EXPLORE_STEP_LIMIT {
@@ -961,7 +1135,7 @@ impl Game {
             }
             self.step_to(path[0]);
             steps += 1;
-            if let Some(why) = self.interruption(hp0) {
+            if let Some(why) = self.interruption() {
                 return (true, format!("{steps}歩探索したところで、{why}"));
             }
             if !stairs_known_before && self.map.is_seen(self.stairs.0, self.stairs.1) {
@@ -1048,7 +1222,7 @@ impl Game {
     pub fn observe_text(&self, log_lines: usize) -> String {
         let (atk_lo, atk_hi) = self.attack_range();
         let mut s = format!(
-            "== 地下{}階 / ターン{} / HP {}/{} / 攻撃 {}〜{} / 防御 {} / 位置({},{}) ==\n",
+            "== 地下{}階 / ターン{} / HP {}/{} / 攻撃 {}〜{} / 防御 {} / {} / 位置({},{}) ==\n",
             self.depth,
             self.turn,
             self.hp,
@@ -1056,6 +1230,7 @@ impl Game {
             atk_lo,
             atk_hi,
             self.defense(),
+            self.status_text(),
             self.pos.0,
             self.pos.1
         );
@@ -1254,6 +1429,173 @@ mod tests {
     }
 
     #[test]
+    fn hunger_grows_warns_and_then_hurts() {
+        let mut g = quiet(1);
+        g.food = HUNGRY_AT + 1;
+        let o = g.run("wait");
+        assert!(o.message.contains("お腹が空いてきた"), "{}", o.message);
+        assert!(g.status_text().contains("空腹"));
+        g.food = WEAK_AT + 1;
+        assert!(g.run("wait").message.contains("ひどく空腹"));
+        g.food = 1;
+        let o = g.run("wait");
+        assert!(o.message.contains("飢えて体力が削られ"), "{}", o.message);
+        // 飢餓の間は毎ターン1ダメージで、自然回復もしない
+        let hp = g.hp();
+        for _ in 0..REGEN_INTERVAL {
+            g.run("wait");
+        }
+        assert_eq!(g.hp(), hp - REGEN_INTERVAL as i32);
+        assert!(g.observe_text(3).contains("飢餓"));
+    }
+
+    #[test]
+    fn starvation_can_kill() {
+        let mut g = quiet(1);
+        g.food = 0;
+        g.hp = 2;
+        let o = g.run("wait");
+        assert!(o.ok);
+        let o = g.run("wait");
+        assert!(g.is_dead(), "{}", o.message);
+        assert!(o.message.contains("飢えで力尽きた"), "{}", o.message);
+    }
+
+    #[test]
+    fn auto_walk_stops_when_hunger_sets_in() {
+        let mut g = quiet(2);
+        g.food = HUNGRY_AT + 3;
+        let o = g.run("explore");
+        assert!(o.ok);
+        assert!(o.message.contains("お腹が空いて"), "{}", o.message);
+        assert!(g.turn() <= 5, "{}", g.turn());
+    }
+
+    #[test]
+    fn poison_hurts_each_turn_blocks_regen_and_wears_off() {
+        let mut g = quiet(1);
+        g.hp = 10;
+        g.poison = 3;
+        let mut text = String::new();
+        for _ in 0..3 {
+            text.push_str(&g.run("wait").message);
+        }
+        assert_eq!(g.hp(), 7);
+        assert!(text.contains("毒で1ダメージ"), "{text}");
+        assert!(text.contains("毒が抜けた"), "{text}");
+        assert_eq!(g.poison, 0);
+        // 毒の間は自然回復しない
+        g.hp = 20;
+        g.poison = 15;
+        let hp = g.hp();
+        for _ in 0..REGEN_INTERVAL {
+            g.run("wait");
+        }
+        assert_eq!(g.hp(), hp - REGEN_INTERVAL as i32);
+    }
+
+    #[test]
+    fn poison_can_kill_and_healing_potion_cures_it() {
+        let mut g = quiet(1);
+        g.hp = 1;
+        g.poison = 5;
+        let o = g.run("wait");
+        assert!(g.is_dead() && o.message.contains("毒で力尽きた"), "{}", o.message);
+
+        let mut g = with_gear(&[ItemKind::Healing]);
+        g.poison = 9;
+        let o = g.run("use a");
+        assert!(o.message.contains("毒が抜けた"), "{}", o.message);
+        assert_eq!(g.poison, 0);
+    }
+
+    #[test]
+    fn poison_stops_auto_walk_when_hp_is_low() {
+        let mut g = quiet(2);
+        g.hp = DANGER_HP + 2;
+        g.poison = 10;
+        let o = g.run("explore");
+        assert!(o.message.contains("体力が危ない"), "{}", o.message);
+        assert!(!g.is_dead());
+    }
+
+    #[test]
+    fn bread_feeds_and_is_sometimes_rotten() {
+        let (mut rotten, mut fine) = (0, 0);
+        for seed in 0..60 {
+            let mut g = with_gear(&[ItemKind::Bread]);
+            g.rng = Rng::new(seed);
+            g.food = 100;
+            let o = g.run("use a");
+            assert!(o.ok);
+            if o.message.contains("腐っていた") {
+                rotten += 1;
+                assert!(g.poison > 0 && g.food < 200, "{}", o.message);
+            } else {
+                fine += 1;
+                assert!(g.food >= 240, "{}", o.message); // 100 + 150 - 1ターン
+            }
+        }
+        assert!(rotten > 0 && fine > rotten, "{rotten} {fine}");
+    }
+
+    #[test]
+    fn eating_is_capped_at_full() {
+        let mut g = with_gear(&[ItemKind::Jerky]);
+        g.food = MAX_FOOD - 10;
+        let o = g.run("use a");
+        assert!(o.message.contains("満腹度が10回復"), "{}", o.message);
+        assert!(g.food <= MAX_FOOD);
+    }
+
+    #[test]
+    fn mushrooms_are_unidentified_until_eaten() {
+        let g = with_gear(&[ItemKind::PoisonShroom, ItemKind::VigorShroom, ItemKind::EdibleShroom]);
+        let lines = g.inventory_lines();
+        assert!(lines.iter().all(|l| l.contains("キノコ") && l.contains("未識別")), "{lines:?}");
+        assert!(lines.iter().all(|l| !l.contains("毒キノコ") && !l.contains("元気")));
+        let mut g = with_gear(&[ItemKind::PoisonShroom]);
+        let o = g.run("use a");
+        assert!(o.message.contains("これは毒キノコだった"), "{}", o.message);
+        assert!(g.poison >= 7, "{}", g.poison);
+        let mut g = with_gear(&[ItemKind::VigorShroom]);
+        g.hp = 5;
+        let o = g.run("use a");
+        assert!(o.message.contains("これは元気キノコだった") && g.hp() >= 12, "{}", o.message);
+        assert!(g.known[ItemKind::VigorShroom.index()]);
+    }
+
+    #[test]
+    fn spider_bites_can_poison() {
+        let mut g = with_adjacent(2, &crate::monster::SPIDER);
+        let mut saw = false;
+        for _ in 0..40 {
+            let o = g.run("wait");
+            if o.message.contains("毒を受けた！") {
+                saw = true;
+                assert!(g.poison > 0);
+                break;
+            }
+        }
+        assert!(saw, "毒グモに噛まれても毒にならなかった");
+    }
+
+    #[test]
+    fn every_floor_has_food() {
+        for seed in 0..40 {
+            let mut g = Game::new(seed);
+            for depth in 1..=5u32 {
+                g.depth = depth;
+                g.spawn_items();
+                assert!(
+                    g.floor_items.iter().any(|(_, k)| k.is_food()),
+                    "seed {seed} depth {depth}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn spawn_respects_min_depth() {
         for seed in 0..30 {
             for depth in 1..=6u32 {
@@ -1399,12 +1741,16 @@ mod tests {
                 }
             }
             assert!(found, "seed {seed}: 階段が見つからなかった");
-            let outs = g.run_script("travel >; descend");
-            assert!(
-                outs.iter().all(|o| o.ok),
-                "seed {seed}: {:?}",
-                outs.last().map(|o| &o.message)
-            );
+            // 空腹の知らせなどで途中で止まることがあるので、着くまで繰り返す
+            for _ in 0..5 {
+                let o = g.run("travel >");
+                assert!(o.ok, "seed {seed}: {}", o.message);
+                if o.message.contains("階段まで") || o.message.contains("すでに階段") {
+                    break;
+                }
+            }
+            let o = g.run("descend");
+            assert!(o.ok, "seed {seed}: {}", o.message);
             assert_eq!(g.depth(), 2);
         }
     }
@@ -1524,12 +1870,14 @@ mod tests {
         let b = Game::new(9);
         assert_eq!(a.looks, b.looks);
         for k in ItemKind::ALL {
-            assert_eq!(a.known[k.index()], k.is_equipment(), "{k:?}");
+            assert_eq!(a.known[k.index()], k.is_equipment() || k.is_food(), "{k:?}");
         }
-        for pot in [true, false] {
+        let groups: [fn(ItemKind) -> bool; 3] =
+            [|k| k.is_potion(), |k| k.is_scroll(), |k| k.is_mushroom()];
+        for in_group in groups {
             let names: Vec<_> = ItemKind::ALL
                 .iter()
-                .filter(|k| !k.is_equipment() && k.is_potion() == pot)
+                .filter(|k| in_group(**k))
                 .map(|k| a.looks[k.index()])
                 .collect();
             for (i, x) in names.iter().enumerate() {

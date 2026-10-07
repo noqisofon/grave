@@ -21,10 +21,16 @@ pub enum ItemKind {
     Leather,
     Chain,
     Plate,
+    // ここから食べ物。パンと干し肉は名前が分かる。キノコは見た目だけでは分からない
+    Bread,
+    Jerky,
+    EdibleShroom,
+    PoisonShroom,
+    VigorShroom,
 }
 
 impl ItemKind {
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 17;
     pub const ALL: [ItemKind; ItemKind::COUNT] = [
         ItemKind::Healing,
         ItemKind::Poison,
@@ -38,6 +44,11 @@ impl ItemKind {
         ItemKind::Leather,
         ItemKind::Chain,
         ItemKind::Plate,
+        ItemKind::Bread,
+        ItemKind::Jerky,
+        ItemKind::EdibleShroom,
+        ItemKind::PoisonShroom,
+        ItemKind::VigorShroom,
     ];
 
     pub fn index(self) -> usize {
@@ -62,6 +73,40 @@ impl ItemKind {
             ItemKind::Leather => "革の鎧",
             ItemKind::Chain => "鎖かたびら",
             ItemKind::Plate => "板金鎧",
+            ItemKind::Bread => "パン",
+            ItemKind::Jerky => "干し肉",
+            ItemKind::EdibleShroom => "食用キノコ",
+            ItemKind::PoisonShroom => "毒キノコ",
+            ItemKind::VigorShroom => "元気キノコ",
+        }
+    }
+
+    pub fn is_scroll(self) -> bool {
+        matches!(self, ItemKind::Identify | ItemKind::MagicMap | ItemKind::Teleport)
+    }
+
+    /// 名前が最初から分かる食べ物（パン・干し肉）。
+    pub fn is_food(self) -> bool {
+        matches!(self, ItemKind::Bread | ItemKind::Jerky)
+    }
+
+    /// 見た目だけでは正体が分からないキノコ。
+    pub fn is_mushroom(self) -> bool {
+        matches!(
+            self,
+            ItemKind::EdibleShroom | ItemKind::PoisonShroom | ItemKind::VigorShroom
+        )
+    }
+
+    /// 食べると回復する満腹度。
+    pub fn nutrition(self) -> i32 {
+        match self {
+            ItemKind::Bread => 150,
+            ItemKind::Jerky => 100,
+            ItemKind::EdibleShroom => 60,
+            ItemKind::PoisonShroom => 20,
+            ItemKind::VigorShroom => 30,
+            _ => 0,
         }
     }
 
@@ -111,14 +156,14 @@ impl ItemKind {
     /// この深さから床に現れる。
     pub fn min_depth(self) -> u32 {
         match self {
-            ItemKind::Sword | ItemKind::Chain => 2,
+            ItemKind::Sword | ItemKind::Chain | ItemKind::Jerky | ItemKind::VigorShroom => 2,
             ItemKind::Axe => 3,
             ItemKind::Plate => 4,
             _ => 1,
         }
     }
 
-    /// マップ上の記号。薬は `!`、巻物は `?`、武器は `)`、防具は `[`。
+    /// マップ上の記号。薬は `!`、巻物は `?`、武器は `)`、防具は `[`、食べ物とキノコは `%`。
     pub fn glyph(self) -> char {
         if self.is_potion() {
             '!'
@@ -126,6 +171,8 @@ impl ItemKind {
             ')'
         } else if self.is_armor() {
             '['
+        } else if self.is_food() || self.is_mushroom() {
+            '%'
         } else {
             '?'
         }
@@ -146,12 +193,20 @@ impl ItemKind {
             ItemKind::Chain => 1,
             ItemKind::Axe => 1,
             ItemKind::Plate => 1,
+            ItemKind::Bread => 4,
+            ItemKind::Jerky => 1,
+            ItemKind::EdibleShroom => 2,
+            ItemKind::PoisonShroom => 1,
+            ItemKind::VigorShroom => 1,
         }
     }
 }
 
 /// 薬の見た目の候補。ここから種類の数だけ選んで割り当てる。
 pub const POTION_LOOKS: [&str; 5] = ["赤い薬", "青い薬", "緑の薬", "黄色い薬", "白い薬"];
+
+/// キノコの見た目の候補。
+pub const MUSHROOM_LOOKS: [&str; 4] = ["赤いキノコ", "白いキノコ", "茶色いキノコ", "斑点のキノコ"];
 
 /// 巻物の見た目の候補。
 pub const SCROLL_LOOKS: [&str; 5] = [
@@ -171,8 +226,8 @@ mod tests {
         for (i, k) in ItemKind::ALL.iter().enumerate() {
             assert_eq!(k.index(), i, "{k:?}");
         }
-        // 最後のバリアント (Plate) の番号が COUNT-1 なら、数え間違いはない
-        assert_eq!(ItemKind::Plate.index(), ItemKind::COUNT - 1);
+        // 最後のバリアント (VigorShroom) の番号が COUNT-1 なら、数え間違いはない
+        assert_eq!(ItemKind::VigorShroom.index(), ItemKind::COUNT - 1);
     }
 
     #[test]

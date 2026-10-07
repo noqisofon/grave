@@ -296,11 +296,12 @@ fn draw_scene(
     queue!(
         out,
         Print(format!(
-            "地下{}階  ターン{}  HP {}/{}{}",
+            "地下{}階  ターン{}  HP {}/{}  {}{}",
             game.depth(),
             game.turn(),
             game.hp().max(0),
             game.max_hp(),
+            game.status_text(),
             if game.is_dead() { "  ★ゲームオーバー (:new で再開)" } else { "" }
         ))
     )?;
@@ -318,6 +319,8 @@ fn draw_scene(
                 Color::Cyan
             } else if c.ch == ')' || c.ch == '[' {
                 Color::Blue
+            } else if c.ch == '%' {
+                Color::DarkYellow
             } else if c.ch.is_ascii_alphabetic() {
                 Color::Red
             } else if c.visible {

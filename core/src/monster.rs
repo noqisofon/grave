@@ -14,6 +14,8 @@ pub struct MonsterKind {
     pub slow: bool,
     /// ときどき不規則に飛び回る
     pub erratic: bool,
+    /// 当たると毒を受けることがある
+    pub poisons: bool,
     /// この深さから現れる
     pub min_depth: u32,
     /// 出やすさ（相対的な重み）
@@ -30,6 +32,7 @@ pub static SLIME: MonsterKind = MonsterKind {
     actions_per_turn: 1,
     slow: false,
     erratic: false,
+    poisons: false,
     min_depth: 1,
     weight: 5,
 };
@@ -44,6 +47,7 @@ pub static BAT: MonsterKind = MonsterKind {
     actions_per_turn: 2,
     slow: false,
     erratic: true,
+    poisons: false,
     min_depth: 1,
     weight: 3,
 };
@@ -58,6 +62,7 @@ pub static GOBLIN: MonsterKind = MonsterKind {
     actions_per_turn: 1,
     slow: false,
     erratic: false,
+    poisons: false,
     min_depth: 2,
     weight: 3,
 };
@@ -72,11 +77,27 @@ pub static OGRE: MonsterKind = MonsterKind {
     actions_per_turn: 1,
     slow: true,
     erratic: false,
+    poisons: false,
     min_depth: 4,
     weight: 1,
 };
 
-pub static KINDS: [&MonsterKind; 4] = [&SLIME, &BAT, &GOBLIN, &OGRE];
+/// 噛まれると毒を受けることがある。
+pub static SPIDER: MonsterKind = MonsterKind {
+    name: "毒グモ",
+    glyph: 'S',
+    base_hp: 5,
+    hp_per_depth: 2,
+    dmg: (1, 2),
+    actions_per_turn: 1,
+    slow: false,
+    erratic: false,
+    poisons: true,
+    min_depth: 3,
+    weight: 2,
+};
+
+pub static KINDS: [&MonsterKind; 5] = [&SLIME, &BAT, &GOBLIN, &OGRE, &SPIDER];
 
 impl MonsterKind {
     pub fn hp_at(&self, depth: u32) -> i32 {
