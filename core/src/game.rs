@@ -1011,6 +1011,10 @@ impl Game {
                 }
             }
             Command::Wait => (true, "1ターン待った。".to_string(), true),
+            Command::Stay(n) => {
+                let (ok, msg) = self.stay(n);
+                (ok, msg, false)
+            }
             Command::Use(letter, target) => self.use_item(letter, target),
             Command::Equip(letter) => self.equip(letter),
             Command::Unequip(letter) => self.unequip(letter),
@@ -1054,6 +1058,29 @@ impl Game {
             message = format!("{message} {}", self.events.join(" "));
         }
         self.outcome(cmd.to_string(), ok, message)
+    }
+
+    /// その場に `n` ターン留まる。襲われたり、体力が危なくなったら途中で止まる。
+    /// （動かない間は、敵は見えているときしか近づいてこないので「敵が現れる」ことはない）
+    fn stay(&mut self, n: u32) -> (bool, String) {
+        self.hit = false;
+        self.alert = None;
+        for done in 1..=n {
+            self.pass_turn();
+            let why = if self.dead {
+                Some("力尽きた。".to_string())
+            } else if std::mem::take(&mut self.hit) {
+                Some("攻撃を受けて中断した。".to_string())
+            } else if let Some(a) = self.alert.take() {
+                Some(a)
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                return (true, format!("{done}ターン留まったところで、{why}"));
+            }
+        }
+        (true, format!("{n}ターン留まった。"))
     }
 
     fn travel_to_stairs(&mut self) -> (bool, String) {
@@ -1426,6 +1453,58 @@ mod tests {
         g.floor_items.push((p, ItemKind::Sword));
         let o = g.run("move east");
         assert!(o.message.contains("剣を拾った"), "{}", o.message);
+    }
+
+    #[test]
+    fn stay_passes_exactly_the_given_turns_and_defaults_to_one() {
+        let mut g = quiet(1);
+        let t = g.turn();
+        let o = g.run("stay 4");
+        assert!(o.ok && o.message.contains("4ターン留まった"), "{}", o.message);
+        assert_eq!(g.turn(), t + 4);
+        assert_eq!(o.command, "stay 4");
+        let o = g.run("stay");
+        assert!(o.ok);
+        assert_eq!(o.command, "stay 1");
+        assert_eq!(g.turn(), t + 5);
+        assert!(!g.run("stay 0").ok);
+        assert_eq!(g.turn(), t + 5);
+        // 記録にはコロンやバッククォートが付かない
+        assert_eq!(g.run("`stay 2").command, "stay 2");
+    }
+
+    #[test]
+    fn stay_stops_when_attacked() {
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        let t = g.turn();
+        let o = g.run("stay 10");
+        assert!(o.message.contains("1ターン留まったところで、攻撃を受けて中断した"), "{}", o.message);
+        assert_eq!(g.turn(), t + 1);
+
+    }
+
+    /// 開始位置の東 `dist` の床が見えている seed を探す。
+    fn seed_with_visible_floor_east(dist: i32) -> (Game, (i32, i32)) {
+        for seed in 0..200 {
+            let mut g = quiet(seed);
+            g.map.update_fov(g.pos, FOV_RADIUS);
+            let p = (g.pos.0 + dist, g.pos.1);
+            if g.map.tile(p.0, p.1).walkable() && g.map.is_visible(p.0, p.1) {
+                return (g, p);
+            }
+        }
+        panic!("条件に合う seed がなかった");
+    }
+
+    #[test]
+    fn stay_is_not_stopped_by_an_enemy_that_is_merely_in_view() {
+        // 遠くに見えているだけのオーガ(2ターンに1回しか動けない)は、2ターンの間は届かない
+        let (mut g, p) = seed_with_visible_floor_east(6);
+        g.monsters.push(monster(&crate::monster::OGRE, p, 1000));
+        let t = g.turn();
+        let o = g.run("stay 2");
+        assert!(o.message.contains("2ターン留まった。"), "{}", o.message);
+        assert_eq!(g.turn(), t + 2);
     }
 
     #[test]

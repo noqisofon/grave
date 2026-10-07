@@ -86,6 +86,8 @@ pub enum Command {
     Travel(TravelTarget),
     Explore,
     Wait,
+    /// その場に指定ターンだけ留まる（敵に襲われたら中断）
+    Stay(u32),
     Look,
 }
 
@@ -103,6 +105,7 @@ impl fmt::Display for Command {
             Command::Travel(TravelTarget::Stairs) => write!(f, "travel >"),
             Command::Explore => write!(f, "explore"),
             Command::Wait => write!(f, "wait"),
+            Command::Stay(n) => write!(f, "stay {n}"),
             Command::Look => write!(f, "look"),
         }
     }
@@ -120,6 +123,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "travel",
     "explore",
     "wait",
+    "stay",
     "look",
 ];
 
@@ -135,6 +139,7 @@ unequip <文字> 装備をはずす
 travel >       既知の階段まで自動移動
 explore        未探索の場所へ自動移動 (階段を見つける・敵が見える・攻撃を受けると止まる。敵が見えている間は使えない)
 wait           1ターン待つ
+stay [ターン数]  その場に指定ターンだけ留まる (省略すると1ターン。敵に襲われたり体力が危なくなったら中断。上限1000)
 look           階段や見えている敵の位置を調べる (ターン消費なし)
 複数のコマンドは ; で区切って連続実行できる (失敗したらそこで止まる)
 時間が経つと満腹度が減り、0 になると体力が削られる。食べ物 (パン・干し肉) やキノコで回復する。パンは腐っていることがある。キノコは最初は未識別で、食べると毒になるものもある。毒状態では1ターンごとに1ダメージを受け、自然回復しない (回復の薬で治る)。
@@ -151,7 +156,20 @@ fn letter_arg(s: &str) -> Option<char> {
     }
 }
 
+/// `stay` で一度に留まれるターン数の上限。
+pub const STAY_LIMIT: u32 = 1000;
+
+/// `:` と `` ` `` は、コマンドの頭に付けてもよい（同じ意味）。
 pub fn parse(line: &str) -> Result<Command, String> {
+    let line = line.trim_start();
+    let line = line
+        .strip_prefix(':')
+        .or_else(|| line.strip_prefix('`'))
+        .unwrap_or(line);
+    parse_body(line)
+}
+
+fn parse_body(line: &str) -> Result<Command, String> {
     let mut it = line.split_whitespace();
     let head = it.next().ok_or("コマンドが空です")?;
     let args: Vec<&str> = it.collect();
@@ -206,6 +224,13 @@ pub fn parse(line: &str) -> Result<Command, String> {
         },
         "explore" | "x" => Ok(Command::Explore),
         "wait" | "z" => Ok(Command::Wait),
+        "stay" => match args.first() {
+            None => Ok(Command::Stay(1)),
+            Some(a) => match a.parse::<u32>() {
+                Ok(n) if (1..=STAY_LIMIT).contains(&n) => Ok(Command::Stay(n)),
+                _ => Err(format!("stay のターン数は 1〜{STAY_LIMIT} の数字です: {a}")),
+            },
+        },
         "look" | "l" => Ok(Command::Look),
         other => Err(format!("不明なコマンド: {other}")),
     }
@@ -225,6 +250,26 @@ mod tests {
     }
 
     #[test]
+    fn stay_takes_an_optional_turn_count() {
+        assert_eq!(parse("stay"), Ok(Command::Stay(1)));
+        assert_eq!(parse("stay 4"), Ok(Command::Stay(4)));
+        assert!(parse("stay 0").is_err());
+        assert!(parse("stay -1").is_err());
+        assert!(parse("stay many").is_err());
+        assert!(parse("stay 1001").is_err());
+        assert_eq!(parse("stay 1000"), Ok(Command::Stay(1000)));
+    }
+
+    #[test]
+    fn colon_and_backtick_prefixes_are_accepted() {
+        assert_eq!(parse("`stay 4"), Ok(Command::Stay(4)));
+        assert_eq!(parse(":stay 4"), Ok(Command::Stay(4)));
+        assert_eq!(parse(":wait"), Ok(Command::Wait));
+        // 正本の文字列には頭の記号は付かない
+        assert_eq!(parse("`stay 4").unwrap().to_string(), "stay 4");
+    }
+
+    #[test]
     fn display_roundtrips() {
         for d in Dir::ALL {
             for c in [Command::Move(d), Command::Attack(d)] {
@@ -241,6 +286,8 @@ mod tests {
             Command::Travel(TravelTarget::Stairs),
             Command::Explore,
             Command::Wait,
+            Command::Stay(1),
+            Command::Stay(4),
             Command::Look,
         ] {
             assert_eq!(parse(&c.to_string()), Ok(c));

@@ -155,7 +155,8 @@ impl App {
 
     fn on_key_normal(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char(':') => {
+            // `:` が正本。打ちにくい人向けに `` ` `` も同じ意味で受け付ける
+            KeyCode::Char(':') | KeyCode::Char('`') => {
                 self.mode = Mode::Command;
                 self.cmdline.clear();
                 self.hist_pos = None;
@@ -587,6 +588,16 @@ mod tests {
         press(&mut app, ":wait");
         app.on_key_command(KeyCode::Enter);
         assert_eq!(app.game.turn(), t0 + 2);
+    }
+
+    #[test]
+    fn backtick_opens_the_command_line_like_colon() {
+        let mut app = App::new(1);
+        let t0 = app.game.turn();
+        press(&mut app, "`stay 3");
+        assert!(app.mode == Mode::Command);
+        app.on_key_command(KeyCode::Enter);
+        assert!(app.game.turn() <= t0 + 3 && app.game.turn() > t0, "{}", app.game.turn());
     }
 
     #[test]
