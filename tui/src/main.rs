@@ -283,7 +283,34 @@ fn clip(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-/// マップ・ログ・（観戦時は）思考・最下行を描く。
+/// 画面に出すログの行数。
+const LOG_LINES: usize = 3;
+
+/// 画面の行の割り当て。
+struct Layout {
+    log_top: u16,
+    inventory: u16,
+    thoughts_top: u16,
+    /// 最下行（プロンプト）
+    footer: u16,
+}
+
+/// 端末の高さ `rows` に合わせた行の割り当て。プロンプトは端末の一番下に置く。
+/// 高さが足りないときは、持ち物の次の行（または思考の次の行）に置く。
+fn layout(rows: u16, with_thoughts: bool) -> Layout {
+    let log_top = (H + 2) as u16;
+    let inventory = log_top + LOG_LINES as u16;
+    let thoughts_top = inventory + 1;
+    let natural = thoughts_top + if with_thoughts { 3 } else { 0 };
+    Layout {
+        log_top,
+        inventory,
+        thoughts_top,
+        footer: natural.max(rows.saturating_sub(1)),
+    }
+}
+
+/// マップ・ログ・（観戦時は）思考・最下行（プロンプト）を描く。
 fn draw_scene(
     out: &mut impl Write,
     game: &Game,
@@ -292,7 +319,9 @@ fn draw_scene(
     cursor: bool,
 ) -> io::Result<()> {
     // 全角文字は2桁ぶん使うので、文字数の上限は桁数の半分にしておく
-    let cap = terminal::size().map(|(c, _)| c as usize / 2).unwrap_or(40);
+    let (cols, rows) = terminal::size().unwrap_or((80, 30));
+    let cap = cols as usize / 2;
+    let lay = layout(rows, thoughts.is_some());
     queue!(out, Clear(ClearType::All), MoveTo(0, 0))?;
     queue!(
         out,
@@ -333,13 +362,12 @@ fn draw_scene(
         }
         queue!(out, ResetColor)?;
     }
-    let log_top = (H + 2) as u16;
     let log = game.log();
-    let start = log.len().saturating_sub(4);
+    let start = log.len().saturating_sub(LOG_LINES);
     for (i, e) in log[start..].iter().enumerate() {
         queue!(
             out,
-            MoveTo(0, log_top + i as u16),
+            MoveTo(0, lay.log_top + i as u16),
             Print(clip(&format!("[{}] {}", e.turn, e.text), cap))
         )?;
     }
@@ -349,22 +377,20 @@ fn draw_scene(
     } else {
         format!("持ち物: {}", inv.join("  "))
     };
-    queue!(out, MoveTo(0, log_top + 4), Print(clip(&inv_text, cap)))?;
-    let mut bottom = log_top + 5;
+    queue!(out, MoveTo(0, lay.inventory), Print(clip(&inv_text, cap)))?;
     if let Some(ts) = thoughts {
         let start = ts.len().saturating_sub(3);
         for (i, (turn, t)) in ts[start..].iter().enumerate() {
             queue!(
                 out,
-                MoveTo(0, log_top + 5 + i as u16),
+                MoveTo(0, lay.thoughts_top + i as u16),
                 SetForegroundColor(Color::Cyan),
                 Print(clip(&format!("思[{turn}] {t}"), cap)),
                 ResetColor
             )?;
         }
-        bottom += 3;
     }
-    queue!(out, MoveTo(0, bottom), Print(clip(footer, cap)))?;
+    queue!(out, MoveTo(0, lay.footer), Print(clip(footer, cap)))?;
     if cursor {
         queue!(out, Show)?;
     } else {
@@ -598,6 +624,19 @@ mod tests {
         assert!(app.mode == Mode::Command);
         app.on_key_command(KeyCode::Enter);
         assert!(app.game.turn() <= t0 + 3 && app.game.turn() > t0, "{}", app.game.turn());
+    }
+
+    #[test]
+    fn prompt_sits_on_the_bottom_row_when_the_terminal_is_tall_enough() {
+        // 高さが十分なら最下行。足りなければ持ち物の次の行
+        let tall = layout(40, false);
+        assert_eq!(tall.footer, 39);
+        let tight = layout(24, false);
+        assert_eq!(tight.footer, tight.inventory + 1);
+        assert_eq!(tight.inventory, tight.log_top + LOG_LINES as u16);
+        // 観戦では思考の3行ぶんだけ下がる
+        assert_eq!(layout(24, true).footer, layout(24, false).footer + 3);
+        assert_eq!(LOG_LINES, 3);
     }
 
     #[test]
