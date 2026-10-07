@@ -8,6 +8,7 @@ pub mod game;
 pub mod item;
 pub mod journal;
 pub mod map;
+pub mod monster;
 pub mod record;
 pub mod rng;
 

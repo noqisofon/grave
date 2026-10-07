@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use crate::command::{self, Command, Dir, TravelTarget};
 use crate::item::{ItemKind, POTION_LOOKS, SCROLL_LOOKS};
 use crate::map::{idx, Map, Tile, H, W};
+use crate::monster::{MonsterKind, KINDS};
 use crate::rng::Rng;
 
 const FOV_RADIUS: i32 = 9;
@@ -55,6 +56,7 @@ struct Stack {
 }
 
 struct Monster {
+    kind: &'static MonsterKind,
     name: &'static str,
     glyph: char,
     hp: i32,
@@ -404,6 +406,12 @@ impl Game {
     fn spawn_monsters(&mut self) {
         self.monsters.clear();
         let want = ((2 + self.depth) as usize).min(MAX_MONSTERS);
+        let kinds: Vec<&'static MonsterKind> = KINDS
+            .iter()
+            .copied()
+            .filter(|k| k.min_depth <= self.depth)
+            .collect();
+        let total: u32 = kinds.iter().map(|k| k.weight).sum();
         for _ in 0..300 {
             if self.monsters.len() >= want {
                 break;
@@ -418,10 +426,20 @@ impl Game {
             {
                 continue;
             }
-            let hp = 4 + 2 * self.depth as i32;
+            let mut roll = self.rng.range(0, total as i32) as u32;
+            let mut kind = kinds[0];
+            for k in &kinds {
+                if roll < k.weight {
+                    kind = k;
+                    break;
+                }
+                roll -= k.weight;
+            }
+            let hp = kind.hp_at(self.depth);
             self.monsters.push(Monster {
-                name: "スライム",
-                glyph: 's',
+                kind,
+                name: kind.name,
+                glyph: kind.glyph,
                 hp,
                 max_hp: hp,
                 pos: (x, y),
@@ -485,32 +503,73 @@ impl Game {
 
     fn monsters_act(&mut self) {
         for i in 0..self.monsters.len() {
-            if self.dead {
-                break;
+            let kind = self.monsters[i].kind;
+            if kind.slow && self.turn % 2 == 1 {
+                continue; // 2ターンに1回しか動けない
             }
-            let (mpos, name) = (self.monsters[i].pos, self.monsters[i].name);
-            let (dx, dy) = (self.pos.0 - mpos.0, self.pos.1 - mpos.1);
-            // こちらから見えている間だけ追いかけてくる
-            // (視線判定は向きによって結果が違うことがあるので、プレイヤーの視界に合わせる)
-            if !self.map.is_visible(mpos.0, mpos.1) {
-                continue;
-            }
-            if dx.abs() <= 1 && dy.abs() <= 1 {
-                let dmg = self.rng.range(1, 3 + (self.depth as i32 - 1) / 2);
-                self.hp -= dmg;
-                let msg = format!(
-                    "{name}の攻撃！ {dmg}のダメージを受けた。(HP {}/{})",
-                    self.hp.max(0),
-                    self.max_hp
-                );
-                self.note(&msg);
-                if self.hp <= 0 {
-                    self.dead = true;
-                    self.note("あなたは力尽きた…。ゲームオーバー。");
+            for _ in 0..kind.actions_per_turn {
+                if self.dead {
+                    return;
                 }
-            } else if let Some(np) = self.monster_step(mpos) {
+                self.monster_act(i);
+            }
+        }
+    }
+
+    /// 敵1体の1回の行動。
+    fn monster_act(&mut self, i: usize) {
+        let (mpos, name, kind) = (
+            self.monsters[i].pos,
+            self.monsters[i].name,
+            self.monsters[i].kind,
+        );
+        // こちらから見えている間だけ追いかけてくる
+        // (視線判定は向きによって結果が違うことがあるので、プレイヤーの視界に合わせる)
+        if !self.map.is_visible(mpos.0, mpos.1) {
+            return;
+        }
+        if kind.erratic && self.rng.range(0, 3) == 0 {
+            if let Some(np) = self.random_free_step(mpos) {
                 self.monsters[i].pos = np;
             }
+            return;
+        }
+        let (dx, dy) = (self.pos.0 - mpos.0, self.pos.1 - mpos.1);
+        if dx.abs() <= 1 && dy.abs() <= 1 {
+            let bonus = (self.depth as i32 - 1) / 3;
+            let dmg = self.rng.range(kind.dmg.0, kind.dmg.1 + 1 + bonus);
+            self.hp -= dmg;
+            let msg = format!(
+                "{name}の攻撃！ {dmg}のダメージを受けた。(HP {}/{})",
+                self.hp.max(0),
+                self.max_hp
+            );
+            self.note(&msg);
+            if self.hp <= 0 {
+                self.dead = true;
+                self.note("あなたは力尽きた…。ゲームオーバー。");
+            }
+        } else if let Some(np) = self.monster_step(mpos) {
+            self.monsters[i].pos = np;
+        }
+    }
+
+    /// `from` の周りの、空いている歩ける場所からランダムに1つ。
+    fn random_free_step(&mut self, from: (i32, i32)) -> Option<(i32, i32)> {
+        let free: Vec<(i32, i32)> = Dir::ALL
+            .iter()
+            .map(|d| {
+                let (dx, dy) = d.delta();
+                (from.0 + dx, from.1 + dy)
+            })
+            .filter(|&p| {
+                self.map.tile(p.0, p.1).walkable() && p != self.pos && self.monster_at(p).is_none()
+            })
+            .collect();
+        if free.is_empty() {
+            None
+        } else {
+            Some(free[self.rng.range(0, free.len() as i32) as usize])
         }
     }
 
@@ -949,14 +1008,19 @@ impl Game {
 mod tests {
     use super::*;
 
-    fn slime(pos: (i32, i32), hp: i32) -> Monster {
+    fn monster(kind: &'static MonsterKind, pos: (i32, i32), hp: i32) -> Monster {
         Monster {
-            name: "スライム",
-            glyph: 's',
+            kind,
+            name: kind.name,
+            glyph: kind.glyph,
             hp,
             max_hp: hp,
             pos,
         }
+    }
+
+    fn slime(pos: (i32, i32), hp: i32) -> Monster {
+        monster(&crate::monster::SLIME, pos, hp)
     }
 
     /// 開始位置の東隣にスライムを置く（開始位置は部屋の中央なので必ず歩ける）。
@@ -967,6 +1031,109 @@ mod tests {
         assert!(g.map.tile(p.0, p.1).walkable());
         g.monsters.push(slime(p, hp));
         g
+    }
+
+    /// 開始位置の東隣に、指定の敵を置いたゲーム。プレイヤーのHPは十分に高くする。
+    fn with_adjacent(seed: u64, kind: &'static MonsterKind) -> Game {
+        let mut g = Game::new(seed);
+        g.monsters.clear();
+        g.floor_items.clear();
+        g.hp = 1000;
+        g.max_hp = 1000;
+        let p = (g.pos.0 + 1, g.pos.1);
+        assert!(g.map.tile(p.0, p.1).walkable());
+        g.monsters.push(monster(kind, p, 1000));
+        g
+    }
+
+    #[test]
+    fn spawn_respects_min_depth() {
+        for seed in 0..30 {
+            for depth in 1..=6u32 {
+                let mut g = Game::new(seed);
+                g.depth = depth;
+                g.spawn_monsters();
+                for m in &g.monsters {
+                    assert!(m.kind.min_depth <= depth, "seed {seed} depth {depth} {}", m.name);
+                    assert_eq!(m.hp, m.kind.hp_at(depth));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shallow_floors_have_only_slimes_and_bats_and_deep_floors_have_all() {
+        let mut seen = std::collections::HashSet::new();
+        let mut seen_shallow = std::collections::HashSet::new();
+        for seed in 0..60 {
+            let mut g = Game::new(seed);
+            g.depth = 1;
+            g.spawn_monsters();
+            seen_shallow.extend(g.monsters.iter().map(|m| m.glyph));
+            g.depth = 6;
+            g.spawn_monsters();
+            seen.extend(g.monsters.iter().map(|m| m.glyph));
+        }
+        assert!(seen_shallow.iter().all(|c| *c == 's' || *c == 'b'), "{seen_shallow:?}");
+        for c in ['s', 'b', 'g', 'O'] {
+            assert!(seen.contains(&c), "{c} が現れなかった: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn bat_acts_twice_per_turn_and_flutters() {
+        let mut double = false;
+        let mut missed_turns = 0;
+        for seed in 0..40 {
+            let mut g = with_adjacent(seed, &crate::monster::BAT);
+            for _ in 0..10 {
+                let o = g.run("wait");
+                let n = o.message.matches("コウモリの攻撃").count();
+                assert!(n <= 2, "{}", o.message);
+                if n == 2 {
+                    double = true;
+                }
+                if n == 0 {
+                    missed_turns += 1;
+                }
+            }
+        }
+        assert!(double, "2回攻撃が一度もなかった");
+        assert!(missed_turns > 0, "ふらふら動くはずなのに毎ターン攻撃してきた");
+    }
+
+    #[test]
+    fn ogre_acts_every_other_turn_and_hits_hard() {
+        let mut g = with_adjacent(3, &crate::monster::OGRE);
+        let mut attacks = 0;
+        for _ in 0..10 {
+            let before = g.hp;
+            let o = g.run("wait");
+            if o.message.contains("オーガの攻撃") {
+                attacks += 1;
+                let dmg = before - g.hp;
+                assert!((3..=6).contains(&dmg), "dmg {dmg}");
+            } else {
+                assert_eq!(before, g.hp);
+            }
+        }
+        assert_eq!(attacks, 5);
+    }
+
+    #[test]
+    fn goblin_hits_for_at_least_two() {
+        let mut g = with_adjacent(5, &crate::monster::GOBLIN);
+        let mut attacks = 0;
+        for _ in 0..30 {
+            let before = g.hp;
+            let o = g.run("wait");
+            let dmg = before - g.hp;
+            if o.message.contains("ゴブリンの攻撃") {
+                attacks += 1;
+                assert!((2..=4).contains(&dmg), "dmg {dmg}");
+            }
+        }
+        assert_eq!(attacks, 30);
     }
 
     #[test]
