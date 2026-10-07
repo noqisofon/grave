@@ -75,6 +75,8 @@ claude mcp add grave -- ./target/release/grave-mcp
 MCPサーバーは全ての行動を JSONL に追記する（既定は `grave-record.jsonl`。`--record <path>` で変更、`--no-record` で無効）。
 1行1イベントで、`new_game`（seed）と `command`（コマンド・結果・`thought`・実行後の階/ターン）の2種類。
 ゲームは seed とコマンド列から完全に再現できるので、マップは記録しない。
+ただし再現できるのは **同じルールのとき** だけ。`new_game` には `rules`（ルールの版）も入り、観戦側は今のコードの版と違う記録に「古いルールの記録」と出す。
+ルールを変える開発者へ: 敵・アイテム・マップの生成やダメージ計算を変えたら `core/src/record.rs` の `RULES_VERSION` を上げる（上げ忘れはテスト `rules_version_matches_golden_run` が知らせる）。
 
 ```sh
 # 別の端末で、エージェントのプレイを観戦する

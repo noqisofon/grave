@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 
-use grave_core::record::Event;
+use grave_core::record::{Event, RULES_VERSION};
 use grave_core::Game;
 
 const MAX_THOUGHTS: usize = 50;
@@ -20,6 +20,8 @@ pub struct Watcher {
     pub desync: bool,
     /// 記録を1件以上読んだ
     pub started: bool,
+    /// 今のゲームの記録が、今とは違うルール（RULES_VERSION）で録られている
+    pub stale_rules: bool,
 }
 
 impl Watcher {
@@ -33,6 +35,7 @@ impl Watcher {
             journals: Vec::new(),
             desync: false,
             started: false,
+            stale_rules: false,
         }
     }
 
@@ -75,8 +78,9 @@ impl Watcher {
             return;
         }
         match Event::parse(line) {
-            Ok(Event::NewGame { seed }) => {
+            Ok(Event::NewGame { seed, rules }) => {
                 self.game = Game::new(seed);
+                self.stale_rules = rules != Some(RULES_VERSION);
                 self.thoughts.clear();
                 self.journals.clear();
                 self.desync = false;
@@ -126,7 +130,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut live = Game::new(5);
-        let mut lines = vec![Event::NewGame { seed: 5 }.to_line()];
+        let mut lines = vec![Event::new_game(5).to_line()];
         for o in live.run_script("wait; wait; wait") {
             lines.push(Event::from_outcome(&o, Some("様子を見よう")).to_line());
         }
@@ -164,17 +168,35 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rec.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(f, "{}", Event::NewGame { seed: 1 }.to_line()).unwrap();
+        writeln!(f, "{}", Event::new_game(1).to_line()).unwrap();
         writeln!(f, "{}", Event::Journal { text: "一日目の日誌".into() }.to_line()).unwrap();
 
         let mut w = Watcher::new(path.to_str().unwrap());
         assert!(w.poll().unwrap());
         assert_eq!(w.journals, vec!["一日目の日誌".to_string()]);
 
-        writeln!(f, "{}", Event::NewGame { seed: 2 }.to_line()).unwrap();
+        writeln!(f, "{}", Event::new_game(2).to_line()).unwrap();
         assert!(w.poll().unwrap());
         assert!(w.journals.is_empty());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flags_records_made_under_other_rules() {
+        let dir = std::env::temp_dir().join(format!("grave-watch-rules-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rec.jsonl");
+        // rules のない古い記録
+        std::fs::write(&path, "{\"kind\":\"new_game\",\"seed\":1}\n").unwrap();
+        let mut w = Watcher::new(path.to_str().unwrap());
+        w.poll().unwrap();
+        assert!(w.started && w.stale_rules);
+        // 今のルールで録った記録
+        std::fs::write(&path, format!("{}\n", Event::new_game(1).to_line())).unwrap();
+        let mut w = Watcher::new(path.to_str().unwrap());
+        w.poll().unwrap();
+        assert!(w.started && !w.stale_rules);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

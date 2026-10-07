@@ -104,7 +104,7 @@ pub fn digest(events: &[Event]) -> String {
 
     for e in events {
         match e {
-            Event::NewGame { seed: s } => seed = Some(*s),
+            Event::NewGame { seed: s, .. } => seed = Some(*s),
             Event::Journal { .. } => {}
             Event::Command {
                 message,
@@ -221,7 +221,7 @@ mod tests {
 
     fn sample() -> Vec<Event> {
         vec![
-            Event::NewGame { seed: 7 },
+            Event::new_game(7),
             cmd("explore", "6歩探索したところで、スライムが現れて中断した。 緑の薬を拾った。(a)", Some("まず探索する"), 1, 6, 20),
             cmd("attack east", "スライムに4のダメージを与えた。(HP 2/6) スライムの攻撃！ 2のダメージを受けた。(HP 12/20)", None, 1, 7, 12),
             cmd("attack east", "スライムに3のダメージ。スライムを倒した！", Some("止めを刺す"), 1, 8, 12),
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn digest_only_covers_the_latest_game() {
-        let mut evs = vec![Event::NewGame { seed: 1 }, cmd("explore", "古いゲームの出来事。スライムを倒した！", None, 1, 5, 20)];
+        let mut evs = vec![Event::new_game(1), cmd("explore", "古いゲームの出来事。スライムを倒した！", None, 1, 5, 20)];
         evs.extend(sample());
         let d = digest(&evs);
         assert!(!d.contains("古いゲーム"));
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn thoughts_are_thinned_but_keep_both_ends() {
-        let mut evs = vec![Event::NewGame { seed: 1 }];
+        let mut evs = vec![Event::new_game(1)];
         for i in 0..200u32 {
             evs.push(cmd("wait", "1ターン待った。", Some(&format!("考え{i}")), 1, i + 1, 20));
         }
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn repeated_thoughts_are_collapsed_and_idle_commands_are_counted() {
-        let mut evs = vec![Event::NewGame { seed: 1 }];
+        let mut evs = vec![Event::new_game(1)];
         evs.push(cmd("explore", "3歩探索した。", Some("探索する"), 1, 3, 20));
         // ターンが進まないまま、同じ思考で同じコマンドを繰り返す
         for _ in 0..50 {
@@ -287,9 +287,9 @@ mod tests {
     #[test]
     fn journals_belong_to_the_latest_game() {
         let evs = vec![
-            Event::NewGame { seed: 1 },
+            Event::new_game(1),
             Event::Journal { text: "古い日誌".into() },
-            Event::NewGame { seed: 2 },
+            Event::new_game(2),
             Event::Journal { text: "新しい日誌".into() },
         ];
         assert_eq!(journal_texts(&evs), vec!["新しい日誌"]);
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn digest_of_a_real_session() {
         let mut g = Game::new(12);
-        let mut evs = vec![Event::NewGame { seed: 12 }];
+        let mut evs = vec![Event::new_game(12)];
         for script in ["explore", "wait", "inventory", "wait; wait"] {
             for o in g.run_script(script) {
                 evs.push(Event::from_outcome(&o, Some("様子を見る")));

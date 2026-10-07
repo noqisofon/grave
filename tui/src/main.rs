@@ -451,6 +451,8 @@ fn run_watch(path: &str) -> io::Result<()> {
                     show_journal = false;
                     let state = if !w.started {
                         "  (記録待ち)"
+                    } else if w.stale_rules {
+                        "  ※古いルールの記録 (再現できない)"
                     } else if w.desync {
                         "  ※再現がずれている"
                     } else {

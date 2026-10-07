@@ -7,10 +7,18 @@ use serde_json::{json, Value};
 
 use crate::game::Outcome;
 
+/// ルールの版。seed とコマンド列から同じ結果にならなくなる変更（マップ・敵・アイテムの
+/// 生成や抽選、ダメージ計算、乱数の使い方など）をしたら、必ず 1 上げる。
+/// 記録の `new_game` に入り、観戦側が「古いルールで録られた記録」を見分けるのに使う。
+/// 上げ忘れは `rules_version_matches_golden_run` が検出する。
+pub const RULES_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     NewGame {
         seed: u64,
+        /// 録ったときの [`RULES_VERSION`]。古い記録には無い
+        rules: Option<u32>,
     },
     /// エージェントが書いた冒険日誌
     Journal {
@@ -31,6 +39,14 @@ pub enum Event {
 }
 
 impl Event {
+    /// 今のルールで新しいゲームを始めた記録。
+    pub fn new_game(seed: u64) -> Event {
+        Event::NewGame {
+            seed,
+            rules: Some(RULES_VERSION),
+        }
+    }
+
     pub fn from_outcome(outcome: &Outcome, thought: Option<&str>) -> Event {
         Event::Command {
             command: outcome.command.clone(),
@@ -45,7 +61,13 @@ impl Event {
 
     pub fn to_line(&self) -> String {
         match self {
-            Event::NewGame { seed } => json!({ "kind": "new_game", "seed": seed }),
+            Event::NewGame { seed, rules } => {
+                let mut v = json!({ "kind": "new_game", "seed": seed });
+                if let Some(r) = rules {
+                    v["rules"] = json!(r);
+                }
+                v
+            }
             Event::Journal { text } => json!({ "kind": "journal", "text": text }),
             Event::Command {
                 command,
@@ -83,6 +105,7 @@ impl Event {
         match v.get("kind").and_then(Value::as_str) {
             Some("new_game") => Ok(Event::NewGame {
                 seed: n("seed").ok_or("seed がない")?,
+                rules: n("rules").map(|r| r as u32),
             }),
             Some("command") => Ok(Event::Command {
                 command: s("command").ok_or("command がない")?,
@@ -102,6 +125,39 @@ impl Event {
 }
 
 #[cfg(test)]
+/// 決まった手順で遊ぶ小さな自動プレイ。戦闘・装備・アイテム・階段をひととおり踏む。
+pub fn golden_player(seed: u64, steps: usize, mut sink: impl FnMut(&crate::game::Outcome)) {
+    let mut g = crate::Game::new(seed);
+    for step in 0..steps {
+        if g.is_dead() {
+            break;
+        }
+        let me = g.pos();
+        let cmd = match g.visible_enemies().iter().min_by_key(|e| {
+            (e.pos.0 - me.0).abs().max((e.pos.1 - me.1).abs())
+        }) {
+            Some(e) => {
+                let (dx, dy) = (e.pos.0 - me.0, e.pos.1 - me.1);
+                if dx.abs().max(dy.abs()) <= 1 {
+                    let d = crate::Dir::ALL.iter().find(|d| d.delta() == (dx, dy)).unwrap();
+                    format!("attack {}", d.name())
+                } else {
+                    "wait".to_string()
+                }
+            }
+            None => match step % 4 {
+                0 => "equip a; equip b; equip c; use a".to_string(),
+                1 | 3 => "explore".to_string(),
+                _ => "travel >; descend".to_string(),
+            },
+        };
+        for o in g.run_script(&cmd) {
+            sink(&o);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::game::Game;
@@ -109,7 +165,7 @@ mod tests {
     #[test]
     fn line_roundtrip() {
         let evs = [
-            Event::NewGame { seed: 7 },
+            Event::new_game(7),
             Event::Journal {
                 text: "今日は西へ行った。\n毒の薬には気をつけたい。".into(),
             },
@@ -140,7 +196,7 @@ mod tests {
     #[test]
     fn replay_reproduces_the_game() {
         let mut live = Game::new(11);
-        let mut lines = vec![Event::NewGame { seed: 11 }.to_line()];
+        let mut lines = vec![Event::new_game(11).to_line()];
         for (i, script) in ["explore", "travel >", "descend", "wait; move north"]
             .iter()
             .enumerate()
@@ -154,7 +210,7 @@ mod tests {
         let mut replay: Option<Game> = None;
         for line in &lines {
             match Event::parse(line).unwrap() {
-                Event::NewGame { seed } => replay = Some(Game::new(seed)),
+                Event::NewGame { seed, .. } => replay = Some(Game::new(seed)),
                 Event::Command {
                     command,
                     depth,
@@ -171,5 +227,56 @@ mod tests {
             }
         }
         assert_eq!(replay.unwrap().observe_text(100), live.observe_text(100));
+    }
+
+    #[test]
+    fn new_game_carries_rules_version_and_old_records_have_none() {
+        let line = Event::new_game(3).to_line();
+        assert!(line.contains(&format!("\"rules\":{RULES_VERSION}")), "{line}");
+        assert_eq!(
+            Event::parse(&line),
+            Ok(Event::NewGame { seed: 3, rules: Some(RULES_VERSION) })
+        );
+        // rules のない古い記録も読める
+        assert_eq!(
+            Event::parse(r#"{"kind":"new_game","seed":3}"#),
+            Ok(Event::NewGame { seed: 3, rules: None })
+        );
+    }
+
+    /// 決まった seed とコマンドの結果を指紋にして固定する。ルールを変えてこのテストが
+    /// 落ちたら、意図した変更なら RULES_VERSION を上げて GOLDEN_* を更新する。
+    #[test]
+    fn rules_version_matches_golden_run() {
+        const GOLDEN_RULES: u32 = 1;
+        const GOLDEN_HASH: u64 = 951801025463756219;
+        let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
+        let mut feed = |bytes: &[u8]| {
+            for b in bytes {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        };
+        let (mut hits, mut kills, mut equips, mut deepest) = (0, 0, 0, 0);
+        for seed in 1u64..=12 {
+            golden_player(seed, 400, |o| {
+                feed(o.message.as_bytes());
+                feed(&[o.depth as u8, o.turn as u8, o.hp as u8, o.ok as u8]);
+                hits += o.message.matches("の攻撃！").count();
+                kills += o.message.matches("を倒した").count();
+                equips += o.message.matches("を装備した").count();
+                deepest = deepest.max(o.depth);
+            });
+        }
+        // 指紋が何も踏んでいないと、ルールが変わっても気づけない
+        assert!(hits > 20 && kills > 10 && equips >= 2 && deepest >= 3, "{hits} {kills} {equips} {deepest}");
+        if RULES_VERSION == GOLDEN_RULES {
+            assert_eq!(
+                h, GOLDEN_HASH,
+                "ルールが変わったようだ。意図した変更なら RULES_VERSION を上げ、GOLDEN_RULES と GOLDEN_HASH ({h}) を更新する"
+            );
+        } else {
+            panic!("RULES_VERSION を上げたので GOLDEN_RULES = {RULES_VERSION}, GOLDEN_HASH = {h} に更新する");
+        }
     }
 }

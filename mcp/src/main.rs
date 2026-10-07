@@ -136,7 +136,7 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
             let seed = args.get("seed").and_then(Value::as_u64).unwrap_or(1);
             *game = Game::new(seed);
             rec.history.clear();
-            rec.write(&Event::NewGame { seed });
+            rec.write(&Event::new_game(seed));
             (
                 format!("New game (seed {seed}).\n\n{}", game.observe_text(LOG_LINES)),
                 false,
@@ -224,7 +224,7 @@ fn record_path() -> Option<String> {
 fn main() -> io::Result<()> {
     let mut game = Game::new(1);
     let mut rec = Recorder::open(record_path().as_deref());
-    rec.write(&Event::NewGame { seed: 1 });
+    rec.write(&Event::new_game(1));
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     for line in stdin.lock().lines() {
