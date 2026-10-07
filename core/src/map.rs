@@ -164,6 +164,23 @@ impl Map {
         }
     }
 
+    /// 歩ける場所と、それに接する壁を既知にする（地図の巻物）。
+    pub fn reveal_all(&mut self) {
+        for y in 0..H {
+            for x in 0..W {
+                if self.tile(x, y).walkable() {
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            if Self::in_bounds(x + dx, y + dy) {
+                                self.seen[idx(x + dx, y + dy)] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn update_fov(&mut self, pos: (i32, i32), radius: i32) {
         self.visible.iter_mut().for_each(|v| *v = false);
         for y in pos.1 - radius..=pos.1 + radius {

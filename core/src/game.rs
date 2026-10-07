@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::command::{self, Command, Dir, TravelTarget};
+use crate::item::{ItemKind, POTION_LOOKS, SCROLL_LOOKS};
 use crate::map::{idx, Map, Tile, H, W};
 use crate::rng::Rng;
 
@@ -46,6 +47,13 @@ pub struct EnemyView {
     pub pos: (i32, i32),
 }
 
+/// 持ち物の1スタック（同じ種類は重なる）。文字は拾った時に決まり、使い切るまで変わらない。
+struct Stack {
+    letter: char,
+    kind: ItemKind,
+    count: u32,
+}
+
 struct Monster {
     name: &'static str,
     glyph: char,
@@ -66,9 +74,43 @@ pub struct Game {
     stairs: (i32, i32),
     map: Map,
     monsters: Vec<Monster>,
+    floor_items: Vec<((i32, i32), ItemKind)>,
+    inventory: Vec<Stack>,
+    /// 種類ごとの見た目（未識別名）。ゲームごとにシャッフルされる。
+    looks: [&'static str; 6],
+    /// 種類ごとに、正体を知っているか
+    known: [bool; 6],
+    /// 眠りなど、このコマンドのあとに追加で経過するターン
+    extra_turns: u32,
     log: Vec<LogEntry>,
-    /// 実行中のコマンドで起きた敵側の出来事（Outcome に添える）
+    /// 実行中のコマンドで起きた出来事（Outcome に添える）
     events: Vec<String>,
+}
+
+fn shuffle<T>(rng: &mut Rng, v: &mut [T]) {
+    for i in (1..v.len()).rev() {
+        let j = rng.range(0, (i + 1) as i32) as usize;
+        v.swap(i, j);
+    }
+}
+
+fn roll_looks(rng: &mut Rng) -> [&'static str; 6] {
+    let mut potions = POTION_LOOKS;
+    let mut scrolls = SCROLL_LOOKS;
+    shuffle(rng, &mut potions);
+    shuffle(rng, &mut scrolls);
+    let mut looks = [""; 6];
+    let (mut pi, mut si) = (0, 0);
+    for k in ItemKind::ALL {
+        if k.is_potion() {
+            looks[k.index()] = potions[pi];
+            pi += 1;
+        } else {
+            looks[k.index()] = scrolls[si];
+            si += 1;
+        }
+    }
+    looks
 }
 
 fn rel_text(from: (i32, i32), to: (i32, i32)) -> String {
@@ -88,6 +130,7 @@ impl Game {
     pub fn new(seed: u64) -> Game {
         let mut rng = Rng::new(seed);
         let g = Map::generate(&mut rng);
+        let looks = roll_looks(&mut rng);
         let mut game = Game {
             seed,
             rng,
@@ -100,10 +143,16 @@ impl Game {
             stairs: g.stairs,
             map: g.map,
             monsters: Vec::new(),
+            floor_items: Vec::new(),
+            inventory: Vec::new(),
+            looks,
+            known: [false; 6],
+            extra_turns: 0,
             log: Vec::new(),
             events: Vec::new(),
         };
         game.spawn_monsters();
+        game.spawn_items();
         game.map.update_fov(game.pos, FOV_RADIUS);
         game.push_log("冒険が始まった。");
         game
@@ -153,7 +202,203 @@ impl Game {
         self.pos = g.start;
         self.stairs = g.stairs;
         self.spawn_monsters();
+        self.spawn_items();
         self.map.update_fov(self.pos, FOV_RADIUS);
+    }
+
+    fn spawn_items(&mut self) {
+        self.floor_items.clear();
+        let want = 3 + if self.depth >= 3 { 1 } else { 0 };
+        let total: u32 = ItemKind::ALL.iter().map(|k| k.weight()).sum();
+        for _ in 0..300 {
+            if self.floor_items.len() >= want {
+                break;
+            }
+            let x = self.rng.range(1, W - 1);
+            let y = self.rng.range(1, H - 1);
+            if self.map.tile(x, y) != Tile::Floor
+                || (x, y) == self.pos
+                || self.item_at((x, y)).is_some()
+                || self.monster_at((x, y)).is_some()
+            {
+                continue;
+            }
+            let mut roll = self.rng.range(0, total as i32) as u32;
+            let mut kind = ItemKind::Healing;
+            for k in ItemKind::ALL {
+                if roll < k.weight() {
+                    kind = k;
+                    break;
+                }
+                roll -= k.weight();
+            }
+            self.floor_items.push(((x, y), kind));
+        }
+    }
+
+    fn item_at(&self, p: (i32, i32)) -> Option<ItemKind> {
+        self.floor_items.iter().find(|(q, _)| *q == p).map(|(_, k)| *k)
+    }
+
+    /// 持ち物や床では、正体を知っていれば本当の名前、知らなければ見た目の名前。
+    fn display_name(&self, kind: ItemKind) -> &'static str {
+        if self.known[kind.index()] {
+            kind.true_name()
+        } else {
+            self.looks[kind.index()]
+        }
+    }
+
+    /// 持ち物に加える。割り当てた文字を返す。
+    fn take(&mut self, kind: ItemKind) -> Option<char> {
+        if let Some(s) = self.inventory.iter_mut().find(|s| s.kind == kind) {
+            s.count += 1;
+            return Some(s.letter);
+        }
+        let letter = ('a'..='z').find(|c| !self.inventory.iter().any(|s| s.letter == *c))?;
+        self.inventory.push(Stack {
+            letter,
+            kind,
+            count: 1,
+        });
+        self.inventory.sort_by_key(|s| s.letter);
+        Some(letter)
+    }
+
+    /// 足元のアイテムを拾う。
+    fn pickup_here(&mut self) {
+        let Some(j) = self.floor_items.iter().position(|(p, _)| *p == self.pos) else {
+            return;
+        };
+        let kind = self.floor_items[j].1;
+        if let Some(letter) = self.take(kind) {
+            self.floor_items.remove(j);
+            let msg = format!("{}を拾った。({letter})", self.display_name(kind));
+            self.note(&msg);
+        }
+    }
+
+    /// 既知の場所にあるアイテム（explore が拾いに行く）。
+    fn wants_item_at(&self, p: (i32, i32)) -> bool {
+        self.map.is_seen(p.0, p.1) && self.item_at(p).is_some()
+    }
+
+    pub fn inventory_lines(&self) -> Vec<String> {
+        self.inventory
+            .iter()
+            .map(|s| {
+                let mut line = format!("{}) {}", s.letter, self.display_name(s.kind));
+                if s.count > 1 {
+                    line.push_str(&format!(" x{}", s.count));
+                }
+                if !self.known[s.kind.index()] {
+                    line.push_str(" (未識別)");
+                }
+                line
+            })
+            .collect()
+    }
+
+    /// 持ち物を使う。(成功か, メッセージ, 1ターン消費するか)
+    fn use_item(&mut self, letter: char, target: Option<char>) -> (bool, String, bool) {
+        let Some(si) = self.inventory.iter().position(|s| s.letter == letter) else {
+            return (false, format!("持ち物 {letter} はない。"), false);
+        };
+        let kind = self.inventory[si].kind;
+        let k = kind.index();
+        let was_known = self.known[k];
+        let verb = if kind.is_potion() { "飲んだ" } else { "読んだ" };
+        let prefix = if was_known {
+            format!("{}を{verb}。", kind.true_name())
+        } else {
+            format!(
+                "{}を{verb}。これは{}だった！",
+                self.looks[k],
+                kind.true_name()
+            )
+        };
+
+        let body = match kind {
+            ItemKind::Healing => {
+                let gained = (self.max_hp - self.hp).min(10);
+                self.hp += gained;
+                format!("HPが{gained}回復した。(HP {}/{})", self.hp, self.max_hp)
+            }
+            ItemKind::Poison => {
+                self.hp -= 5;
+                let mut s = format!(
+                    "5のダメージを受けた。(HP {}/{})",
+                    self.hp.max(0),
+                    self.max_hp
+                );
+                if self.hp <= 0 {
+                    self.dead = true;
+                    s.push_str(" 毒で力尽きた…。ゲームオーバー。");
+                }
+                s
+            }
+            ItemKind::Sleep => {
+                self.extra_turns = 4;
+                "ぐっすり眠ってしまった…。".to_string()
+            }
+            ItemKind::MagicMap => {
+                self.map.reveal_all();
+                "このフロアの地図が頭に浮かんだ。".to_string()
+            }
+            ItemKind::Teleport => {
+                let old = self.pos;
+                for _ in 0..200 {
+                    let x = self.rng.range(1, W - 1);
+                    let y = self.rng.range(1, H - 1);
+                    if self.map.tile(x, y) == Tile::Floor
+                        && (x, y) != old
+                        && self.monster_at((x, y)).is_none()
+                    {
+                        self.pos = (x, y);
+                        break;
+                    }
+                }
+                self.map.update_fov(self.pos, FOV_RADIUS);
+                "景色が一変した。".to_string()
+            }
+            ItemKind::Identify => {
+                let ti = match target {
+                    Some(t) if t == letter => {
+                        return (false, "その巻物自身は対象にできない。".to_string(), false)
+                    }
+                    Some(t) => match self.inventory.iter().position(|s| s.letter == t) {
+                        Some(i) if self.known[self.inventory[i].kind.index()] => {
+                            return (false, format!("{t} はすでに識別済みだ。"), false)
+                        }
+                        Some(i) => Some(i),
+                        None => return (false, format!("持ち物 {t} はない。"), false),
+                    },
+                    None => self
+                        .inventory
+                        .iter()
+                        .position(|s| s.letter != letter && !self.known[s.kind.index()]),
+                };
+                match ti {
+                    Some(i) => {
+                        let tk = self.inventory[i].kind;
+                        let old = self.looks[tk.index()];
+                        self.known[tk.index()] = true;
+                        format!("{old}は{}だと分かった。", tk.true_name())
+                    }
+                    None if was_known => {
+                        return (false, "識別できるものがない。".to_string(), false)
+                    }
+                    None => "何も起こらなかった。".to_string(),
+                }
+            }
+        };
+
+        self.known[k] = true;
+        self.inventory[si].count -= 1;
+        if self.inventory[si].count == 0 {
+            self.inventory.remove(si);
+        }
+        (true, format!("{prefix} {body}"), true)
     }
 
     fn spawn_monsters(&mut self) {
@@ -245,8 +490,9 @@ impl Game {
             }
             let (mpos, name) = (self.monsters[i].pos, self.monsters[i].name);
             let (dx, dy) = (self.pos.0 - mpos.0, self.pos.1 - mpos.1);
-            // 見えている間だけ追いかけてくる
-            if dx * dx + dy * dy > FOV_RADIUS * FOV_RADIUS || !self.map.los(mpos, self.pos) {
+            // こちらから見えている間だけ追いかけてくる
+            // (視線判定は向きによって結果が違うことがあるので、プレイヤーの視界に合わせる)
+            if !self.map.is_visible(mpos.0, mpos.1) {
                 continue;
             }
             if dx.abs() <= 1 && dy.abs() <= 1 {
@@ -262,29 +508,46 @@ impl Game {
                     self.dead = true;
                     self.note("あなたは力尽きた…。ゲームオーバー。");
                 }
-            } else {
-                let mut best = None;
-                let mut best_d = dx * dx + dy * dy;
-                for d in Dir::ALL {
-                    let (ddx, ddy) = d.delta();
-                    let np = (mpos.0 + ddx, mpos.1 + ddy);
-                    if !self.map.tile(np.0, np.1).walkable()
-                        || np == self.pos
-                        || self.monster_at(np).is_some()
-                    {
-                        continue;
-                    }
-                    let nd = (self.pos.0 - np.0).pow(2) + (self.pos.1 - np.1).pow(2);
-                    if nd < best_d {
-                        best_d = nd;
-                        best = Some(np);
-                    }
-                }
-                if let Some(np) = best {
-                    self.monsters[i].pos = np;
-                }
+            } else if let Some(np) = self.monster_step(mpos) {
+                self.monsters[i].pos = np;
             }
         }
+    }
+
+    /// 敵が `from` からプレイヤーの隣まで近づくための最初の1歩（床の形を考えた最短経路）。
+    fn monster_step(&self, from: (i32, i32)) -> Option<(i32, i32)> {
+        let n = (W * H) as usize;
+        let mut prev = vec![usize::MAX; n];
+        let start = idx(from.0, from.1);
+        prev[start] = start;
+        let mut q = VecDeque::new();
+        q.push_back(from);
+        while let Some(p) = q.pop_front() {
+            if p != from && (p.0 - self.pos.0).abs() <= 1 && (p.1 - self.pos.1).abs() <= 1 {
+                let mut c = idx(p.0, p.1);
+                while prev[c] != start {
+                    c = prev[c];
+                }
+                return Some(((c as i32) % W, (c as i32) / W));
+            }
+            for d in Dir::ALL {
+                let (dx, dy) = d.delta();
+                let np = (p.0 + dx, p.1 + dy);
+                if !self.map.tile(np.0, np.1).walkable()
+                    || np == self.pos
+                    || self.monster_at(np).is_some()
+                {
+                    continue;
+                }
+                let ni = idx(np.0, np.1);
+                if prev[ni] != usize::MAX {
+                    continue;
+                }
+                prev[ni] = idx(p.0, p.1);
+                q.push_back(np);
+            }
+        }
+        None
     }
 
     fn attack_monster(&mut self, i: usize) -> String {
@@ -306,6 +569,7 @@ impl Game {
     fn step_to(&mut self, p: (i32, i32)) {
         self.pos = p;
         self.map.update_fov(self.pos, FOV_RADIUS);
+        self.pickup_here();
         self.pass_turn();
     }
 
@@ -403,6 +667,7 @@ impl Game {
                 "ゲームオーバー。new_game でやり直せる。".to_string(),
             );
         }
+        let pos_before = self.pos;
         // (成功か, メッセージ, このコマンド自身が1ターン消費するか)
         let (ok, mut message, spent) = match cmd {
             Command::Move(d) => {
@@ -440,6 +705,16 @@ impl Game {
                 }
             }
             Command::Wait => (true, "1ターン待った。".to_string(), true),
+            Command::Use(letter, target) => self.use_item(letter, target),
+            Command::Inventory => {
+                let lines = self.inventory_lines();
+                let msg = if lines.is_empty() {
+                    "持ち物はない。".to_string()
+                } else {
+                    format!("持ち物: {}", lines.join(" / "))
+                };
+                (true, msg, false)
+            }
             Command::Look => (true, self.describe_surroundings(), false),
             Command::Travel(TravelTarget::Stairs) => {
                 let (ok, msg) = self.travel_to_stairs();
@@ -451,8 +726,21 @@ impl Game {
             }
         };
         self.push_log(&message);
+        // 歩いたり転移したりして着いた場所のアイテムを拾う
+        if self.pos != pos_before && !self.dead {
+            self.pickup_here();
+        }
         if spent {
             self.pass_turn();
+        }
+        let slept = self.extra_turns > 0;
+        while self.extra_turns > 0 && !self.dead {
+            self.extra_turns -= 1;
+            self.pass_turn();
+        }
+        self.extra_turns = 0;
+        if slept && !self.dead {
+            self.note("目が覚めた。");
         }
         if !self.events.is_empty() {
             message = format!("{message} {}", self.events.join(" "));
@@ -516,7 +804,7 @@ impl Game {
             if steps >= EXPLORE_STEP_LIMIT {
                 return (true, format!("{steps}歩探索した。(上限)"));
             }
-            let path = self.find_path(&|p| self.is_frontier(p));
+            let path = self.find_path(&|p| self.is_frontier(p) || self.wants_item_at(p));
             let Some(path) = path else {
                 return if steps == 0 {
                     (true, "もう探索する場所がない。".to_string())
@@ -562,6 +850,16 @@ impl Game {
                 rel_text(self.pos, e.pos)
             ));
         }
+        for (p, k) in &self.floor_items {
+            if self.map.is_seen(p.0, p.1) {
+                parts.push(format!(
+                    "{} {}が{}にある。",
+                    k.glyph(),
+                    self.display_name(*k),
+                    rel_text(self.pos, *p)
+                ));
+            }
+        }
         parts.join(" ")
     }
 
@@ -583,6 +881,15 @@ impl Game {
             }
         }
         let seen = self.map.is_seen(x, y);
+        if seen {
+            if let Some(k) = self.item_at((x, y)) {
+                return Cell {
+                    ch: k.glyph(),
+                    visible: self.map.is_visible(x, y),
+                    seen,
+                };
+            }
+        }
         Cell {
             ch: if seen { self.map.tile(x, y).glyph() } else { ' ' },
             visible: self.map.is_visible(x, y),
@@ -619,6 +926,15 @@ impl Game {
                     rel_text(self.pos, e.pos)
                 ));
             }
+        }
+        s.push_str("-- 持ち物 --\n");
+        let inv = self.inventory_lines();
+        if inv.is_empty() {
+            s.push_str("(なし)\n");
+        }
+        for l in inv {
+            s.push_str(&l);
+            s.push('\n');
         }
         s.push_str("-- ログ --\n");
         let start = self.log.len().saturating_sub(log_lines);
@@ -747,6 +1063,28 @@ mod tests {
     }
 
     #[test]
+    fn a_visible_slime_always_closes_in_and_attacks() {
+        let mut checked = 0;
+        for seed in 0..15 {
+            let mut g = quiet(seed);
+            // 見えていて、3マス離れた歩ける場所を探す
+            let spot = (-3..=3)
+                .flat_map(|dy| (-3..=3).map(move |dx| (dx, dy)))
+                .filter(|(dx, dy): &(i32, i32)| dx.abs().max(dy.abs()) == 3)
+                .map(|(dx, dy)| (g.pos.0 + dx, g.pos.1 + dy))
+                .find(|p| g.map.tile(p.0, p.1).walkable() && g.map.is_visible(p.0, p.1));
+            let Some(spot) = spot else { continue };
+            g.monsters.push(slime(spot, 50));
+            for _ in 0..6 {
+                g.run("wait");
+            }
+            assert!(g.hp() < g.max_hp(), "seed {seed}: 近づいてこなかった");
+            checked += 1;
+        }
+        assert!(checked >= 5);
+    }
+
+    #[test]
     fn attack_needs_a_target() {
         let mut g = Game::new(1);
         g.monsters.clear();
@@ -796,5 +1134,248 @@ mod tests {
         assert!(text.contains("-- 見えている敵 --"));
         assert!(text.contains("スライム HP 5/5 (東に1)"));
         assert!(text.contains(&format!("HP {}/{}", g.hp(), g.max_hp())));
+    }
+
+    /// 敵もアイテムもいない状態のゲーム。
+    fn quiet(seed: u64) -> Game {
+        let mut g = Game::new(seed);
+        g.monsters.clear();
+        g.floor_items.clear();
+        g
+    }
+
+    #[test]
+    fn looks_are_unique_and_stable_per_seed() {
+        let a = Game::new(9);
+        let b = Game::new(9);
+        assert_eq!(a.looks, b.looks);
+        assert!(a.known.iter().all(|k| !k));
+        for pot in [true, false] {
+            let names: Vec<_> = ItemKind::ALL
+                .iter()
+                .filter(|k| k.is_potion() == pot)
+                .map(|k| a.looks[k.index()])
+                .collect();
+            for (i, x) in names.iter().enumerate() {
+                assert!(!x.is_empty());
+                for y in &names[i + 1..] {
+                    assert_ne!(x, y);
+                }
+            }
+        }
+        // ゲームによって対応が変わる
+        let differs = (0..20).any(|seed| Game::new(seed).looks != a.looks);
+        assert!(differs);
+    }
+
+    #[test]
+    fn items_spawn_on_floor_tiles() {
+        for seed in 0..20 {
+            let g = Game::new(seed);
+            assert!(!g.floor_items.is_empty());
+            for (p, _) in &g.floor_items {
+                assert_eq!(g.map.tile(p.0, p.1), Tile::Floor);
+                assert_ne!(*p, g.pos);
+            }
+        }
+    }
+
+    #[test]
+    fn walking_onto_an_item_picks_it_up() {
+        let mut g = quiet(1);
+        let p = (g.pos.0 + 1, g.pos.1);
+        g.floor_items.push((p, ItemKind::Healing));
+        let o = g.run("move east");
+        assert!(o.ok && o.message.contains("拾った"), "{}", o.message);
+        assert!(g.floor_items.is_empty());
+        assert_eq!(g.inventory.len(), 1);
+        assert_eq!(g.inventory[0].letter, 'a');
+        assert_eq!(g.inventory[0].kind, ItemKind::Healing);
+    }
+
+    #[test]
+    fn same_kind_stacks_and_letters_are_stable() {
+        let mut g = quiet(1);
+        assert_eq!(g.take(ItemKind::Poison), Some('a'));
+        assert_eq!(g.take(ItemKind::Healing), Some('b'));
+        assert_eq!(g.take(ItemKind::Poison), Some('a'));
+        assert_eq!(g.inventory[0].count, 2);
+        // a を使い切っても b の文字は変わらない
+        g.known[ItemKind::Poison.index()] = true;
+        g.hp = 20;
+        g.run("use a");
+        g.run("use a");
+        assert_eq!(g.inventory.len(), 1);
+        assert_eq!(g.inventory[0].letter, 'b');
+    }
+
+    #[test]
+    fn healing_potion_heals_and_identifies() {
+        let mut g = quiet(1);
+        g.take(ItemKind::Healing);
+        g.take(ItemKind::Healing);
+        g.hp = 5;
+        let o = g.run("use a");
+        assert!(o.ok);
+        assert_eq!(g.hp(), 15);
+        assert!(g.known[ItemKind::Healing.index()]);
+        assert!(o.message.contains("回復の薬だった"), "{}", o.message);
+        let o = g.run("use a");
+        assert!(o.ok);
+        assert!(!o.message.contains("だった！"));
+        assert_eq!(g.hp(), 20);
+        assert!(g.inventory.is_empty());
+        assert!(!g.run("use a").ok);
+    }
+
+    #[test]
+    fn poison_hurts_and_can_kill() {
+        let mut g = quiet(1);
+        g.take(ItemKind::Poison);
+        let o = g.run("use a");
+        assert!(o.ok);
+        assert_eq!(g.hp(), 15);
+
+        let mut g = quiet(1);
+        g.take(ItemKind::Poison);
+        g.hp = 5;
+        let o = g.run("use a");
+        assert!(g.is_dead());
+        assert!(o.message.contains("ゲームオーバー"));
+    }
+
+    #[test]
+    fn sleeping_passes_turns_while_an_enemy_attacks() {
+        let mut g = with_adjacent_slime(1, 50);
+        g.floor_items.clear();
+        g.take(ItemKind::Sleep);
+        let t = g.turn();
+        let o = g.run("use a");
+        assert!(o.ok);
+        assert_eq!(g.turn(), t + 5);
+        assert!(g.hp() < g.max_hp());
+        assert!(o.message.contains("目が覚めた"), "{}", o.message);
+    }
+
+    #[test]
+    fn identify_scroll_reveals_another_item() {
+        let mut g = quiet(1);
+        g.take(ItemKind::Healing); // a
+        g.take(ItemKind::Identify); // b
+        let o = g.run("use b");
+        assert!(o.ok, "{}", o.message);
+        assert!(g.known[ItemKind::Healing.index()]);
+        assert!(g.known[ItemKind::Identify.index()]);
+        assert!(o.message.contains("回復の薬だと分かった"), "{}", o.message);
+        assert_eq!(g.inventory.len(), 1);
+        assert_eq!(g.inventory[0].kind, ItemKind::Healing);
+    }
+
+    #[test]
+    fn identify_scroll_with_an_explicit_target() {
+        let mut g = quiet(1);
+        g.take(ItemKind::Healing); // a
+        g.take(ItemKind::Poison); // b
+        g.take(ItemKind::Identify); // c
+        let o = g.run("use c b");
+        assert!(o.ok, "{}", o.message);
+        assert!(g.known[ItemKind::Poison.index()]);
+        assert!(!g.known[ItemKind::Healing.index()]);
+        // すでに識別済みの対象は選べない
+        g.take(ItemKind::Identify);
+        let o = g.run("use c b");
+        assert!(!o.ok);
+    }
+
+    #[test]
+    fn identify_scroll_without_targets() {
+        // 正体を知らない巻物は、読むと消費して正体だけ分かる
+        let mut g = quiet(1);
+        g.take(ItemKind::Identify);
+        let o = g.run("use a");
+        assert!(o.ok);
+        assert!(o.message.contains("何も起こらなかった"));
+        assert!(g.inventory.is_empty());
+        // 正体を知っている巻物は、対象がなければ消費せず失敗する
+        let mut g = quiet(1);
+        g.take(ItemKind::Identify);
+        g.known[ItemKind::Identify.index()] = true;
+        let t = g.turn();
+        let o = g.run("use a");
+        assert!(!o.ok);
+        assert_eq!(g.inventory.len(), 1);
+        assert_eq!(g.turn(), t);
+    }
+
+    #[test]
+    fn teleport_moves_the_player() {
+        let mut g = quiet(1);
+        g.take(ItemKind::Teleport);
+        let old = g.pos;
+        assert!(g.run("use a").ok);
+        assert_ne!(g.pos, old);
+        assert!(g.map.tile(g.pos.0, g.pos.1).walkable());
+    }
+
+    #[test]
+    fn magic_map_reveals_the_stairs() {
+        let mut checked = 0;
+        for seed in 0..20 {
+            let mut g = quiet(seed);
+            if g.map.is_seen(g.stairs.0, g.stairs.1) {
+                continue;
+            }
+            g.take(ItemKind::MagicMap);
+            assert!(g.run("use a").ok);
+            assert!(g.map.is_seen(g.stairs.0, g.stairs.1));
+            let o = g.run("travel >");
+            assert!(o.ok, "seed {seed}: {}", o.message);
+            checked += 1;
+        }
+        assert!(checked > 0);
+    }
+
+    #[test]
+    fn explore_collects_every_item_on_the_floor() {
+        for seed in 0..10 {
+            let mut g = Game::new(seed);
+            g.monsters.clear();
+            let n = g.floor_items.len();
+            assert!(n > 0);
+            for _ in 0..200 {
+                let o = g.run("explore");
+                if o.message.contains("探索し尽くした") || o.message.contains("もう探索") {
+                    break;
+                }
+            }
+            assert!(g.floor_items.is_empty(), "seed {seed}");
+            let total: u32 = g.inventory.iter().map(|s| s.count).sum();
+            assert_eq!(total as usize, n, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn inventory_command_and_observation() {
+        let mut g = quiet(1);
+        let o = g.run("inventory");
+        assert!(o.ok && o.message.contains("持ち物はない"));
+        g.take(ItemKind::Healing);
+        let o = g.run("inventory");
+        assert!(o.message.contains("a) "));
+        assert!(o.message.contains(g.looks[ItemKind::Healing.index()]));
+        let text = g.observe_text(5);
+        assert!(text.contains("-- 持ち物 --"));
+        assert!(text.contains("(未識別)"));
+    }
+
+    #[test]
+    fn look_mentions_known_floor_items() {
+        let mut g = quiet(1);
+        let p = (g.pos.0 + 2, g.pos.1);
+        g.floor_items.push((p, ItemKind::Teleport));
+        g.map.update_fov(g.pos, FOV_RADIUS);
+        let o = g.run("look");
+        assert!(o.message.contains("東に2"), "{}", o.message);
+        assert!(g.observe_text(1).contains('?'));
     }
 }

@@ -5,9 +5,11 @@
 
 pub mod command;
 pub mod game;
+pub mod item;
 pub mod map;
 pub mod record;
 pub mod rng;
 
 pub use command::{Command, Dir, TravelTarget, COMMAND_HELP, COMMAND_NAMES};
-pub use game::{Cell, Game, LogEntry, Outcome};
+pub use game::{Cell, EnemyView, Game, LogEntry, Outcome};
+pub use item::ItemKind;

@@ -66,7 +66,7 @@ impl App {
                 true
             }
             "help" => {
-                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / > 降りる / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new :q".to_string();
+                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 使う(q の後に文字) / i 持ち物 / > 降りる / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new :q".to_string();
                 true
             }
             "new" => {
@@ -175,7 +175,14 @@ impl App {
             KeyCode::Char(c) => {
                 let n = self.count.take().unwrap_or(1);
                 if let Some(cmd) = self.keymap.get(c).map(str::to_string) {
-                    self.run_with_count(&cmd, n);
+                    if cmd.ends_with(' ') {
+                        // 例: q → ":use " を開いて、文字を打ってもらう
+                        self.mode = Mode::Command;
+                        self.cmdline = cmd;
+                        self.hist_pos = None;
+                    } else {
+                        self.run_with_count(&cmd, n);
+                    }
                 } else {
                     self.status = format!("割り当てなし: {c}  (:help)");
                 }
@@ -303,6 +310,10 @@ fn draw_scene(
                 Color::Yellow
             } else if c.ch == '>' {
                 Color::Green
+            } else if c.ch == '!' {
+                Color::Magenta
+            } else if c.ch == '?' {
+                Color::Cyan
             } else if c.ch.is_ascii_alphabetic() {
                 Color::Red
             } else if c.visible {
@@ -324,13 +335,20 @@ fn draw_scene(
             Print(clip(&format!("[{}] {}", e.turn, e.text), cap))
         )?;
     }
+    let inv = game.inventory_lines();
+    let inv_text = if inv.is_empty() {
+        "持ち物: (なし)".to_string()
+    } else {
+        format!("持ち物: {}", inv.join("  "))
+    };
+    queue!(out, MoveTo(0, log_top + 4), Print(clip(&inv_text, cap)))?;
     let mut bottom = log_top + 5;
     if let Some(ts) = thoughts {
         let start = ts.len().saturating_sub(3);
         for (i, (turn, t)) in ts[start..].iter().enumerate() {
             queue!(
                 out,
-                MoveTo(0, log_top + 4 + i as u16),
+                MoveTo(0, log_top + 5 + i as u16),
                 SetForegroundColor(Color::Cyan),
                 Print(clip(&format!("思[{turn}] {t}"), cap)),
                 ResetColor
@@ -480,6 +498,19 @@ mod tests {
         press(&mut app, ":wait");
         app.on_key_command(KeyCode::Enter);
         assert_eq!(app.game.turn(), t0 + 2);
+    }
+
+    #[test]
+    fn q_opens_the_command_line_with_use() {
+        let mut app = App::new(1);
+        press(&mut app, "q");
+        assert!(app.mode == Mode::Command);
+        assert_eq!(app.cmdline, "use ");
+        press(&mut app, "a");
+        app.on_key_command(KeyCode::Enter);
+        // 持ち物がないので失敗するが、コマンドとして実行される
+        assert!(app.status.contains("持ち物 a はない"), "{}", app.status);
+        assert!(app.mode == Mode::Normal);
     }
 
     #[test]

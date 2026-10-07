@@ -18,6 +18,9 @@ impl Keymap {
             ('b', "move southwest"),
             ('n', "move southeast"),
             ('>', "descend"),
+            // 末尾が空白のものは、コマンド行をその文字列で開く（続きを打つ）
+            ('q', "use "),
+            ('i', "inventory"),
             ('_', "travel >"),
             ('x', "explore"),
             ('z', "wait"),
@@ -67,7 +70,9 @@ mod tests {
     fn every_default_binding_is_a_valid_command() {
         let km = Keymap::with_defaults();
         for (_, cmd) in km.list() {
-            assert!(grave_core::command::parse(cmd).is_ok(), "{cmd}");
+            // コマンド行を開くだけの割り当ては、続きを打って初めて完成する
+            let cmd = if cmd.ends_with(' ') { format!("{cmd}a") } else { cmd.to_string() };
+            assert!(grave_core::command::parse(&cmd).is_ok(), "{cmd}");
         }
     }
 }
