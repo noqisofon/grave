@@ -14,6 +14,8 @@ pub struct Watcher {
     pub game: Game,
     /// (その時点のターン, 理由)
     pub thoughts: Vec<(u32, String)>,
+    /// エージェントが書いた日誌（このゲームぶん）
+    pub journals: Vec<String>,
     /// 記録の状態と再現結果が食い違った
     pub desync: bool,
     /// 記録を1件以上読んだ
@@ -28,6 +30,7 @@ impl Watcher {
             partial: Vec::new(),
             game: Game::new(1),
             thoughts: Vec::new(),
+            journals: Vec::new(),
             desync: false,
             started: false,
         }
@@ -47,6 +50,7 @@ impl Watcher {
             self.offset = 0;
             self.partial.clear();
             self.thoughts.clear();
+            self.journals.clear();
             self.started = false;
             changed = true;
         }
@@ -74,6 +78,7 @@ impl Watcher {
             Ok(Event::NewGame { seed }) => {
                 self.game = Game::new(seed);
                 self.thoughts.clear();
+                self.journals.clear();
                 self.desync = false;
                 self.started = true;
             }
@@ -98,6 +103,10 @@ impl Watcher {
                         self.thoughts.remove(0);
                     }
                 }
+            }
+            Ok(Event::Journal { text }) => {
+                self.started = true;
+                self.journals.push(text);
             }
             Err(_) => {}
         }
@@ -145,6 +154,26 @@ mod tests {
         assert_eq!(w.thoughts.len(), 3);
         assert!(!w.desync);
         assert_eq!(w.game.observe_text(100), live.observe_text(100));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collects_journals_and_resets_on_new_game() {
+        let dir = std::env::temp_dir().join(format!("grave-watch-journal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rec.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "{}", Event::NewGame { seed: 1 }.to_line()).unwrap();
+        writeln!(f, "{}", Event::Journal { text: "一日目の日誌".into() }.to_line()).unwrap();
+
+        let mut w = Watcher::new(path.to_str().unwrap());
+        assert!(w.poll().unwrap());
+        assert_eq!(w.journals, vec!["一日目の日誌".to_string()]);
+
+        writeln!(f, "{}", Event::NewGame { seed: 2 }.to_line()).unwrap();
+        assert!(w.poll().unwrap());
+        assert!(w.journals.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

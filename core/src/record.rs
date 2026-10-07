@@ -12,6 +12,10 @@ pub enum Event {
     NewGame {
         seed: u64,
     },
+    /// エージェントが書いた冒険日誌
+    Journal {
+        text: String,
+    },
     Command {
         command: String,
         /// なぜその手を選んだか（任意。エージェントが添える）
@@ -42,6 +46,7 @@ impl Event {
     pub fn to_line(&self) -> String {
         match self {
             Event::NewGame { seed } => json!({ "kind": "new_game", "seed": seed }),
+            Event::Journal { text } => json!({ "kind": "journal", "text": text }),
             Event::Command {
                 command,
                 thought,
@@ -88,6 +93,9 @@ impl Event {
                 turn: n("turn").unwrap_or(0) as u32,
                 hp: v.get("hp").and_then(Value::as_i64).map(|h| h as i32),
             }),
+            Some("journal") => Ok(Event::Journal {
+                text: s("text").ok_or("text がない")?,
+            }),
             other => Err(format!("不明な kind: {other:?}")),
         }
     }
@@ -102,6 +110,9 @@ mod tests {
     fn line_roundtrip() {
         let evs = [
             Event::NewGame { seed: 7 },
+            Event::Journal {
+                text: "今日は西へ行った。\n毒の薬には気をつけたい。".into(),
+            },
             Event::Command {
                 command: "move west".into(),
                 thought: Some("西に行ってみる".into()),
@@ -156,6 +167,7 @@ mod tests {
                     assert_eq!((g.depth(), g.turn()), (depth, turn));
                     assert_eq!(Some(g.hp()), hp);
                 }
+                Event::Journal { .. } => {}
             }
         }
         assert_eq!(replay.unwrap().observe_text(100), live.observe_text(100));

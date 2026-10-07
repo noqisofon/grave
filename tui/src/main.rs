@@ -5,6 +5,8 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use grave_core::map::{H, W};
+use grave_core::record::Event as RecEvent;
+use grave_core::journal;
 use grave_core::{Game, COMMAND_NAMES};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
@@ -365,6 +367,67 @@ fn draw_scene(
     out.flush()
 }
 
+/// 全角は2桁として、`cols` 桁で折り返す。
+fn wrap(text: &str, cols: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for para in text.lines() {
+        let mut cur = String::new();
+        let mut w = 0;
+        for c in para.chars() {
+            let cw = if c.is_ascii() { 1 } else { 2 };
+            if w + cw > cols {
+                lines.push(std::mem::take(&mut cur));
+                w = 0;
+            }
+            cur.push(c);
+            w += cw;
+        }
+        lines.push(cur);
+    }
+    lines
+}
+
+fn draw_text_screen(out: &mut impl Write, title: &str, text: &str) -> io::Result<()> {
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
+    let lines = wrap(text, (cols as usize).saturating_sub(2).max(10));
+    queue!(
+        out,
+        Clear(ClearType::All),
+        MoveTo(0, 0),
+        SetForegroundColor(Color::Cyan),
+        Print(title),
+        ResetColor
+    )?;
+    for (i, l) in lines.iter().take((rows as usize).saturating_sub(3)).enumerate() {
+        queue!(out, MoveTo(0, (i + 2) as u16), Print(l))?;
+    }
+    queue!(out, Hide)?;
+    out.flush()
+}
+
+/// 記録から冒険の素材と、書かれた日誌を標準出力に出す。
+fn run_journal(path: &str) -> io::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let events: Vec<RecEvent> = text
+        .lines()
+        .filter_map(|l| RecEvent::parse(l.trim()).ok())
+        .collect();
+    if events.is_empty() {
+        eprintln!("記録がない: {path}");
+        return Ok(());
+    }
+    println!("{}", journal::digest(&events));
+    let written = journal::journal_texts(&events);
+    if written.is_empty() {
+        println!("(日誌はまだ書かれていない)");
+    } else {
+        for (i, t) in written.iter().enumerate() {
+            println!("## 日誌 {}\n\n{t}\n", i + 1);
+        }
+    }
+    Ok(())
+}
+
 fn run_watch(path: &str) -> io::Result<()> {
     let mut w = watch::Watcher::new(path);
     terminal::enable_raw_mode()?;
@@ -373,20 +436,28 @@ fn run_watch(path: &str) -> io::Result<()> {
 
     let result = (|| -> io::Result<()> {
         let mut dirty = true;
+        let mut show_journal = false;
         loop {
             if w.poll()? {
                 dirty = true;
             }
             if dirty {
-                let state = if !w.started {
-                    "  (記録待ち)"
-                } else if w.desync {
-                    "  ※再現がずれている"
+                if show_journal && !w.journals.is_empty() {
+                    let text = w.journals.last().unwrap();
+                    draw_text_screen(&mut out, "冒険日誌 (j で戻る / q で終了)", text)?;
                 } else {
-                    ""
-                };
-                let footer = format!("観戦中: {path}{state}  (q で終了)");
-                draw_scene(&mut out, &w.game, Some(&w.thoughts), &footer, false)?;
+                    show_journal = false;
+                    let state = if !w.started {
+                        "  (記録待ち)"
+                    } else if w.desync {
+                        "  ※再現がずれている"
+                    } else {
+                        ""
+                    };
+                    let diary = if w.journals.is_empty() { "" } else { "  (j で日誌)" };
+                    let footer = format!("観戦中: {path}{state}{diary}  (q で終了)");
+                    draw_scene(&mut out, &w.game, Some(&w.thoughts), &footer, false)?;
+                }
                 dirty = false;
             }
             if event::poll(Duration::from_millis(200))? {
@@ -396,6 +467,10 @@ fn run_watch(path: &str) -> io::Result<()> {
                             && k.code == KeyCode::Char('c');
                         if ctrl_c || matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
                             break;
+                        }
+                        if k.code == KeyCode::Char('j') && !w.journals.is_empty() {
+                            show_journal = !show_journal;
+                            dirty = true;
                         }
                     }
                     Event::Resize(..) => dirty = true,
@@ -420,6 +495,13 @@ fn random_seed() -> u64 {
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--journal") {
+        let path = args
+            .get(i + 1)
+            .map(String::as_str)
+            .unwrap_or("grave-record.jsonl");
+        return run_journal(path);
+    }
     if let Some(i) = args.iter().position(|a| a == "--watch") {
         let path = args
             .get(i + 1)
@@ -511,6 +593,12 @@ mod tests {
         // 持ち物がないので失敗するが、コマンドとして実行される
         assert!(app.status.contains("持ち物 a はない"), "{}", app.status);
         assert!(app.mode == Mode::Normal);
+    }
+
+    #[test]
+    fn wrap_counts_wide_characters_as_two_columns() {
+        let lines = wrap("あいうえお\nabcdefghij", 6);
+        assert_eq!(lines, vec!["あいう", "えお", "abcdef", "ghij"]);
     }
 
     #[test]

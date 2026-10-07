@@ -4,7 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Write};
 
 use grave_core::record::Event;
-use grave_core::{Game, COMMAND_HELP};
+use grave_core::{journal, Game, COMMAND_HELP};
 use serde_json::{json, Value};
 
 const LOG_LINES: usize = 8;
@@ -13,6 +13,8 @@ const DEFAULT_RECORD_PATH: &str = "grave-record.jsonl";
 /// セッション記録 (JSONL)。書き込みに失敗してもゲームは止めない。
 struct Recorder {
     file: Option<File>,
+    /// 今のゲームの記録（ファイルに書かない設定でも保持する。日誌の素材になる）
+    history: Vec<Event>,
 }
 
 impl Recorder {
@@ -25,10 +27,14 @@ impl Recorder {
                 .map_err(|e| eprintln!("grave-mcp: 記録ファイルを開けない ({p}): {e}"))
                 .ok()
         });
-        Recorder { file }
+        Recorder {
+            file,
+            history: Vec::new(),
+        }
     }
 
     fn write(&mut self, ev: &Event) {
+        self.history.push(ev.clone());
         if let Some(f) = self.file.as_mut() {
             if writeln!(f, "{}", ev.to_line()).and_then(|_| f.flush()).is_err() {
                 self.file = None; // 以降は記録しない
@@ -68,6 +74,20 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "journal",
+            "description": "Get the raw material for your adventure journal: a mechanical summary of this game (per-depth highlights, your own thoughts, lowest HP, cause of death). Write the journal in your own words from it, then save it with journal_write. Does not consume a turn.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "journal_write",
+            "description": "Save the adventure journal you wrote (Japanese, first person, a few paragraphs: what happened, why you chose what you did, what you regret). It is stored in the session record next to your commands.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "text": { "type": "string", "description": "the journal text" } },
+                "required": ["text"]
+            }
+        },
+        {
             "name": "help",
             "description": "List the available commands.",
             "inputSchema": { "type": "object", "properties": {} }
@@ -104,6 +124,9 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
                 text.push_str("(empty command)\n");
                 is_error = true;
             }
+            if game.is_dead() {
+                text.push_str("\nゲームオーバー。journal ツールで冒険日誌の素材が得られる。\n");
+            }
             text.push('\n');
             text.push_str(&game.observe_text(LOG_LINES));
             (text, is_error)
@@ -112,11 +135,38 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
         "new_game" => {
             let seed = args.get("seed").and_then(Value::as_u64).unwrap_or(1);
             *game = Game::new(seed);
+            rec.history.clear();
             rec.write(&Event::NewGame { seed });
             (
                 format!("New game (seed {seed}).\n\n{}", game.observe_text(LOG_LINES)),
                 false,
             )
+        }
+        "journal" => {
+            let mut text = journal::digest(&rec.history);
+            let written = journal::journal_texts(&rec.history);
+            if !written.is_empty() {
+                text.push_str(&format!(
+                    "\n(このゲームの日誌はすでに {} 件保存されている)\n",
+                    written.len()
+                ));
+            }
+            text.push_str(
+                "\n---\n上は機械的にまとめた記録。これをもとに、あなた自身の言葉で冒険日誌を書いてください\n\
+                 (一人称・日本語・数段落。出来事だけでなく、判断の理由や失敗への反省も)。\n\
+                 書けたら journal_write ツールで保存します。\n",
+            );
+            (text, false)
+        }
+        "journal_write" => {
+            let text = args.get("text").and_then(Value::as_str).map(str::trim).unwrap_or("");
+            if text.is_empty() {
+                return ("text (non-empty string) is required".to_string(), true);
+            }
+            rec.write(&Event::Journal {
+                text: text.to_string(),
+            });
+            ("日誌を保存した。".to_string(), false)
         }
         "help" => (COMMAND_HELP.to_string(), false),
         other => (format!("unknown tool: {other}"), true),
