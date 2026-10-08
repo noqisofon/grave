@@ -2037,6 +2037,10 @@ impl Game {
                     format!("階段へ向かう途中({n}歩)、進路上に{}がいる。", self.foe_name(i)),
                 );
             }
+            // 浮遊が途中で切れて、次のマスが見つけた罠なら、踏む前に止まる
+            if let Some(t) = self.known_trap_at(p).filter(|_| !self.status.has(Status::Levitating)) {
+                return (true, format!("階段へ向かう途中({n}歩)、進路上に{}がある。", t.kind.name()));
+            }
             self.step_to(p);
             n += 1;
             if let Some(why) = self.interruption() {
@@ -6055,5 +6059,31 @@ mod tests {
     fn disarm_rejects_bad_directions_with_the_same_wording_as_zap() {
         assert!(crate::command::parse("disarm sideways").unwrap_err().contains("不明な向き"));
         assert!(crate::command::parse("zap a sideways").unwrap_err().contains("不明な向き"));
+    }
+
+    #[test]
+    fn travel_stops_before_a_known_trap_when_levitation_wears_off_on_the_way() {
+        let mut tested = false;
+        for seed in 0..60 {
+            let mut g = quiet(seed);
+            g.hp = 1000;
+            g.max_hp = 1000;
+            g.map.reveal_all();
+            let Some(path) = g.find_path(&|p| p == g.stairs) else { continue };
+            if path.len() < 6 {
+                continue;
+            }
+            // 経路の4歩目に既知の罠を置き、浮遊は3歩ぶんだけ持たせる
+            let trap_at = path[3];
+            g.traps.push(Trap { pos: trap_at, kind: TrapKind::Dart, revealed: true });
+            g.status.apply(Status::Levitating, 3);
+            let o = g.run("travel >");
+            assert_ne!(g.pos(), trap_at, "seed {seed}: {}", o.message);
+            assert!(!g.status.has(Status::Poisoned) && g.hp == 1000, "seed {seed}: {}", o.message);
+            assert!(o.message.contains("毒矢の罠がある"), "seed {seed}: {}", o.message);
+            tested = true;
+            break;
+        }
+        assert!(tested, "条件に合う seed がない");
     }
 }
