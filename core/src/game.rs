@@ -23,6 +23,8 @@ const MAX_MONSTERS: usize = 6;
 const IDENTIFY_AFTER_WORN: u32 = 50;
 /// レベルアップで増える最大HP
 const HP_PER_LEVEL: i32 = 4;
+/// 経験の薬で得る経験値（Lv1→2に必要な量）
+const EXPERIENCE_POTION_XP: u32 = 10;
 /// この階の床に魔除けのアミュレットがある。ここが最深部。
 pub const AMULET_DEPTH: u32 = 30;
 
@@ -720,6 +722,18 @@ impl Game {
                     s.push_str(" 毒で力尽きた…。ゲームオーバー。");
                 }
                 s
+            }
+            ItemKind::Antidote => {
+                if self.poison > 0 {
+                    self.poison = 0;
+                    "毒が抜けた。".to_string()
+                } else {
+                    "毒は受けていなかった。".to_string()
+                }
+            }
+            ItemKind::Experience => {
+                self.gain_xp(EXPERIENCE_POTION_XP);
+                format!("経験値 +{EXPERIENCE_POTION_XP}。")
             }
             ItemKind::Sleep => {
                 self.extra_turns = 4;
@@ -2796,6 +2810,36 @@ mod tests {
         let o = g.run("quaff a");
         assert!(o.message.contains("毒が抜けた"), "{}", o.message);
         assert_eq!(g.poison, 0);
+    }
+
+    #[test]
+    fn antidote_cures_poison_and_is_harmless_otherwise() {
+        let mut g = with_gear(&[ItemKind::Antidote, ItemKind::Antidote]);
+        g.poison = 9;
+        let o = g.run("quaff a");
+        assert!(o.ok && o.message.contains("毒が抜けた"), "{}", o.message);
+        assert_eq!(g.poison, 0);
+        let o = g.run("quaff a");
+        assert!(o.ok && o.message.contains("毒は受けていなかった"), "{}", o.message);
+    }
+
+    #[test]
+    fn experience_potion_grants_xp_and_can_level_up() {
+        let mut g = with_gear(&[ItemKind::Experience]);
+        let (level, max_hp) = (g.level(), g.max_hp);
+        let o = g.run("quaff a");
+        assert!(o.ok && o.message.contains("経験値 +10"), "{}", o.message);
+        assert_eq!(g.level(), level + 1);
+        assert_eq!(g.max_hp, max_hp + HP_PER_LEVEL);
+    }
+
+    #[test]
+    fn bad_potions_are_at_most_a_third_of_potion_weight() {
+        let potions: Vec<ItemKind> = ItemKind::ALL.into_iter().filter(|k| k.is_potion()).collect();
+        let total: u32 = potions.iter().map(|k| k.weight()).sum();
+        let bad: u32 = [ItemKind::Poison, ItemKind::Sleep].iter().map(|k| k.weight()).sum();
+        assert!(bad * 3 <= total, "{bad}/{total}");
+        assert!(potions.len() <= crate::item::POTION_LOOKS.len());
     }
 
     #[test]
