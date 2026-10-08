@@ -176,11 +176,11 @@ enum Consume {
 }
 
 impl Consume {
-    fn noun(self) -> &'static str {
+    fn command(self) -> &'static str {
         match self {
-            Consume::Quaff => "薬を飲む",
-            Consume::Eat => "食べる",
-            Consume::Read => "巻物を読む",
+            Consume::Quaff => "quaff",
+            Consume::Eat => "eat",
+            Consume::Read => "read",
         }
     }
 }
@@ -465,7 +465,7 @@ impl Game {
             };
             return (
                 false,
-                format!("{letter} は{is}だ。{}ではなく {instead} を使う。", how.noun()),
+                format!("{letter} は{is}だ。{} ではなく {instead} を使う。", how.command()),
                 false,
             );
         }
