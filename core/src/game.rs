@@ -448,11 +448,7 @@ impl Game {
             .iter()
             .map(|s| {
                 if let Some(g) = &s.gear {
-                    let mut line = format!("{}) {} [{}]", s.letter, g.name(), g.kind.stats_text());
-                    if self.weapon == Some(s.letter) || self.armor == Some(s.letter) {
-                        line.push_str(" (装備中)");
-                    }
-                    return line;
+                    return self.gear_line(s.letter, g);
                 }
                 let mut line = format!("{}) {}", s.letter, self.display_name(s.kind));
                 if s.count > 1 {
@@ -465,6 +461,33 @@ impl Game {
             })
             .chain(self.has_amulet.then(|| "★ 魔除けのアミュレット".to_string()))
             .collect()
+    }
+
+    /// 装備個体の持ち物の1行。名前・性能・今の装備との差・装備中かどうか。
+    /// 未識別なら、正確な値の代わりに分かる範囲だけを出す。
+    fn gear_line(&self, letter: char, g: &Gear) -> String {
+        let equipped = self.weapon == Some(letter) || self.armor == Some(letter);
+        let mut line = format!("{letter}) {} [", g.name());
+        if !g.identified {
+            line.push_str(&g.guess_text());
+        } else {
+            line.push_str(&g.stats_text());
+            if !equipped {
+                // 今の装備（なければ素手・防具なし）との差
+                if let Some((lo, hi)) = g.weapon_range() {
+                    let (clo, chi) = self.weapon_gear().and_then(|w| w.weapon_range()).unwrap_or((2, 4));
+                    line.push_str(&format!(" (装備比 {:+}〜{:+})", lo - clo, hi - chi));
+                } else {
+                    let cur = self.armor_gear().map_or(0, |a| a.armor_value());
+                    line.push_str(&format!(" (装備比 {:+})", g.armor_value() - cur));
+                }
+            }
+        }
+        line.push(']');
+        if equipped {
+            line.push_str(" (装備中)");
+        }
+        line
     }
 
     /// 薬を飲む・食べる・巻物を読む。種類が合わないものは失敗（ターン消費なし）。
@@ -2105,6 +2128,40 @@ mod tests {
         // 装備していないものは、時間が経っても分からない
         assert!(g.inventory_lines()[1].contains("(?)"));
         let _ = spare;
+    }
+
+    #[test]
+    fn inventory_lines_show_stats_diff_and_identification() {
+        use crate::item::Quality;
+        let mut g = quiet(2);
+        let known = quality_gear(ItemKind::Sword, Quality::Uncommon, 2);
+        let a = give(&mut g, Gear::plain(ItemKind::Dagger));
+        let b = give(&mut g, known);
+        let c = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Might));
+        let l = g.inventory_lines();
+        // 素手(2〜4)との差
+        assert!(l[0].contains("Basic Dagger [攻撃 3〜5 (装備比 +1〜+1)]"), "{}", l[0]);
+        assert!(l[1].contains("Basic Sword [攻撃 6〜9 (装備比 +4〜+5)]") || l[1].contains("Sword [攻撃 6〜9"), "{}", l[1]);
+        // 未識別は、正確な値ではなく分かる範囲だけ
+        assert!(l[2].contains("Sanctified Sword (?) [攻撃 4〜7 +(2〜3)?]"), "{}", l[2]);
+        assert!(!l[2].contains("装備比"), "{}", l[2]);
+        g.run(&format!("equip {a}"));
+        let l = g.inventory_lines();
+        assert!(l[0].contains("(装備中)") && !l[0].contains("装備比"), "{}", l[0]);
+        // 差は今の装備(短剣 3〜5)から
+        assert!(l[1].contains("(装備比 +3〜+4)"), "{}", l[1]);
+        let _ = (b, c);
+    }
+
+    #[test]
+    fn inventory_command_and_heading_carry_the_full_picture() {
+        let mut g = quiet(2);
+        let a = give(&mut g, suffix_gear(ItemKind::Plate, Suffix::Thorns));
+        g.run(&format!("equip {a}"));
+        let o = g.observe_text(3);
+        // 見出しは品質補正を含む値 (板金 3 + 補正 2)
+        assert!(o.contains("防御 5"), "{o}");
+        assert!(o.contains("a) Sanctified Plate Armor (?) [防御 3 +(2〜3)?] (装備中)"), "{o}");
     }
 
     #[test]

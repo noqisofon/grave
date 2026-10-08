@@ -473,6 +473,16 @@ impl Gear {
         }
     }
 
+    /// 未識別の個体の、見える範囲での性能の説明。基本値に、品質ランクの補正の幅を添える。
+    pub fn guess_text(&self) -> String {
+        let (lo, hi) = self.quality.bonus_range();
+        let range = if lo == hi { format!("+{lo}") } else { format!("+({lo}〜{hi})") };
+        match self.kind.weapon_dmg() {
+            Some((a, b)) => format!("攻撃 {a}〜{b} {range}?"),
+            None => format!("防御 {} {range}?", self.kind.armor()),
+        }
+    }
+
     /// 性能の説明（品質補正を含む）。
     pub fn stats_text(&self) -> String {
         if let Some((lo, hi)) = self.weapon_range() {
