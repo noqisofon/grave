@@ -89,6 +89,10 @@ pub enum Command {
     Equip(char),
     /// 装備中の武器・防具をはずす
     Unequip(char),
+    /// 持ち物の文字の物を、個数ぶん足元に捨てる
+    Drop(char, u32),
+    /// 足元の物を1個拾う（番号を省くと一番上の物）
+    Pickup(Option<u32>),
     Travel(TravelTarget),
     Explore,
     Wait,
@@ -111,6 +115,10 @@ impl fmt::Display for Command {
             Command::Inventory => write!(f, "inventory"),
             Command::Equip(c) => write!(f, "equip {c}"),
             Command::Unequip(c) => write!(f, "unequip {c}"),
+            Command::Drop(c, 1) => write!(f, "drop {c}"),
+            Command::Drop(c, n) => write!(f, "drop {c} {n}"),
+            Command::Pickup(None) => write!(f, "pickup"),
+            Command::Pickup(Some(n)) => write!(f, "pickup {n}"),
             Command::Travel(TravelTarget::Stairs) => write!(f, "travel >"),
             Command::Explore => write!(f, "explore"),
             Command::Wait => write!(f, "wait"),
@@ -132,6 +140,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "inventory",
     "equip",
     "unequip",
+    "drop",
+    "pickup",
     "travel",
     "explore",
     "wait",
@@ -150,7 +160,9 @@ eat <文字>     食べ物・キノコを食べる (食べ物以外には使え�
 read <文字> [対象]  巻物を読む (巻物以外には使えない)。識別の巻物は対象の文字を指定できる
 inventory      持ち物の一覧 (ターン消費なし。装備中のものには (装備中) と付く)
 equip <文字>   武器や防具を身につける (武器・防具はそれぞれ1つずつ。付け替えもこれ)
-unequip <文字> 装備をはずす
+unequip <文字> 装備をはずす (呪われた装備ははずせない)
+drop <文字> [数]  持ち物を足元に捨てる (1ターン。数を省くと1個。装備中のものは先に unequip。捨てた物は歩いても stay しても自動では拾われない)
+pickup [番号]  足元の物を1個拾う (別名 get。1ターン。番号は look や観測の「足元」の番号。省くと番号1。捨てた物もこれで拾える)
 travel > (<)   既知の階段まで自動移動
 explore        未探索の場所へ自動移動 (階段を見つける・敵が見える・攻撃を受けると止まる。敵が見えている間は使えない)
 wait           1ターン待つ
@@ -244,6 +256,27 @@ fn parse_body(line: &str) -> Result<Command, String> {
                 Command::Unequip(letter)
             })
         }
+        "drop" => {
+            let letter = args
+                .first()
+                .and_then(|a| letter_arg(a))
+                .ok_or("drop には持ち物の文字が必要です (例: drop a / drop b 3)")?;
+            let n = match args.get(1) {
+                None => 1,
+                Some(a) => match a.parse::<u32>() {
+                    Ok(n) if n >= 1 => n,
+                    _ => return Err(format!("drop の個数は 1 以上の数字です: {a}")),
+                },
+            };
+            Ok(Command::Drop(letter, n))
+        }
+        "pickup" | "get" => match args.first() {
+            None => Ok(Command::Pickup(None)),
+            Some(a) => match a.parse::<u32>() {
+                Ok(n) if n >= 1 => Ok(Command::Pickup(Some(n))),
+                _ => Err(format!("pickup の番号は 1 以上の数字です: {a}")),
+            },
+        },
         "travel" | "t" => match args.first().copied() {
             Some(">") | Some("<") | Some("stairs") => Ok(Command::Travel(TravelTarget::Stairs)),
             Some(other) => Err(format!("不明な移動先: {other} (travel > のみ対応)")),
@@ -288,6 +321,21 @@ mod tests {
     }
 
     #[test]
+    fn drop_and_pickup_parse() {
+        assert_eq!(parse("drop a"), Ok(Command::Drop('a', 1)));
+        assert_eq!(parse("drop b 3"), Ok(Command::Drop('b', 3)));
+        assert!(parse("drop").is_err());
+        assert!(parse("drop a 0").is_err());
+        assert!(parse("drop a x").is_err());
+        assert_eq!(parse("pickup"), Ok(Command::Pickup(None)));
+        assert_eq!(parse("get 2"), Ok(Command::Pickup(Some(2))));
+        assert!(parse("pickup 0").is_err());
+        assert!(parse("pickup x").is_err());
+        // d は今までどおり descend の別名
+        assert_eq!(parse("d"), Ok(Command::Descend));
+    }
+
+    #[test]
     fn stay_takes_an_optional_turn_count() {
         assert_eq!(parse("stay"), Ok(Command::Stay(1)));
         assert_eq!(parse("stay 4"), Ok(Command::Stay(4)));
@@ -324,6 +372,10 @@ mod tests {
             Command::Inventory,
             Command::Equip('c'),
             Command::Unequip('c'),
+            Command::Drop('a', 1),
+            Command::Drop('b', 3),
+            Command::Pickup(None),
+            Command::Pickup(Some(2)),
             Command::Travel(TravelTarget::Stairs),
             Command::Explore,
             Command::Wait,

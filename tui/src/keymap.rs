@@ -25,6 +25,8 @@ impl Keymap {
             ('R', "read "),
             ('e', "equip "),
             ('r', "unequip "),
+            ('d', "drop "),
+            (',', "pickup"),
             ('i', "inventory"),
             ('_', "travel >"),
             ('x', "explore"),

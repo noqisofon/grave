@@ -457,24 +457,120 @@ impl Game {
             self.note("魔除けのアミュレットを手に入れた！ 階段は登り階段になった。地上まで持ち帰ろう。");
             self.alert = Some("アミュレットを手に入れて中断した。".to_string());
         }
-        let Some(j) = self.floor_order(self.pos).first().copied() else {
+        // 自動で拾うのは、印のない物の一番上の1個だけ（捨てた物は拾わない）
+        let Some(j) = self.auto_pickable(self.pos) else {
             return;
         };
-        let item = self.floor_items[j].item;
-        if let Some(letter) = self.take(item) {
-            self.floor_items.remove(j);
-            let msg = format!("{}を拾った。({letter})", self.item_name(&item));
-            self.note(&msg);
-        } else {
-            let msg = format!("持ち物がいっぱいで、{}を拾えない。", self.item_name(&item));
-            self.note(&msg);
+        match self.take_floor(j) {
+            Ok(msg) | Err(msg) => self.note(&msg),
         }
+    }
+
+    /// マス `p` で自動的に拾われる物（印のない物の先頭）の `floor_items` 内の番号。
+    fn auto_pickable(&self, p: (i32, i32)) -> Option<usize> {
+        self.floor_order(p).first().copied().filter(|&j| !self.floor_items[j].dropped)
+    }
+
+    /// 床の物 `j` を持ち物に移す。成功ならそのメッセージ、満杯なら Err のメッセージ。
+    fn take_floor(&mut self, j: usize) -> Result<String, String> {
+        let item = self.floor_items[j].item;
+        match self.take(item) {
+            Some(letter) => {
+                self.floor_items.remove(j);
+                Ok(format!("{}を拾った。({letter})", self.item_name(&item)))
+            }
+            None => Err(format!("持ち物がいっぱいで、{}を拾えない。", self.item_name(&item))),
+        }
+    }
+
+    /// `pickup [番号]`: 足元の物を1個拾う。番号は足元の一覧の番号（省くと1番）。
+    fn pickup_cmd(&mut self, n: Option<u32>) -> (bool, String, bool) {
+        let order = self.floor_order(self.pos);
+        if order.is_empty() {
+            return (false, "足元には何もない。".to_string(), false);
+        }
+        let n = n.unwrap_or(1) as usize;
+        if n > order.len() {
+            return (
+                false,
+                format!("足元の番号は 1〜{} だ。{}", order.len(), self.underfoot_text()),
+                false,
+            );
+        }
+        match self.take_floor(order[n - 1]) {
+            Ok(msg) => (true, msg, true),
+            Err(msg) => (false, msg, false),
+        }
+    }
+
+    /// `drop <文字> [数]`: 持ち物を足元に捨てる。捨てた物には印が付き、自動では拾われない。
+    fn drop_cmd(&mut self, letter: char, count: u32) -> (bool, String, bool) {
+        let Some(si) = self.inventory.iter().position(|s| s.letter == letter) else {
+            return (false, format!("持ち物 {letter} はない。"), false);
+        };
+        let stack = &self.inventory[si];
+        // 装備中のものは捨てられない。呪われていれば、はずせないので同じこと
+        if self.weapon == Some(letter) || self.armor == Some(letter) {
+            let name = stack.gear.map_or(String::new(), |g| g.name());
+            return if stack.gear.is_some_and(|g| g.is_cursed()) {
+                (false, format!("{name}は呪われていて、はずせない。捨てられない。"), false)
+            } else {
+                (false, format!("{name}は装備中だ。先に unequip {letter} ではずそう。"), false)
+            };
+        }
+        if count > stack.count {
+            return (false, format!("{letter} は{}個しか持っていない。", stack.count), false);
+        }
+        let (kind, gear) = (stack.kind, stack.gear);
+        let item = match gear {
+            Some(g) => Item::Gear(g),
+            None => Item::Plain(kind),
+        };
+        let name = self.item_name(&item);
+        // 重なっている物は、1個ずつ床に置く
+        for _ in 0..count {
+            self.floor_items.push(FloorItem {
+                pos: self.pos,
+                item,
+                dropped: true,
+            });
+        }
+        self.inventory[si].count -= count;
+        if self.inventory[si].count == 0 {
+            self.inventory.remove(si);
+        }
+        let msg = if count == 1 {
+            format!("{name}を足元に捨てた。")
+        } else {
+            format!("{name}を{count}個、足元に捨てた。")
+        };
+        (true, msg, true)
+    }
+
+    /// 足元の物の一覧（番号付き。印のない物が先、捨てた物があと）。何もなければ空。
+    fn underfoot_text(&self) -> String {
+        let order = self.floor_order(self.pos);
+        if order.is_empty() {
+            return String::new();
+        }
+        let items: Vec<String> = order
+            .iter()
+            .enumerate()
+            .map(|(i, &j)| {
+                let f = &self.floor_items[j];
+                let mark = if f.dropped { " (捨てた)" } else { "" };
+                format!("{}) {}{mark}", i + 1, self.item_name(&f.item))
+            })
+            .collect();
+        format!("足元: {}", items.join("  "))
     }
 
     /// 既知の場所にあるアイテム（explore が拾いに行く）。拾えないものは目指さない。
     fn wants_item_at(&self, p: (i32, i32)) -> bool {
         self.map.is_seen(p.0, p.1)
-            && (self.amulet == Some(p) || self.item_at(p).is_some_and(|it| self.can_take(it)))
+            && (self.amulet == Some(p)
+                // 自動で拾われる物だけを目指す（捨てた物には寄らない）
+                || self.auto_pickable(p).is_some_and(|j| self.can_take(self.floor_items[j].item)))
     }
 
     pub fn inventory_lines(&self) -> Vec<String> {
@@ -1387,6 +1483,8 @@ impl Game {
             Command::Read(letter, target) => self.consume(letter, target, Consume::Read),
             Command::Equip(letter) => self.equip(letter),
             Command::Unequip(letter) => self.unequip(letter),
+            Command::Drop(letter, n) => self.drop_cmd(letter, n),
+            Command::Pickup(n) => self.pickup_cmd(n),
             Command::Inventory => {
                 let lines = self.inventory_lines();
                 let msg = if lines.is_empty() {
@@ -1573,8 +1671,12 @@ impl Game {
         if let Some(p) = self.amulet.filter(|p| self.map.is_seen(p.0, p.1)) {
             parts.push(format!(", 魔除けのアミュレットが{}にある。", rel_text(self.pos, p)));
         }
+        let under = self.underfoot_text();
+        if !under.is_empty() {
+            parts.push(format!("{under}。"));
+        }
         for f in &self.floor_items {
-            if self.map.is_seen(f.pos.0, f.pos.1) {
+            if f.pos != self.pos && self.map.is_seen(f.pos.0, f.pos.1) {
                 parts.push(format!(
                     "{} {}が{}にある。",
                     f.item.kind().glyph(),
@@ -1673,6 +1775,10 @@ impl Game {
                     rel_text(self.pos, e.pos)
                 ));
             }
+        }
+        let under = self.underfoot_text();
+        if !under.is_empty() {
+            s.push_str(&format!("-- {under} --\n"));
         }
         s.push_str("-- 持ち物 --\n");
         let inv = self.inventory_lines();
@@ -2214,6 +2320,243 @@ mod tests {
             g.run("wait");
             assert_eq!(g.poison, 0, "倒された毒グモが毒を撒いた");
             assert!(g.monsters.is_empty());
+        }
+    }
+
+    /// 足元に、印のない物 `fresh` と、捨てた物 `dropped` を置く。
+    fn put_underfoot(g: &mut Game, fresh: &[Item], dropped: &[Item]) {
+        for it in fresh {
+            g.floor_items.push(FloorItem::new(g.pos, *it));
+        }
+        for it in dropped {
+            g.floor_items.push(FloorItem { pos: g.pos, item: *it, dropped: true });
+        }
+    }
+
+    #[test]
+    fn drop_puts_gear_underfoot_and_marks_it() {
+        let mut g = quiet(2);
+        let a = give(&mut g, Gear::plain(ItemKind::Dagger));
+        let t = g.turn();
+        let o = g.run(&format!("drop {a}"));
+        assert!(o.ok && o.message.contains("Basic Daggerを足元に捨てた"), "{}", o.message);
+        assert_eq!(g.turn(), t + 1);
+        assert!(g.inventory.is_empty());
+        assert_eq!(g.floor_items.len(), 1);
+        assert!(g.floor_items[0].dropped && g.floor_items[0].pos == g.pos);
+        // 個体の情報(未識別など)はそのまま床へ
+        let w = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Might));
+        g.run(&format!("drop {w}"));
+        assert_eq!(g.floor_items[1].item, Item::Gear(suffix_gear(ItemKind::Sword, Suffix::Might)));
+    }
+
+    #[test]
+    fn drop_with_a_count_drops_that_many_one_by_one() {
+        let mut g = quiet(2);
+        for _ in 0..3 {
+            g.take(ItemKind::Healing);
+        }
+        let o = g.run("drop a 2");
+        assert!(o.ok && o.message.contains("2個"), "{}", o.message);
+        assert_eq!(g.inventory[0].count, 1);
+        assert_eq!(g.floor_items.iter().filter(|f| f.dropped).count(), 2);
+        // 数を省くと1個。使い切ると枠が空く
+        assert!(g.run("drop a").ok);
+        assert!(g.inventory.is_empty());
+        assert_eq!(g.floor_items.len(), 3);
+    }
+
+    #[test]
+    fn drop_fails_without_spending_a_turn() {
+        let mut g = quiet(2);
+        let w = give(&mut g, Gear::plain(ItemKind::Dagger));
+        let c = give(&mut g, suffix_gear(ItemKind::Axe, Suffix::Cataclysm));
+        g.take(ItemKind::Healing);
+        g.run(&format!("equip {w}"));
+        let t = g.turn();
+        // 装備中
+        let o = g.run(&format!("drop {w}"));
+        assert!(!o.ok && o.message.contains("unequip"), "{}", o.message);
+        // 呪われて装備中
+        g.run(&format!("unequip {w}"));
+        g.run(&format!("equip {c}"));
+        let t = g.turn();
+        let o = g.run(&format!("drop {c}"));
+        assert!(!o.ok && o.message.contains("呪われて"), "{}", o.message);
+        // 持ち物にない文字、持っている数より多い
+        assert!(!g.run("drop z").ok);
+        assert!(!g.run("drop c 5").ok);
+        assert_eq!(g.turn(), t, "失敗はターンを使わない");
+        assert!(g.floor_items.is_empty());
+        assert_eq!(g.inventory.len(), 3);
+        // 呪われていても、まだ身につけていなければ捨てられる(呪いが漏れない)
+        let c2 = give(&mut g, suffix_gear(ItemKind::Axe, Suffix::Cataclysm));
+        assert!(g.run(&format!("drop {c2}")).ok);
+    }
+
+    #[test]
+    fn dropped_items_are_not_picked_up_by_walking_or_staying() {
+        let mut g = quiet(2);
+        let a = give(&mut g, Gear::plain(ItemKind::Dagger));
+        g.run(&format!("drop {a}"));
+        let here = g.pos;
+        assert!(g.run("move east").ok);
+        let o = g.run("move west");
+        assert_eq!(g.pos, here);
+        assert!(!o.message.contains("拾った"), "{}", o.message);
+        let o = g.run("stay 3");
+        assert!(!o.message.contains("拾った"), "{}", o.message);
+        assert!(g.inventory.is_empty());
+        assert_eq!(g.floor_items.len(), 1);
+    }
+
+    #[test]
+    fn explore_does_not_go_for_dropped_items() {
+        let mut g = quiet(3);
+        g.map.reveal_all();
+        let far = *g
+            .find_path(&|q| {
+                g.map.tile(q.0, q.1) == Tile::Floor && (q.0 - g.pos.0).abs() + (q.1 - g.pos.1).abs() > 6
+            })
+            .unwrap()
+            .last()
+            .unwrap();
+        g.floor_items.push(FloorItem { pos: far, item: ItemKind::Healing.into(), dropped: true });
+        let start = g.pos;
+        let o = g.run("explore");
+        assert!(o.message.contains("もう探索する場所がない"), "{}", o.message);
+        assert_eq!(g.pos, start);
+        // 印のない物なら、今までどおり拾いに行く
+        g.floor_items[0].dropped = false;
+        g.run("explore");
+        assert_eq!(g.pos, far);
+        assert_eq!(g.inventory.len(), 1);
+    }
+
+    #[test]
+    fn walking_onto_a_tile_picks_only_the_top_undropped_item() {
+        let mut g = quiet(2);
+        let p = (g.pos.0 + 1, g.pos.1);
+        g.floor_items.push(FloorItem { pos: p, item: ItemKind::Sleep.into(), dropped: true });
+        g.floor_items.push(FloorItem::new(p, ItemKind::Healing));
+        g.floor_items.push(FloorItem::new(p, ItemKind::Bread));
+        let o = g.run("move east");
+        assert!(o.message.contains("を拾った"), "{}", o.message);
+        assert_eq!(g.inventory.len(), 1);
+        assert_eq!(g.inventory[0].kind, ItemKind::Healing, "印のない先頭");
+        assert_eq!(g.floor_items.len(), 2);
+    }
+
+    #[test]
+    fn pickup_without_a_number_takes_undropped_first_then_dropped() {
+        let mut g = quiet(2);
+        // 捨てた物を先に置いても、印のない物が先に拾われる
+        put_underfoot(&mut g, &[], &[ItemKind::Sleep.into()]);
+        put_underfoot(&mut g, &[ItemKind::Healing.into()], &[]);
+        let t = g.turn();
+        let o = g.run("pickup");
+        assert!(o.ok && o.message.contains("を拾った"), "{}", o.message);
+        assert_eq!(g.inventory[0].kind, ItemKind::Healing);
+        assert_eq!(g.turn(), t + 1);
+        // 印のない物がなくなれば、捨てた物の先頭
+        let o = g.run("get");
+        assert!(o.ok, "{}", o.message);
+        assert_eq!(g.inventory.len(), 2);
+        assert!(g.floor_items.is_empty());
+        // 足元に何もなければ失敗(ターンを使わない)
+        let t = g.turn();
+        let o = g.run("pickup");
+        assert!(!o.ok && o.message.contains("何もない"), "{}", o.message);
+        assert_eq!(g.turn(), t);
+    }
+
+    #[test]
+    fn pickup_by_number_can_take_dropped_items_and_checks_range() {
+        let mut g = quiet(2);
+        put_underfoot(&mut g, &[ItemKind::Healing.into()], &[ItemKind::Sleep.into(), ItemKind::Bread.into()]);
+        let t = g.turn();
+        for bad in ["pickup 4", "pickup 99"] {
+            let o = g.run(bad);
+            assert!(!o.ok && o.message.contains("1〜3"), "{}", o.message);
+        }
+        assert_eq!(g.turn(), t);
+        // 番号は表示の順 (1 印なし / 2,3 捨てた物)
+        let o = g.run("pickup 3");
+        assert!(o.ok, "{}", o.message);
+        assert_eq!(g.inventory[0].kind, ItemKind::Bread);
+        assert_eq!(g.turn(), t + 1);
+        assert_eq!(g.floor_items.len(), 2);
+    }
+
+    #[test]
+    fn pickup_fails_when_the_inventory_is_full_without_spending_a_turn() {
+        let mut g = quiet(2);
+        for c in 'a'..='z' {
+            g.inventory.push(Stack { letter: c, kind: ItemKind::Dagger, count: 1, gear: Some(Gear::plain(ItemKind::Dagger)) });
+        }
+        put_underfoot(&mut g, &[ItemKind::Healing.into()], &[]);
+        let t = g.turn();
+        let o = g.run("pickup");
+        assert!(!o.ok && o.message.contains("いっぱい"), "{}", o.message);
+        assert_eq!(g.turn(), t);
+        assert_eq!(g.floor_items.len(), 1);
+    }
+
+    #[test]
+    fn full_inventory_drop_then_pickup_takes_only_the_potion() {
+        let mut g = quiet(2);
+        for c in 'a'..='z' {
+            g.inventory.push(Stack { letter: c, kind: ItemKind::Dagger, count: 1, gear: Some(Gear::plain(ItemKind::Dagger)) });
+        }
+        // 1. 満杯で、足元に薬。歩いて乗っても拾えない
+        let p = (g.pos.0 + 1, g.pos.1);
+        g.floor_items.push(FloorItem::new(p, ItemKind::Healing));
+        let o = g.run("move east");
+        assert!(o.message.contains("いっぱい"), "{}", o.message);
+        assert!(g.inventory.iter().all(|s| s.kind == ItemKind::Dagger));
+        // 2. 不要な装備を drop して空きを作る
+        assert!(g.run("drop a").ok);
+        let u = g.underfoot_text();
+        assert!(u.contains("1) ") && u.contains("2) Basic Dagger (捨てた)"), "{u}");
+        // 3. 引数なしの pickup は薬だけを拾い、捨てた装備は拾い直さない
+        let o = g.run("pickup");
+        assert!(o.ok, "{}", o.message);
+        assert!(g.inventory.iter().any(|s| s.kind == ItemKind::Healing));
+        assert_eq!(g.floor_items.len(), 1);
+        assert!(g.floor_items[0].dropped);
+        // stay しても捨てた装備は拾わない
+        g.run("stay 2");
+        assert_eq!(g.floor_items.len(), 1);
+    }
+
+    #[test]
+    fn underfoot_list_is_numbered_in_pickup_order_and_in_the_observation() {
+        let mut g = quiet(2);
+        assert!(g.underfoot_text().is_empty());
+        assert!(!g.observe_text(3).contains("足元"));
+        put_underfoot(&mut g, &[], &[Item::Gear(Gear::plain(ItemKind::Sword))]);
+        put_underfoot(&mut g, &[ItemKind::Teleport.into()], &[]);
+        let look = g.run("look").message;
+        let name = g.looks[ItemKind::Teleport.index()];
+        assert!(look.contains(&format!("足元: 1) {name}  2) Basic Sword (捨てた)")), "{look}");
+        let o = g.observe_text(3);
+        assert!(o.contains(&format!("足元: 1) {name}  2) Basic Sword (捨てた)")), "{o}");
+    }
+
+    #[test]
+    fn drop_and_pickup_are_deterministic_for_a_seed_and_script() {
+        let play = |seed: u64| {
+            let mut g = Game::new(seed);
+            let mut out = Vec::new();
+            for script in ["explore", "pickup", "drop a", "pickup 1", "explore", "drop b", "stay 3", "pickup", "inventory"] {
+                let o = g.run(script);
+                out.push(format!("{} {} {} {}", o.ok, o.message, o.turn, o.hp));
+            }
+            out.push(g.observe_text(50));
+            out
+        };
+        for seed in 0..6 {
+            assert_eq!(play(seed), play(seed), "seed {seed}");
         }
     }
 
