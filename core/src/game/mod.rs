@@ -5976,7 +5976,8 @@ mod tests {
             .unwrap_or_else(|| panic!("{kind:?} foot={foot}: 作動する seed がない"));
             let effect = match kind {
                 TrapKind::Dart => g.hp < 1000 && g.status.has(Status::Poisoned),
-                _ => o.message.contains("眠りガス"),
+                // 失敗メッセージ自体にも「眠りガス」と入るので、実際に眠って起きたことで確かめる
+                _ => o.message.contains("ぐっすり眠って") && o.message.contains("目が覚めた"),
             };
             assert!(effect, "{kind:?} foot={foot}: {}", o.message);
         }
