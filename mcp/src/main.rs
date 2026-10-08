@@ -62,7 +62,7 @@ fn tools() -> Value {
         },
         {
             "name": "observe",
-            "description": "Show the current map (@ = you, > = stairs, s = slime, ! = potion, ? = scroll; remembered tiles stay), visible enemies, your inventory and the recent message log. Does not consume a turn.",
+            "description": "Show the current map (@ = you, > = stairs, > = stairs (< once you hold the amulet), , = the Amulet on depth 30, s = slime, ! = potion, ? = scroll; remembered tiles stay), visible enemies, your inventory and the recent message log. Does not consume a turn.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -123,6 +123,9 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
             if outs.is_empty() {
                 text.push_str("(empty command)\n");
                 is_error = true;
+            }
+            if game.is_won() {
+                text.push_str("\nクリア！ 地上へ脱出した。journal ツールで冒険日誌の素材が得られる。\n");
             }
             if game.is_dead() {
                 text.push_str("\nゲームオーバー。journal ツールで冒険日誌の素材が得られる。\n");

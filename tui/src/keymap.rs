@@ -18,6 +18,7 @@ impl Keymap {
             ('b', "move southwest"),
             ('n', "move southeast"),
             ('>', "descend"),
+            ('<', "ascend"),
             // 末尾が空白のものは、コマンド行をその文字列で開く（続きを打つ）
             ('q', "use "),
             ('e', "equip "),

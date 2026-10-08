@@ -19,6 +19,8 @@ const WEAK_AT: i32 = 30;
 const DANGER_HP: i32 = 5;
 const MAX_POISON: u32 = 15;
 const MAX_MONSTERS: usize = 6;
+/// この階の床に魔除けのアミュレットがある。ここが最深部。
+pub const AMULET_DEPTH: u32 = 30;
 
 pub struct LogEntry {
     pub turn: u32,
@@ -85,6 +87,12 @@ pub struct Game {
     monsters: Vec<Monster>,
     floor_items: Vec<((i32, i32), ItemKind)>,
     inventory: Vec<Stack>,
+    /// 床にあるアミュレット（最深部だけ）
+    amulet: Option<(i32, i32)>,
+    /// アミュレットを持っているか。持つと階段は登り階段になる
+    has_amulet: bool,
+    /// アミュレットを持って地上へ脱出した
+    won: bool,
     /// 種類ごとの見た目（未識別名）。ゲームごとにシャッフルされる。
     looks: [&'static str; ItemKind::COUNT],
     /// 種類ごとに、正体を知っているか
@@ -171,6 +179,9 @@ impl Game {
             monsters: Vec::new(),
             floor_items: Vec::new(),
             inventory: Vec::new(),
+            amulet: None,
+            has_amulet: false,
+            won: false,
             looks,
             known: ItemKind::ALL.map(|k| k.is_equipment() || k.is_food()),
             weapon: None,
@@ -211,6 +222,9 @@ impl Game {
     pub fn is_dead(&self) -> bool {
         self.dead
     }
+    pub fn is_won(&self) -> bool {
+        self.won
+    }
     pub fn log(&self) -> &[LogEntry] {
         &self.log
     }
@@ -240,6 +254,18 @@ impl Game {
 
     fn spawn_items(&mut self) {
         self.floor_items.clear();
+        self.amulet = None;
+        if self.depth == AMULET_DEPTH && !self.has_amulet {
+            for _ in 0..300 {
+                let x = self.rng.range(1, W - 1);
+                let y = self.rng.range(1, H - 1);
+                let (dx, dy) = (x - self.pos.0, y - self.pos.1);
+                if self.map.tile(x, y) == Tile::Floor && dx * dx + dy * dy >= 64 {
+                    self.amulet = Some((x, y));
+                    break;
+                }
+            }
+        }
         let want = 3 + if self.depth >= 3 { 1 } else { 0 };
         let kinds: Vec<ItemKind> = ItemKind::ALL
             .iter()
@@ -328,6 +354,12 @@ impl Game {
 
     /// 足元のアイテムを拾う。
     fn pickup_here(&mut self) {
+        if self.amulet == Some(self.pos) {
+            self.amulet = None;
+            self.has_amulet = true;
+            self.note("魔除けのアミュレットを手に入れた！ 階段は登り階段になった。地上まで持ち帰ろう。");
+            self.alert = Some("アミュレットを手に入れて中断した。".to_string());
+        }
         let Some(j) = self.floor_items.iter().position(|(p, _)| *p == self.pos) else {
             return;
         };
@@ -344,7 +376,8 @@ impl Game {
 
     /// 既知の場所にあるアイテム（explore が拾いに行く）。拾えないものは目指さない。
     fn wants_item_at(&self, p: (i32, i32)) -> bool {
-        self.map.is_seen(p.0, p.1) && self.item_at(p).is_some_and(|k| self.can_take(k))
+        self.map.is_seen(p.0, p.1)
+            && (self.amulet == Some(p) || self.item_at(p).is_some_and(|k| self.can_take(k)))
     }
 
     pub fn inventory_lines(&self) -> Vec<String> {
@@ -366,6 +399,7 @@ impl Game {
                 }
                 line
             })
+            .chain(self.has_amulet.then(|| "★ 魔除けのアミュレット".to_string()))
             .collect()
     }
 
@@ -543,6 +577,9 @@ impl Game {
     /// 満腹度と毒の状態（観測やTUIの見出し用）。
     pub fn status_text(&self) -> String {
         let mut s = format!("満腹度 {}/{}", self.food, MAX_FOOD);
+        if self.has_amulet {
+            s.push_str(" ★アミュレット所持");
+        }
         if let Some(l) = self.hunger_label() {
             s.push_str(&format!("({l})"));
         }
@@ -975,6 +1012,13 @@ impl Game {
 
     pub fn exec(&mut self, cmd: Command) -> Outcome {
         self.events.clear();
+        if self.won {
+            return self.outcome(
+                cmd.to_string(),
+                false,
+                "クリア済み。new_game でもう一度遊べる。".to_string(),
+            );
+        }
         if self.dead {
             return self.outcome(
                 cmd.to_string(),
@@ -994,7 +1038,8 @@ impl Game {
                     self.pos = t;
                     self.map.update_fov(self.pos, FOV_RADIUS);
                     if self.pos == self.stairs {
-                        (true, "階段の上にいる。(descend で降りられる)".to_string(), true)
+                        let hint = if self.has_amulet { "ascend で登れる" } else { "descend で降りられる" };
+                        (true, format!("階段の上にいる。({hint})"), true)
                     } else {
                         (true, format!("{}へ進んだ。", d.name()), true)
                     }
@@ -1011,12 +1056,30 @@ impl Game {
                 }
             }
             Command::Descend => {
-                if self.pos == self.stairs {
+                if self.has_amulet {
+                    (false, "アミュレットを持っていると、階段は登り階段だ。ascend で登ろう。".to_string(), false)
+                } else if self.pos != self.stairs {
+                    (false, "ここに階段はない。".to_string(), false)
+                } else if self.depth >= AMULET_DEPTH {
+                    (false, "ここが最深部だ。魔除けのアミュレットを探そう。".to_string(), false)
+                } else {
                     self.depth += 1;
                     self.new_level();
                     (true, format!("地下{}階に降りた。", self.depth), true)
-                } else {
+                }
+            }
+            Command::Ascend => {
+                if !self.has_amulet {
+                    (false, "登り階段はない。アミュレットを手に入れると、階段が登り階段になる。".to_string(), false)
+                } else if self.pos != self.stairs {
                     (false, "ここに階段はない。".to_string(), false)
+                } else if self.depth == 1 {
+                    self.won = true;
+                    (true, "地上の光が見えた！ 魔除けのアミュレットを持ち帰り、地上へ脱出した。クリア！".to_string(), false)
+                } else {
+                    self.depth -= 1;
+                    self.new_level();
+                    (true, format!("地下{}階へ登った。", self.depth), true)
                 }
             }
             Command::Wait => (true, "1ターン待った。".to_string(), true),
@@ -1201,6 +1264,9 @@ impl Game {
                 rel_text(self.pos, e.pos)
             ));
         }
+        if let Some(p) = self.amulet.filter(|p| self.map.is_seen(p.0, p.1)) {
+            parts.push(format!(", 魔除けのアミュレットが{}にある。", rel_text(self.pos, p)));
+        }
         for (p, k) in &self.floor_items {
             if self.map.is_seen(p.0, p.1) {
                 parts.push(format!(
@@ -1232,6 +1298,13 @@ impl Game {
             }
         }
         let seen = self.map.is_seen(x, y);
+        if seen && self.amulet == Some((x, y)) {
+            return Cell {
+                ch: ',',
+                visible: self.map.is_visible(x, y),
+                seen,
+            };
+        }
         if seen {
             if let Some(k) = self.item_at((x, y)) {
                 return Cell {
@@ -1242,7 +1315,11 @@ impl Game {
             }
         }
         Cell {
-            ch: if seen { self.map.tile(x, y).glyph() } else { ' ' },
+            ch: match self.map.tile(x, y) {
+                _ if !seen => ' ',
+                Tile::Stairs if self.has_amulet => '<',
+                t => t.glyph(),
+            },
             visible: self.map.is_visible(x, y),
             seen,
         }
@@ -2252,5 +2329,81 @@ mod tests {
         let o = g.run("stay");
         assert!(o.message.contains("持ち物がいっぱい"), "{}", o.message);
         assert_eq!(g.floor_items.len(), 1);
+    }
+
+    /// 最深部で、アミュレットのある床を探して持たせる。
+    fn deep_game_with_amulet() -> Game {
+        let mut g = quiet(5);
+        g.depth = AMULET_DEPTH;
+        g.spawn_items();
+        g
+    }
+
+    #[test]
+    fn amulet_only_on_the_deepest_floor_and_only_once() {
+        let mut g = quiet(5);
+        for d in 1..AMULET_DEPTH {
+            g.depth = d;
+            g.spawn_items();
+            assert!(g.amulet.is_none(), "depth {d}");
+        }
+        let mut g = deep_game_with_amulet();
+        assert!(g.amulet.is_some());
+        g.has_amulet = true;
+        g.spawn_items();
+        assert!(g.amulet.is_none());
+    }
+
+    #[test]
+    fn picking_up_the_amulet_turns_the_stairs_upward() {
+        let mut g = deep_game_with_amulet();
+        let a = g.amulet.unwrap();
+        g.pos = a;
+        g.map.reveal_all();
+        g.run("stay");
+        assert!(g.has_amulet && g.amulet.is_none());
+        assert!(g.inventory_lines().iter().any(|l| l.contains("アミュレット")));
+        assert!(g.status_text().contains("アミュレット"));
+        let (sx, sy) = g.stairs;
+        assert_eq!(g.cell(sx, sy).ch, '<');
+        g.pos = g.stairs;
+        let o = g.run("descend");
+        assert!(!o.ok && o.message.contains("登り階段"), "{}", o.message);
+        let o = g.run("ascend");
+        assert!(o.ok && g.depth() == AMULET_DEPTH - 1, "{}", o.message);
+        assert!(g.amulet.is_none());
+    }
+
+    #[test]
+    fn cannot_ascend_without_the_amulet_or_descend_past_the_bottom() {
+        let mut g = quiet(5);
+        g.pos = g.stairs;
+        assert!(!g.run("ascend").ok);
+        g.depth = AMULET_DEPTH;
+        let o = g.run("descend");
+        assert!(!o.ok && o.message.contains("最深部"), "{}", o.message);
+        assert_eq!(g.depth(), AMULET_DEPTH);
+    }
+
+    #[test]
+    fn escaping_from_depth_one_with_the_amulet_wins() {
+        let mut g = quiet(5);
+        g.has_amulet = true;
+        g.pos = g.stairs;
+        let t = g.turn();
+        let o = g.run("ascend");
+        assert!(o.ok && g.is_won() && !g.is_dead(), "{}", o.message);
+        assert!(o.message.contains("クリア"));
+        assert_eq!(g.turn(), t);
+        assert!(!g.run("wait").ok);
+    }
+
+    #[test]
+    fn explore_goes_for_a_seen_amulet() {
+        let mut g = deep_game_with_amulet();
+        g.map.reveal_all();
+        let o = g.run("explore");
+        assert!(g.has_amulet, "{}", o.message);
+        assert!(o.message.contains("アミュレット"), "{}", o.message);
     }
 }

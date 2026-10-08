@@ -22,6 +22,8 @@ const MARKERS: &[&str] = &[
     "腐っていた",
     "毒を受けた",
     "空腹",
+    "アミュレット",
+    "クリア！",
 ];
 
 struct Section {
@@ -99,6 +101,7 @@ pub fn digest(events: &[Event]) -> String {
     // 最後に見た (階, ターン, HP)
     let mut last: (u32, u32, Option<i32>) = (1, 0, None);
     let mut death: Option<(u32, u32)> = None;
+    let mut cleared: Option<u32> = None;
     let mut next_thought_id = 0usize;
     let mut last_thought: Option<&str> = None;
     // ターンが進まなかったコマンドの数（失敗や、すでに探索し尽くした場所での探索など）
@@ -130,6 +133,9 @@ pub fn digest(events: &[Event]) -> String {
                     sec.min_hp = Some(sec.min_hp.map_or(*h, |m| m.min(*h)));
                 }
                 sec.kills += message.matches("を倒した").count() as u32;
+                if cleared.is_none() && message.contains("クリア！") {
+                    cleared = Some(*turn);
+                }
                 if death.is_none() && message.contains("力尽きた") {
                     death = Some((*depth, *turn));
                 }
@@ -157,6 +163,7 @@ pub fn digest(events: &[Event]) -> String {
     let mut out = String::from("# 冒険の記録\n\n");
     let status = match death {
         Some((d, t)) => format!("力尽きた (地下{d}階, ターン{t})"),
+        None if cleared.is_some() => format!("クリア (アミュレットを持って地上へ脱出, ターン{})", cleared.unwrap()),
         None => match last.2 {
             Some(h) => format!("生存中 (HP {h})"),
             None => "生存中".to_string(),
