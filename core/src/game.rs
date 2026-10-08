@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::command::{self, Command, Dir, TravelTarget};
-use crate::item::{Gear, Item, ItemKind, MUSHROOM_LOOKS, POTION_LOOKS, SCROLL_LOOKS};
+use crate::item::{Gear, Item, ItemKind, Suffix, MUSHROOM_LOOKS, POTION_LOOKS, SCROLL_LOOKS};
 use crate::map::{idx, Map, Tile, H, W};
 use crate::monster::{MonsterKind, KINDS};
 use crate::rng::Rng;
@@ -527,8 +527,11 @@ impl Game {
                 // 6個に1個くらいは腐っている
                 if self.rng.range(0, 6) == 0 {
                     self.food = (self.food + 30).min(MAX_FOOD);
-                    self.poison = (self.poison + 6).min(MAX_POISON);
-                    "腐っていた！ 毒を受けた。".to_string()
+                    if self.try_poison(6) {
+                        "腐っていた！ 毒を受けた。".to_string()
+                    } else {
+                        "腐っていた！ だが毒は守りに阻まれた。".to_string()
+                    }
                 } else {
                     self.gain_food(kind.nutrition())
                 }
@@ -538,8 +541,8 @@ impl Game {
                 format!("おいしい。{}", self.gain_food(kind.nutrition()))
             }
             ItemKind::PoisonShroom => {
-                self.poison = (self.poison + 8).min(MAX_POISON);
-                format!("毒を受けた。{}", self.gain_food(kind.nutrition()))
+                let hurt = if self.try_poison(8) { "毒を受けた。" } else { "毒は守りに阻まれた。" };
+                format!("{hurt}{}", self.gain_food(kind.nutrition()))
             }
             ItemKind::VigorShroom => {
                 let gained = (self.max_hp - self.hp).min(8);
@@ -632,6 +635,20 @@ impl Game {
             self.inventory.remove(si);
         }
         (true, format!("{prefix} {body}"), true)
+    }
+
+    /// 防具の接尾辞。
+    fn armor_suffix(&self) -> Option<Suffix> {
+        self.armor_gear().and_then(|g| g.suffix)
+    }
+
+    /// 毒を受ける。Warding の防具なら防いで false を返す。
+    fn try_poison(&mut self, n: u32) -> bool {
+        if self.armor_suffix() == Some(Suffix::Warding) {
+            return false;
+        }
+        self.poison = (self.poison + n).min(MAX_POISON);
+        true
     }
 
     /// 満腹度を増やす。結果の説明を返す。
@@ -728,15 +745,25 @@ impl Game {
         if slot == Some(letter) {
             return (false, format!("{}はすでに装備している。", gear.name()), false);
         }
+        if let Some(cur) = self.gear_of(slot).filter(|g| g.is_cursed()) {
+            return (false, format!("{}は呪われていて、はずせない。別の装備には替えられない。", cur.name()), false);
+        }
         let old = self.gear_of(slot).map(|g| g.name());
         if gear.kind.is_weapon() {
             self.weapon = Some(letter);
         } else {
             self.armor = Some(letter);
         }
-        let mut msg = format!("{}を装備した。({})", gear.name(), gear.kind.stats_text());
+        let mut msg = format!("{}を装備した。({})", gear.name(), gear.stats_text());
         if let Some(o) = old {
             msg.push_str(&format!(" {o}をはずした。"));
+        }
+        if gear.is_cursed() {
+            // 呪いは装備して初めて分かる。正体も明らかになる
+            if let Some(g) = self.inventory.iter_mut().find(|s| s.letter == letter).and_then(|s| s.gear.as_mut()) {
+                g.identified = true;
+            }
+            msg.push_str(&format!(" 呪われていた！ もうはずせない。({})", gear.suffix.map_or("", Suffix::describe)));
         }
         (true, msg, true)
     }
@@ -751,6 +778,9 @@ impl Game {
         };
         if self.weapon != Some(letter) && self.armor != Some(letter) {
             return (false, format!("{}は装備していない。", gear.name()), false);
+        }
+        if gear.is_cursed() {
+            return (false, format!("{}は呪われていて、はずせない。", gear.name()), false);
         }
         if gear.kind.is_weapon() {
             self.weapon = None;
@@ -866,7 +896,12 @@ impl Game {
 
     /// 1ターンぶんの空腹と毒。
     fn tick_body(&mut self) {
-        if self.food > 0 {
+        // Famine の防具は、2ターンに1回、満腹度を余計に減らす
+        let drain = if self.armor_suffix() == Some(Suffix::Famine) && self.turn % 2 == 0 { 2 } else { 1 };
+        for _ in 0..drain {
+            if self.food <= 0 {
+                break;
+            }
             self.food -= 1;
             match self.food {
                 HUNGRY_AT => {
@@ -915,12 +950,14 @@ impl Game {
                 continue; // 2ターンに1回しか動けない
             }
             for _ in 0..kind.actions_per_turn {
-                if self.dead {
-                    return;
+                // Thorns で倒された敵は、ターンの終わりにまとめて取り除く
+                if self.dead || self.monsters[i].hp <= 0 {
+                    break;
                 }
                 self.monster_act(i);
             }
         }
+        self.monsters.retain(|m| m.hp > 0);
     }
 
     /// 敵1体の1回の行動。
@@ -954,9 +991,22 @@ impl Game {
                 self.max_hp
             );
             self.note(&msg);
+            if self.armor_suffix() == Some(Suffix::Thorns) {
+                self.monsters[i].hp -= 1;
+                if self.monsters[i].hp <= 0 {
+                    let xp = kind.xp + self.depth - 1;
+                    self.pending_xp += xp;
+                    self.note(&format!("トゲが{name}に1ダメージを返し、倒した！ (経験値 +{xp})"));
+                } else {
+                    self.note(&format!("トゲが{name}に1ダメージを返した。"));
+                }
+            }
             if kind.poisons && self.hp > 0 && self.rng.range(0, 2) == 0 {
-                self.poison = (self.poison + 5).min(MAX_POISON);
-                self.note("毒を受けた！");
+                if self.try_poison(5) {
+                    self.note("毒を受けた！");
+                } else {
+                    self.note("毒は守りに阻まれた。");
+                }
             }
             if self.hp <= 0 {
                 self.dead = true;
@@ -1030,14 +1080,26 @@ impl Game {
             let m = &self.monsters[i];
             (m.name, m.hp, m.max_hp)
         };
-        if hp <= 0 {
+        let suffix = self.weapon_gear().and_then(|g| g.suffix);
+        let mut msg = if hp <= 0 {
             let m = self.monsters.remove(i);
             let xp = m.kind.xp + self.depth - 1;
             self.pending_xp += xp;
             format!("{name}に{dmg}のダメージ。{name}を倒した！ (経験値 +{xp})")
         } else {
             format!("{name}に{dmg}のダメージを与えた。(HP {hp}/{max_hp})")
+        };
+        let heal = match suffix {
+            Some(Suffix::Vampire) => 1,
+            Some(Suffix::Vigor) if hp <= 0 => 2,
+            _ => 0,
+        };
+        let gained = heal.min(self.max_hp - self.hp);
+        if gained > 0 {
+            self.hp += gained;
+            msg.push_str(&format!(" 武器が生命を吸った。HP+{gained} (HP {}/{})", self.hp, self.max_hp));
         }
+        msg
     }
 
     /// 1歩移動して1ターン進める（自動移動用）。
@@ -1254,6 +1316,11 @@ impl Game {
         self.extra_turns = 0;
         if slept && !self.dead {
             self.note("目が覚めた。");
+        }
+        // 敵のターンに倒した敵（Thorns）の経験値
+        let xp = std::mem::take(&mut self.pending_xp);
+        if xp > 0 {
+            self.gain_xp(xp);
         }
         if !self.events.is_empty() {
             message = format!("{message} {}", self.events.join(" "));
@@ -1697,7 +1764,7 @@ mod tests {
     }
 
     fn quality_gear(kind: ItemKind, quality: crate::item::Quality, bonus: i32) -> Gear {
-        Gear { kind, quality, word: quality.words()[0], bonus }
+        Gear { kind, quality, word: quality.words()[0], bonus, suffix: None, identified: true }
     }
 
     #[test]
@@ -1783,6 +1850,138 @@ mod tests {
             seen.insert(1000 - g.monsters[0].hp);
         }
         assert!(seen.iter().all(|d| (7..=10).contains(d)), "{seen:?}");
+    }
+
+    fn suffix_gear(kind: ItemKind, suffix: Suffix) -> Gear {
+        Gear {
+            kind,
+            quality: crate::item::Quality::Rare,
+            word: "Sanctified",
+            bonus: 2,
+            suffix: Some(suffix),
+            identified: false,
+        }
+    }
+
+    #[test]
+    fn rolled_suffixes_match_the_slot_and_only_uncommon_or_better_have_them() {
+        use crate::item::Quality;
+        let mut rng = Rng::new(5);
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..3000 {
+            let kind = if i % 2 == 0 { ItemKind::Axe } else { ItemKind::Plate };
+            let g = Gear::roll(&mut rng, kind, 1 + (i % 30) as u32);
+            if let Some(s) = g.suffix {
+                assert_ne!(g.quality, Quality::Common, "{g:?}");
+                let pool: Vec<Suffix> = if kind.is_weapon() {
+                    Suffix::WEAPON.iter().map(|x| x.0).collect()
+                } else {
+                    Suffix::ARMOR.iter().map(|x| x.0).collect()
+                };
+                assert!(pool.contains(&s), "{g:?}");
+                seen.insert(s);
+            }
+            assert_eq!(g.identified, g.quality == Quality::Common, "{g:?}");
+        }
+        assert_eq!(seen.len(), Suffix::WEAPON.len() + Suffix::ARMOR.len());
+    }
+
+    #[test]
+    fn might_adds_attack_and_vampire_heals_on_hit() {
+        let mut g = with_adjacent(3, &crate::monster::OGRE);
+        let w = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Might));
+        assert!(g.run(&format!("equip {w}")).ok);
+        assert_eq!(g.attack_range(), (4 + 2 + 1, 7 + 2 + 1));
+
+        let mut g = with_adjacent(3, &crate::monster::OGRE);
+        let w = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Vampire));
+        g.run(&format!("equip {w}"));
+        g.hp = 500;
+        let o = g.run("attack east");
+        // 敵の反撃で減る分があるので、吸った分のメッセージで確かめる
+        assert!(o.message.contains("HP+1"), "{}", o.message);
+    }
+
+    #[test]
+    fn vigor_heals_only_on_a_kill() {
+        let mut g = with_adjacent(3, &crate::monster::SLIME);
+        g.monsters[0].hp = 1000;
+        g.monsters[0].max_hp = 1000;
+        let w = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Vigor));
+        g.run(&format!("equip {w}"));
+        g.hp = 500;
+        let o = g.run("attack east");
+        assert!(!o.message.contains("HP+"), "{}", o.message);
+        g.monsters[0].hp = 1;
+        let o = g.run("attack east");
+        assert!(o.message.contains("倒した") && o.message.contains("HP+2"), "{}", o.message);
+    }
+
+    #[test]
+    fn thorns_hurt_attackers_and_can_kill_them() {
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        let a = give(&mut g, suffix_gear(ItemKind::Leather, Suffix::Thorns));
+        g.run(&format!("equip {a}"));
+        let before = g.monsters[0].hp;
+        let o = g.run("wait");
+        assert!(o.message.contains("トゲ"), "{}", o.message);
+        assert_eq!(g.monsters[0].hp, before - 1);
+        // とどめを刺す: 取り除かれて経験値が入る
+        g.monsters[0].hp = 1;
+        let xp = g.xp;
+        let o = g.run("wait");
+        assert!(o.message.contains("トゲ") && o.message.contains("倒した"), "{}", o.message);
+        assert!(g.monsters.is_empty());
+        assert!(g.xp > xp);
+    }
+
+    #[test]
+    fn warding_blocks_poison_from_every_source() {
+        let mut g = with_adjacent(3, &crate::monster::SPIDER);
+        let a = give(&mut g, suffix_gear(ItemKind::Leather, Suffix::Warding));
+        g.run(&format!("equip {a}"));
+        for _ in 0..40 {
+            g.run("wait");
+        }
+        assert_eq!(g.poison, 0);
+        assert!(g.hp < 1000, "攻撃自体は受ける");
+        g.take(ItemKind::PoisonShroom);
+        let l = g.inventory.iter().find(|s| s.kind == ItemKind::PoisonShroom).unwrap().letter;
+        let o = g.run(&format!("eat {l}"));
+        assert_eq!(g.poison, 0, "{}", o.message);
+    }
+
+    #[test]
+    fn famine_drains_extra_food() {
+        let mut plain = quiet(2);
+        let mut cursed = quiet(2);
+        let a = give(&mut cursed, suffix_gear(ItemKind::Leather, Suffix::Famine));
+        cursed.run(&format!("equip {a}"));
+        let (f0, f1) = (plain.food, cursed.food);
+        plain.run("stay 20");
+        cursed.run("stay 20");
+        assert_eq!(f0 - plain.food, 20);
+        assert!(f1 - cursed.food >= 29, "{} -> {}", f1, cursed.food);
+    }
+
+    #[test]
+    fn cursed_gear_cannot_be_unequipped_or_swapped() {
+        let mut g = quiet(2);
+        let c = give(&mut g, suffix_gear(ItemKind::Axe, Suffix::Cataclysm));
+        let d = give(&mut g, Gear::plain(ItemKind::Dagger));
+        // 装備するまで呪いは分からない
+        assert!(!g.inventory_lines()[0].contains("呪"), "{:?}", g.inventory_lines());
+        let o = g.run(&format!("equip {c}"));
+        assert!(o.ok && o.message.contains("呪われていた"), "{}", o.message);
+        let t = g.turn();
+        let o = g.run(&format!("unequip {c}"));
+        assert!(!o.ok && o.message.contains("呪われていて"), "{}", o.message);
+        let o = g.run(&format!("equip {d}"));
+        assert!(!o.ok && o.message.contains("呪われていて"), "{}", o.message);
+        assert_eq!(g.turn(), t, "失敗はターンを使わない");
+        assert_eq!(g.weapon, Some(c));
+        // 呪いの攻撃+3 は効いている
+        assert_eq!(g.attack_range(), (5 + 2 + 3, 9 + 2 + 3));
     }
 
     #[test]

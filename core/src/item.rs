@@ -270,6 +270,97 @@ impl Quality {
     }
 }
 
+/// 接尾辞（`of X`）。装備に付く特殊効果。
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Suffix {
+    // 武器
+    /// 命中するたびにHPが1回復する
+    Vampire,
+    /// 攻撃が+1される
+    Might,
+    /// 敵を倒すとHPが2回復する
+    Vigor,
+    /// 呪い: 攻撃が+3されるが、装備すると外せなくなる
+    Cataclysm,
+    // 防具
+    /// 近接で殴ってきた敵に1ダメージを返す
+    Thorns,
+    /// 毒を受けない
+    Warding,
+    /// 呪い: 防御が+2されるが、満腹度が余計に減る
+    Famine,
+}
+
+impl Suffix {
+    pub const WEAPON: [(Suffix, i32); 4] = [
+        (Suffix::Vampire, 2),
+        (Suffix::Might, 2),
+        (Suffix::Vigor, 2),
+        (Suffix::Cataclysm, 1),
+    ];
+    pub const ARMOR: [(Suffix, i32); 3] = [(Suffix::Thorns, 2), (Suffix::Warding, 2), (Suffix::Famine, 1)];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Suffix::Vampire => "of the Vampire",
+            Suffix::Might => "of Might",
+            Suffix::Vigor => "of Vigor",
+            Suffix::Cataclysm => "of the Cataclysm",
+            Suffix::Thorns => "of Thorns",
+            Suffix::Warding => "of Warding",
+            Suffix::Famine => "of Famine",
+        }
+    }
+
+    /// 効果の1行説明。
+    pub fn describe(self) -> &'static str {
+        match self {
+            Suffix::Vampire => "命中するたびにHP+1",
+            Suffix::Might => "攻撃+1",
+            Suffix::Vigor => "敵を倒すとHP+2",
+            Suffix::Cataclysm => "攻撃+3。呪われていて、装備すると外せない",
+            Suffix::Thorns => "殴ってきた敵に1ダメージを返す",
+            Suffix::Warding => "毒を受けない",
+            Suffix::Famine => "防御+2。呪われていて、満腹度が余計に減る",
+        }
+    }
+
+    /// 呪い。装備して初めて分かる。
+    pub fn is_cursed(self) -> bool {
+        matches!(self, Suffix::Cataclysm | Suffix::Famine)
+    }
+
+    /// 攻撃への加算（武器）。
+    pub fn attack_bonus(self) -> i32 {
+        match self {
+            Suffix::Might => 1,
+            Suffix::Cataclysm => 3,
+            _ => 0,
+        }
+    }
+
+    /// 防御への加算（防具）。
+    pub fn defense_bonus(self) -> i32 {
+        match self {
+            Suffix::Famine => 2,
+            _ => 0,
+        }
+    }
+
+    fn roll(rng: &mut Rng, weapon: bool) -> Suffix {
+        let pool: &[(Suffix, i32)] = if weapon { &Suffix::WEAPON } else { &Suffix::ARMOR };
+        let total: i32 = pool.iter().map(|(_, w)| w).sum();
+        let mut r = rng.range(0, total);
+        for (s, w) in pool {
+            if r < *w {
+                return *s;
+            }
+            r -= w;
+        }
+        pool[0].0
+    }
+}
+
 /// 装備品の1個体。装備は1個ずつ別物なので、スタックしない。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Gear {
@@ -279,6 +370,10 @@ pub struct Gear {
     pub word: &'static str,
     /// 攻撃・防御への加算値（品質ランクの幅の中。識別するまで正確な値は分からない）
     pub bonus: i32,
+    /// 特殊効果（Uncommon 以上で付きうる）
+    pub suffix: Option<Suffix>,
+    /// 接尾辞と正確な補正値を知っているか。Common は隠すものがないので最初から true
+    pub identified: bool,
 }
 
 impl Gear {
@@ -290,6 +385,8 @@ impl Gear {
             quality: Quality::Common,
             word: Quality::Common.words()[0],
             bonus: 0,
+            suffix: None,
+            identified: true,
         }
     }
 
@@ -309,29 +406,55 @@ impl Gear {
         let word = words[rng.range(0, words.len() as i32) as usize];
         let (lo, hi) = quality.bonus_range();
         let bonus = rng.range(lo, hi + 1);
+        let suffix = if quality.suffix_percent() > 0 && rng.range(0, 100) < quality.suffix_percent() {
+            Some(Suffix::roll(rng, kind.is_weapon()))
+        } else {
+            None
+        };
         Gear {
             kind,
             quality,
             word,
             bonus,
+            suffix,
+            identified: quality == Quality::Common,
+        }
+    }
+
+    /// 呪われているか。
+    pub fn is_cursed(&self) -> bool {
+        self.suffix.is_some_and(Suffix::is_cursed)
+    }
+
+    /// 品質補正と接尾辞を合わせた攻撃・防御の加算値。
+    fn total_bonus(&self) -> i32 {
+        match self.suffix {
+            Some(s) if self.kind.is_weapon() => self.bonus + s.attack_bonus(),
+            Some(s) => self.bonus + s.defense_bonus(),
+            None => self.bonus,
         }
     }
 
     pub fn name(&self) -> String {
-        format!("{} {}", self.word, self.kind.base_name())
+        let mut n = format!("{} {}", self.word, self.kind.base_name());
+        if let Some(s) = self.suffix {
+            n.push(' ');
+            n.push_str(s.name());
+        }
+        n
     }
 
     /// 武器の攻撃範囲 (最小, 最大)。武器でなければ None。
     pub fn weapon_range(&self) -> Option<(i32, i32)> {
         self.kind
             .weapon_dmg()
-            .map(|(lo, hi)| (lo + self.bonus, hi + self.bonus))
+            .map(|(lo, hi)| (lo + self.total_bonus(), hi + self.total_bonus()))
     }
 
     /// 防具の防御値。防具でなければ 0。
     pub fn armor_value(&self) -> i32 {
         if self.kind.is_armor() {
-            self.kind.armor() + self.bonus
+            self.kind.armor() + self.total_bonus()
         } else {
             0
         }
