@@ -12,6 +12,7 @@ use crate::status::{Change, Status, StatusEvent};
 /// 生成や抽選、ダメージ計算、乱数の使い方など）をしたら、必ず 1 上げる。
 /// 記録の `new_game` に入り、観戦側が「古いルールで録られた記録」を見分けるのに使う。
 /// 上げ忘れは `rules_version_matches_golden_run` が検出する。
+/// ソフトウェアのバージョン x.y.z の z（ルートの Cargo.toml の `workspace.package.version`）もこの版に合わせる。
 pub const RULES_VERSION: u32 = 14;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -319,6 +320,15 @@ mod tests {
             }
         }
         assert_eq!(replay.unwrap().observe_text(100), live.observe_text(100));
+    }
+
+    #[test]
+    fn software_patch_version_matches_rules_version() {
+        let patch: u32 = env!("CARGO_PKG_VERSION").rsplit('.').next().unwrap().parse().unwrap();
+        assert_eq!(
+            patch, RULES_VERSION,
+            "Cargo.toml の workspace.package.version の z を RULES_VERSION ({RULES_VERSION}) に合わせる"
+        );
     }
 
     #[test]
