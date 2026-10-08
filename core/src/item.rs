@@ -202,6 +202,60 @@ impl ItemKind {
     }
 }
 
+/// 装備品の1個体。装備は1個ずつ別物なので、スタックしない。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Gear {
+    pub kind: ItemKind,
+}
+
+impl Gear {
+    /// 何の変哲もない装備。
+    pub fn plain(kind: ItemKind) -> Gear {
+        debug_assert!(kind.is_equipment());
+        Gear { kind }
+    }
+
+    pub fn name(&self) -> String {
+        self.kind.true_name().to_string()
+    }
+
+    /// 武器の攻撃範囲 (最小, 最大)。武器でなければ None。
+    pub fn weapon_range(&self) -> Option<(i32, i32)> {
+        self.kind.weapon_dmg()
+    }
+
+    /// 防具の防御値。防具でなければ 0。
+    pub fn armor_value(&self) -> i32 {
+        self.kind.armor()
+    }
+}
+
+/// 床に落ちているもの・持ち物になるもの。装備は個体、それ以外は種類だけ。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Item {
+    Plain(ItemKind),
+    Gear(Gear),
+}
+
+impl Item {
+    pub fn kind(&self) -> ItemKind {
+        match self {
+            Item::Plain(k) => *k,
+            Item::Gear(g) => g.kind,
+        }
+    }
+}
+
+impl From<ItemKind> for Item {
+    fn from(kind: ItemKind) -> Item {
+        if kind.is_equipment() {
+            Item::Gear(Gear::plain(kind))
+        } else {
+            Item::Plain(kind)
+        }
+    }
+}
+
 /// 薬の見た目の候補。ここから種類の数だけ選んで割り当てる。
 pub const POTION_LOOKS: [&str; 5] = ["赤い薬", "青い薬", "緑の薬", "黄色い薬", "白い薬"];
 

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::command::{self, Command, Dir, TravelTarget};
-use crate::item::{ItemKind, MUSHROOM_LOOKS, POTION_LOOKS, SCROLL_LOOKS};
+use crate::item::{Gear, Item, ItemKind, MUSHROOM_LOOKS, POTION_LOOKS, SCROLL_LOOKS};
 use crate::map::{idx, Map, Tile, H, W};
 use crate::monster::{MonsterKind, KINDS};
 use crate::rng::Rng;
@@ -60,10 +60,12 @@ pub struct EnemyView {
 }
 
 /// 持ち物の1スタック（同じ種類は重なる）。文字は拾った時に決まり、使い切るまで変わらない。
+/// 装備品は重ならず、`gear` に個体の情報が入る（このとき `count` は常に 1）。
 struct Stack {
     letter: char,
     kind: ItemKind,
     count: u32,
+    gear: Option<Gear>,
 }
 
 struct Monster {
@@ -92,7 +94,7 @@ pub struct Game {
     stairs: (i32, i32),
     map: Map,
     monsters: Vec<Monster>,
-    floor_items: Vec<((i32, i32), ItemKind)>,
+    floor_items: Vec<((i32, i32), Item)>,
     inventory: Vec<Stack>,
     /// 床にあるアミュレット（最深部だけ）
     amulet: Option<(i32, i32)>,
@@ -104,9 +106,9 @@ pub struct Game {
     looks: [&'static str; ItemKind::COUNT],
     /// 種類ごとに、正体を知っているか
     known: [bool; ItemKind::COUNT],
-    /// 装備中の武器と防具
-    weapon: Option<ItemKind>,
-    armor: Option<ItemKind>,
+    /// 装備中の武器と防具（持ち物の文字で指す）
+    weapon: Option<char>,
+    armor: Option<char>,
     /// 満腹度。時間とともに減り、0 になると体力が削られる
     food: i32,
     /// 毒の残りターン。1ターンごとに1ダメージ
@@ -333,7 +335,7 @@ impl Game {
                 }
                 roll -= k.weight();
             }
-            self.floor_items.push(((x, y), kind));
+            self.floor_items.push(((x, y), Item::from(kind)));
         }
         // 飢え死にしないよう、どの階にも食べ物を1つは置く
         let food = if self.depth >= 2 && self.rng.range(0, 4) == 0 {
@@ -349,13 +351,13 @@ impl Game {
                 && self.item_at((x, y)).is_none()
                 && self.monster_at((x, y)).is_none()
             {
-                self.floor_items.push(((x, y), food));
+                self.floor_items.push(((x, y), Item::from(food)));
                 break;
             }
         }
     }
 
-    fn item_at(&self, p: (i32, i32)) -> Option<ItemKind> {
+    fn item_at(&self, p: (i32, i32)) -> Option<Item> {
         self.floor_items.iter().find(|(q, _)| *q == p).map(|(_, k)| *k)
     }
 
@@ -368,23 +370,44 @@ impl Game {
         }
     }
 
-    /// 持ち物に加えられるか（同じ種類のスタックがあるか、空き文字があるか）。
-    fn can_take(&self, kind: ItemKind) -> bool {
-        self.inventory.iter().any(|s| s.kind == kind)
-            || ('a'..='z').any(|c| !self.inventory.iter().any(|s| s.letter == c))
+    /// 品物の表示名。装備は個体の名前、それ以外は種類の名前。
+    fn item_name(&self, item: &Item) -> String {
+        match item {
+            Item::Gear(g) => g.name(),
+            Item::Plain(k) => self.display_name(*k).to_string(),
+        }
+    }
+
+    fn has_free_letter(&self) -> bool {
+        ('a'..='z').any(|c| !self.inventory.iter().any(|s| s.letter == c))
+    }
+
+    /// 持ち物に加えられるか（同じ種類のスタックがあるか、空き文字があるか）。装備は重ならない。
+    fn can_take(&self, item: impl Into<Item>) -> bool {
+        match item.into() {
+            Item::Plain(kind) => self.inventory.iter().any(|s| s.kind == kind) || self.has_free_letter(),
+            Item::Gear(_) => self.has_free_letter(),
+        }
     }
 
     /// 持ち物に加える。割り当てた文字を返す。
-    fn take(&mut self, kind: ItemKind) -> Option<char> {
-        if let Some(s) = self.inventory.iter_mut().find(|s| s.kind == kind) {
-            s.count += 1;
-            return Some(s.letter);
+    fn take(&mut self, item: impl Into<Item>) -> Option<char> {
+        let (kind, gear) = match item.into() {
+            Item::Plain(kind) => (kind, None),
+            Item::Gear(g) => (g.kind, Some(g)),
+        };
+        if gear.is_none() {
+            if let Some(s) = self.inventory.iter_mut().find(|s| s.kind == kind) {
+                s.count += 1;
+                return Some(s.letter);
+            }
         }
         let letter = ('a'..='z').find(|c| !self.inventory.iter().any(|s| s.letter == *c))?;
         self.inventory.push(Stack {
             letter,
             kind,
             count: 1,
+            gear,
         });
         self.inventory.sort_by_key(|s| s.letter);
         Some(letter)
@@ -401,13 +424,13 @@ impl Game {
         let Some(j) = self.floor_items.iter().position(|(p, _)| *p == self.pos) else {
             return;
         };
-        let kind = self.floor_items[j].1;
-        if let Some(letter) = self.take(kind) {
+        let item = self.floor_items[j].1;
+        if let Some(letter) = self.take(item) {
             self.floor_items.remove(j);
-            let msg = format!("{}を拾った。({letter})", self.display_name(kind));
+            let msg = format!("{}を拾った。({letter})", self.item_name(&item));
             self.note(&msg);
         } else {
-            let msg = format!("持ち物がいっぱいで、{}を拾えない。", self.display_name(kind));
+            let msg = format!("持ち物がいっぱいで、{}を拾えない。", self.item_name(&item));
             self.note(&msg);
         }
     }
@@ -415,25 +438,26 @@ impl Game {
     /// 既知の場所にあるアイテム（explore が拾いに行く）。拾えないものは目指さない。
     fn wants_item_at(&self, p: (i32, i32)) -> bool {
         self.map.is_seen(p.0, p.1)
-            && (self.amulet == Some(p) || self.item_at(p).is_some_and(|k| self.can_take(k)))
+            && (self.amulet == Some(p) || self.item_at(p).is_some_and(|it| self.can_take(it)))
     }
 
     pub fn inventory_lines(&self) -> Vec<String> {
         self.inventory
             .iter()
             .map(|s| {
+                if let Some(g) = &s.gear {
+                    let mut line = format!("{}) {} [{}]", s.letter, g.name(), g.kind.stats_text());
+                    if self.weapon == Some(s.letter) || self.armor == Some(s.letter) {
+                        line.push_str(" (装備中)");
+                    }
+                    return line;
+                }
                 let mut line = format!("{}) {}", s.letter, self.display_name(s.kind));
                 if s.count > 1 {
                     line.push_str(&format!(" x{}", s.count));
                 }
                 if !self.known[s.kind.index()] {
                     line.push_str(" (未識別)");
-                }
-                if s.kind.is_equipment() {
-                    line.push_str(&format!(" [{}]", s.kind.stats_text()));
-                    if self.weapon == Some(s.kind) || self.armor == Some(s.kind) {
-                        line.push_str(" (装備中)");
-                    }
                 }
                 line
             })
@@ -653,7 +677,7 @@ impl Game {
 
     /// 武器の攻撃範囲（含む）。装備がなければ素手。レベルの上乗せを含む。
     fn attack_range(&self) -> (i32, i32) {
-        let (lo, hi) = self.weapon.and_then(|w| w.weapon_dmg()).unwrap_or((2, 4));
+        let (lo, hi) = self.weapon_gear().and_then(|g| g.weapon_range()).unwrap_or((2, 4));
         let b = self.level_bonus();
         (lo + b, hi + b)
     }
@@ -674,8 +698,22 @@ impl Game {
         }
     }
 
+    /// 持ち物の文字で指された装備個体。
+    fn gear_of(&self, slot: Option<char>) -> Option<&Gear> {
+        let l = slot?;
+        self.inventory.iter().find(|s| s.letter == l)?.gear.as_ref()
+    }
+
+    fn weapon_gear(&self) -> Option<&Gear> {
+        self.gear_of(self.weapon)
+    }
+
+    fn armor_gear(&self) -> Option<&Gear> {
+        self.gear_of(self.armor)
+    }
+
     fn defense(&self) -> i32 {
-        self.armor.map_or(0, |a| a.armor())
+        self.armor_gear().map_or(0, |g| g.armor_value())
     }
 
     /// 武器・防具を身につける。(成功か, メッセージ, 1ターン消費するか)
@@ -683,18 +721,22 @@ impl Game {
         let Some(s) = self.inventory.iter().find(|s| s.letter == letter) else {
             return (false, format!("持ち物 {letter} はない。"), false);
         };
-        let kind = s.kind;
-        if !kind.is_equipment() {
-            return (false, format!("{}は装備できない。", self.display_name(kind)), false);
+        let Some(gear) = s.gear else {
+            return (false, format!("{}は装備できない。", self.display_name(s.kind)), false);
+        };
+        let slot = if gear.kind.is_weapon() { self.weapon } else { self.armor };
+        if slot == Some(letter) {
+            return (false, format!("{}はすでに装備している。", gear.name()), false);
         }
-        let slot = if kind.is_weapon() { &mut self.weapon } else { &mut self.armor };
-        if *slot == Some(kind) {
-            return (false, format!("{}はすでに装備している。", kind.true_name()), false);
+        let old = self.gear_of(slot).map(|g| g.name());
+        if gear.kind.is_weapon() {
+            self.weapon = Some(letter);
+        } else {
+            self.armor = Some(letter);
         }
-        let old = slot.replace(kind);
-        let mut msg = format!("{}を装備した。({})", kind.true_name(), kind.stats_text());
+        let mut msg = format!("{}を装備した。({})", gear.name(), gear.kind.stats_text());
         if let Some(o) = old {
-            msg.push_str(&format!(" {}をはずした。", o.true_name()));
+            msg.push_str(&format!(" {o}をはずした。"));
         }
         (true, msg, true)
     }
@@ -704,19 +746,18 @@ impl Game {
         let Some(s) = self.inventory.iter().find(|s| s.letter == letter) else {
             return (false, format!("持ち物 {letter} はない。"), false);
         };
-        let kind = s.kind;
-        let slot = if kind.is_weapon() {
-            &mut self.weapon
-        } else if kind.is_armor() {
-            &mut self.armor
-        } else {
-            return (false, format!("{}は装備品ではない。", self.display_name(kind)), false);
+        let Some(gear) = s.gear else {
+            return (false, format!("{}は装備品ではない。", self.display_name(s.kind)), false);
         };
-        if *slot != Some(kind) {
-            return (false, format!("{}は装備していない。", kind.true_name()), false);
+        if self.weapon != Some(letter) && self.armor != Some(letter) {
+            return (false, format!("{}は装備していない。", gear.name()), false);
         }
-        *slot = None;
-        (true, format!("{}をはずした。", kind.true_name()), true)
+        if gear.kind.is_weapon() {
+            self.weapon = None;
+        } else {
+            self.armor = None;
+        }
+        (true, format!("{}をはずした。", gear.name()), true)
     }
 
     fn spawn_monsters(&mut self) {
@@ -1359,8 +1400,8 @@ impl Game {
             if self.map.is_seen(p.0, p.1) {
                 parts.push(format!(
                     "{} {}が{}にある。",
-                    k.glyph(),
-                    self.display_name(*k),
+                    k.kind().glyph(),
+                    self.item_name(k),
                     rel_text(self.pos, *p)
                 ));
             }
@@ -1396,7 +1437,7 @@ impl Game {
         if seen {
             if let Some(k) = self.item_at((x, y)) {
                 return Cell {
-                    ch: k.glyph(),
+                    ch: k.kind().glyph(),
                     visible: self.map.is_visible(x, y),
                     seen,
                 };
@@ -1635,8 +1676,8 @@ mod tests {
                 g.depth = depth;
                 g.spawn_items();
                 for (_, k) in &g.floor_items {
-                    assert!(k.min_depth() <= depth, "{k:?} at {depth}");
-                    seen.insert(*k);
+                    assert!(k.kind().min_depth() <= depth, "{k:?} at {depth}");
+                    seen.insert(k.kind());
                 }
             }
         }
@@ -1645,7 +1686,7 @@ mod tests {
         assert!(seen.iter().any(|k| k.is_armor()));
         let mut g = quiet(4);
         let p = (g.pos.0 + 1, g.pos.1);
-        g.floor_items.push((p, ItemKind::Sword));
+        g.floor_items.push((p, ItemKind::Sword.into()));
         let o = g.run("move east");
         assert!(o.message.contains("剣を拾った"), "{}", o.message);
     }
@@ -1740,7 +1781,7 @@ mod tests {
     fn stay_picks_up_the_item_underfoot_but_wait_does_not() {
         let mut g = quiet(1);
         let here = g.pos;
-        g.floor_items.push((here, ItemKind::Healing));
+        g.floor_items.push((here, ItemKind::Healing.into()));
         let o = g.run("wait");
         assert!(o.ok && g.inventory.is_empty() && g.floor_items.len() == 1, "{}", o.message);
         let t = g.turn();
@@ -1938,7 +1979,7 @@ mod tests {
                 g.depth = depth;
                 g.spawn_items();
                 assert!(
-                    g.floor_items.iter().any(|(_, k)| k.is_food()),
+                    g.floor_items.iter().any(|(_, k)| k.kind().is_food()),
                     "seed {seed} depth {depth}"
                 );
             }
@@ -2258,7 +2299,7 @@ mod tests {
     fn walking_onto_an_item_picks_it_up() {
         let mut g = quiet(1);
         let p = (g.pos.0 + 1, g.pos.1);
-        g.floor_items.push((p, ItemKind::Healing));
+        g.floor_items.push((p, ItemKind::Healing.into()));
         let o = g.run("move east");
         assert!(o.ok && o.message.contains("拾った"), "{}", o.message);
         assert!(g.floor_items.is_empty());
@@ -2446,7 +2487,7 @@ mod tests {
     fn look_mentions_known_floor_items() {
         let mut g = quiet(1);
         let p = (g.pos.0 + 2, g.pos.1);
-        g.floor_items.push((p, ItemKind::Teleport));
+        g.floor_items.push((p, ItemKind::Teleport.into()));
         g.map.update_fov(g.pos, FOV_RADIUS);
         let o = g.run("look");
         assert!(o.message.contains("東に2"), "{}", o.message);
@@ -2470,7 +2511,7 @@ mod tests {
         let mut g = quiet(3);
         for (i, c) in ('a'..='z').enumerate() {
             let kind = if i == 0 { ItemKind::Dagger } else { ItemKind::Bread };
-            g.inventory.push(Stack { letter: c, kind, count: 1 });
+            g.inventory.push(Stack { letter: c, kind, count: 1, gear: kind.is_equipment().then(|| Gear::plain(kind)) });
         }
         assert!(!g.can_take(ItemKind::Healing));
         assert!(g.can_take(ItemKind::Bread));
@@ -2485,14 +2526,14 @@ mod tests {
             .unwrap()
         };
         let (a, b) = (far(&g, 4), far(&g, 12));
-        g.floor_items.push((a, ItemKind::Healing));
-        g.floor_items.push((b, ItemKind::Healing));
+        g.floor_items.push((a, ItemKind::Healing.into()));
+        g.floor_items.push((b, ItemKind::Healing.into()));
         let o = g.run("explore");
         assert!(o.message.contains("もう探索する場所がない"), "{}", o.message);
         assert_eq!(g.turn(), 0);
         // 踏めば、拾えないと分かる
         g.floor_items.clear();
-        g.floor_items.push((g.pos, ItemKind::Healing));
+        g.floor_items.push((g.pos, ItemKind::Healing.into()));
         let o = g.run("stay");
         assert!(o.message.contains("持ち物がいっぱい"), "{}", o.message);
         assert_eq!(g.floor_items.len(), 1);
