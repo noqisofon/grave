@@ -84,7 +84,7 @@ impl Game {
     }
 
     /// 杖が飛ぶ道筋（壁の手前まで。`Light` のために壁も含めて返し、使う側で切る）。
-    fn bolt_cells(&self, t: ZapTarget) -> Result<Vec<(i32, i32)>, String> {
+    pub(super) fn bolt_cells(&self, t: ZapTarget) -> Result<Vec<(i32, i32)>, String> {
         match t {
             ZapTarget::Dir(d) => {
                 let (dx, dy) = d.delta();
@@ -111,7 +111,7 @@ impl Game {
     }
 
     /// 道筋のうち壁にぶつかる手前まで。
-    fn open_cells(&self, cells: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    pub(super) fn open_cells(&self, cells: &[(i32, i32)]) -> Vec<(i32, i32)> {
         cells
             .iter()
             .copied()

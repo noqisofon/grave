@@ -214,7 +214,14 @@ pub fn golden_player(seed: u64, steps: usize, mut sink: impl FnMut(&crate::game:
                         .find(|l| l.contains("キノコ") || l.contains("パン") || l.contains("干し肉"))
                         .and_then(|l| l.chars().next());
                     // 装備に加えて、薬・巻物・杖も試す(失敗してもよい)
-                    let mut c = "equip a; equip b; equip c; quaff a; read a; zap a nearest; zap b east".to_string();
+                    let mut c = "equip a; equip b; equip c".to_string();
+                    // 薬・巻物・杖は、持ち物の行から種類で文字を探して使う(文字の取り違えで失敗に終わらないように)
+                    for (word, verb) in [("の薬", "quaff"), ("の巻物", "read"), ("の杖", "zap")] {
+                        if let Some(l) = g.inventory_lines().iter().find(|l| l.contains(word) && !l.contains("装備中")) {
+                            let letter = l.chars().next().unwrap();
+                            c.push_str(&format!("; {verb} {letter}{}", if verb == "zap" { " nearest" } else { "" }));
+                        }
+                    }
                     if let Some(letter) = eat {
                         c.push_str(&format!("; eat {letter}"));
                     }
@@ -352,7 +359,7 @@ mod tests {
     #[test]
     fn rules_version_matches_golden_run() {
         const GOLDEN_RULES: u32 = 17;
-        const GOLDEN_HASH: u64 = 17851909040731176792;
+        const GOLDEN_HASH: u64 = 8065867818072988829;
         let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
         let mut feed = |bytes: &[u8]| {
             for b in bytes {
@@ -361,7 +368,7 @@ mod tests {
             }
         };
         let (mut hits, mut kills, mut equips, mut deepest) = (0, 0, 0, 0);
-        let (mut meals, mut poisoned) = (0, 0);
+        let (mut meals, mut poisoned, mut used) = (0, 0, 0);
         for seed in 1u64..=12 {
             golden_player(seed, 400, |o| {
                 feed(o.message.as_bytes());
@@ -371,12 +378,13 @@ mod tests {
                 equips += o.message.matches("を装備した").count();
                 meals += o.message.matches("満腹度が").count();
                 poisoned += o.message.matches("毒を受けた").count();
+                used += o.message.matches("を飲んだ").count() + o.message.matches("を読んだ").count() + o.message.matches("を振った").count();
                 deepest = deepest.max(o.depth);
             });
         }
         // 指紋が何も踏んでいないと、ルールが変わっても気づけない
-        assert!(hits > 20 && kills > 10 && equips >= 2 && deepest >= 3 && meals >= 3 && poisoned >= 1,
-            "{hits} {kills} {equips} {deepest} {meals} {poisoned}"
+        assert!(hits > 20 && kills > 10 && equips >= 2 && deepest >= 3 && meals >= 3 && poisoned >= 1 && used >= 3,
+            "{hits} {kills} {equips} {deepest} {meals} {poisoned} {used}"
         );
         if RULES_VERSION == GOLDEN_RULES {
             assert_eq!(

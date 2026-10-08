@@ -5056,17 +5056,42 @@ mod tests {
         g.hp = 1000;
         g.max_hp = 1000;
         g.take(Tool::charged(ItemKind::WandMissile, 5));
-        // 敵の直後に壁を立てても、敵には当たる
-        let p = (g.pos.0 + 2, g.pos.1 + 1);
-        g.map.set_tile(p.0, p.1, Tile::Floor);
-        g.map.set_tile(p.0 + 2, p.1 + 1, Tile::Wall);
-        g.monsters.push(monster(&crate::monster::OGRE, p, 500));
-        g.inflict_monster(0, Status::Paralyzed, 100);
-        g.map.update_fov(g.pos, FOV_RADIUS);
-        if g.can_see_monster(0) {
-            g.run("zap a nearest");
-            assert!(g.monsters[0].hp < 500);
+        let me = g.pos;
+        // 延長線と直線が途中で食い違う配置(敵までは通るが、手前の1マスだけ違う)を探す
+        let mut setup = None;
+        'search: for dx in -8..=8i32 {
+            for dy in -8..=8i32 {
+                let t = (me.0 + dx, me.1 + dy);
+                let m = dx.abs().max(dy.abs());
+                if m < 3 || dx * dx + dy * dy > 64 {
+                    continue;
+                }
+                let long = Map::line(me, (me.0 + dx * 12 / m, me.1 + dy * 12 / m));
+                let direct = Map::line(me, t);
+                if !long.contains(&t) {
+                    continue;
+                }
+                let pos_t = long.iter().position(|p| *p == t).unwrap();
+                if let Some(i) = (0..pos_t).find(|&i| long[i] != direct[i]) {
+                    setup = Some((t, long[i], long, direct));
+                    break 'search;
+                }
+            }
         }
+        let (t, blocker, long, direct) = setup.expect("食い違う配置がある");
+        for p in long.iter().chain(direct.iter()) {
+            g.map.set_tile(p.0, p.1, Tile::Floor);
+        }
+        g.map.set_tile(blocker.0, blocker.1, Tile::Wall);
+        g.refresh_fov();
+        g.monsters.push(monster(&crate::monster::OGRE, t, 500));
+        g.inflict_monster(0, Status::Paralyzed, 100);
+        assert!(g.can_see_monster(0), "直線が通っているので見えるはず");
+        // 延長線は敵の手前で塞がれているが、直線に戻って敵に当たる
+        assert!(!g.open_cells(&long).contains(&t));
+        assert_eq!(g.bolt_cells(crate::command::ZapTarget::Nearest).unwrap(), direct);
+        g.run("zap a nearest");
+        assert!(g.monsters[0].hp < 500);
     }
 
     #[test]
