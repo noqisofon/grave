@@ -181,6 +181,18 @@ impl Map {
         }
     }
 
+    /// 何も見えない（盲目）。記憶している場所はそのまま。
+    pub fn clear_visible(&mut self) {
+        self.visible.iter_mut().for_each(|v| *v = false);
+    }
+
+    /// 場所を既知にする（アイテム探知など）。
+    pub fn mark_seen(&mut self, x: i32, y: i32) {
+        if Self::in_bounds(x, y) {
+            self.seen[idx(x, y)] = true;
+        }
+    }
+
     pub fn update_fov(&mut self, pos: (i32, i32), radius: i32) {
         self.visible.iter_mut().for_each(|v| *v = false);
         for y in pos.1 - radius..=pos.1 + radius {

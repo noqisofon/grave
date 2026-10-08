@@ -6,12 +6,13 @@
 use serde_json::{json, Value};
 
 use crate::game::Outcome;
+use crate::status::{Change, Status, StatusEvent};
 
 /// ルールの版。seed とコマンド列から同じ結果にならなくなる変更（マップ・敵・アイテムの
 /// 生成や抽選、ダメージ計算、乱数の使い方など）をしたら、必ず 1 上げる。
 /// 記録の `new_game` に入り、観戦側が「古いルールで録られた記録」を見分けるのに使う。
 /// 上げ忘れは `rules_version_matches_golden_run` が検出する。
-pub const RULES_VERSION: u32 = 9;
+pub const RULES_VERSION: u32 = 10;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -35,7 +36,36 @@ pub enum Event {
         turn: u32,
         /// 古い記録には無い
         hp: Option<i32>,
+        /// このコマンドの間に起きた状態の付与・解除
+        status_events: Vec<StatusEvent>,
+        /// 実行後にかかっている状態（残りターンつき）
+        statuses: Vec<(Status, u32)>,
     },
+}
+
+fn status_event_json(e: &StatusEvent) -> Value {
+    let mut v = json!({ "target": e.target, "status": e.status.key() });
+    match e.change {
+        Change::Apply(turns) => {
+            v["change"] = json!("apply");
+            v["turns"] = json!(turns);
+        }
+        Change::End => v["change"] = json!("end"),
+    }
+    v
+}
+
+fn status_event_parse(v: &Value) -> Option<StatusEvent> {
+    let change = match v.get("change")?.as_str()? {
+        "apply" => Change::Apply(v.get("turns")?.as_u64()? as u32),
+        "end" => Change::End,
+        _ => return None,
+    };
+    Some(StatusEvent {
+        target: v.get("target")?.as_str()?.to_string(),
+        status: Status::from_key(v.get("status")?.as_str()?)?,
+        change,
+    })
 }
 
 impl Event {
@@ -56,6 +86,8 @@ impl Event {
             depth: outcome.depth,
             turn: outcome.turn,
             hp: Some(outcome.hp),
+            status_events: outcome.status_events.clone(),
+            statuses: outcome.statuses.clone(),
         }
     }
 
@@ -77,6 +109,8 @@ impl Event {
                 depth,
                 turn,
                 hp,
+                status_events,
+                statuses,
             } => {
                 let mut v = json!({
                     "kind": "command",
@@ -91,6 +125,16 @@ impl Event {
                 }
                 if let Some(h) = hp {
                     v["hp"] = json!(h);
+                }
+                if !status_events.is_empty() {
+                    v["status_events"] = Value::Array(status_events.iter().map(status_event_json).collect());
+                }
+                if !statuses.is_empty() {
+                    let mut m = serde_json::Map::new();
+                    for (st, n) in statuses {
+                        m.insert(st.key().to_string(), json!(n));
+                    }
+                    v["statuses"] = Value::Object(m);
                 }
                 v
             }
@@ -115,6 +159,21 @@ impl Event {
                 depth: n("depth").unwrap_or(0) as u32,
                 turn: n("turn").unwrap_or(0) as u32,
                 hp: v.get("hp").and_then(Value::as_i64).map(|h| h as i32),
+                status_events: v
+                    .get("status_events")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(status_event_parse).collect())
+                    .unwrap_or_default(),
+                statuses: v
+                    .get("statuses")
+                    .and_then(Value::as_object)
+                    .map(|m| {
+                        Status::ALL
+                            .iter()
+                            .filter_map(|st| Some((*st, m.get(st.key())?.as_u64()? as u32)))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             }),
             Some("journal") => Ok(Event::Journal {
                 text: s("text").ok_or("text がない")?,
@@ -195,6 +254,19 @@ mod tests {
                 depth: 1,
                 turn: 3,
                 hp: Some(18),
+                status_events: vec![
+                    StatusEvent {
+                        target: "player".into(),
+                        status: Status::Confused,
+                        change: Change::Apply(8),
+                    },
+                    StatusEvent {
+                        target: "スライム".into(),
+                        status: Status::Paralyzed,
+                        change: Change::End,
+                    },
+                ],
+                statuses: vec![(Status::Poisoned, 2), (Status::Confused, 8)],
             },
             Event::Command {
                 command: "descend".into(),
@@ -204,6 +276,8 @@ mod tests {
                 depth: 1,
                 turn: 3,
                 hp: None,
+                status_events: vec![],
+                statuses: vec![],
             },
         ];
         for e in evs {
@@ -266,8 +340,8 @@ mod tests {
     /// 落ちたら、意図した変更なら RULES_VERSION を上げて GOLDEN_* を更新する。
     #[test]
     fn rules_version_matches_golden_run() {
-        const GOLDEN_RULES: u32 = 9;
-        const GOLDEN_HASH: u64 = 14732035217014607468;
+        const GOLDEN_RULES: u32 = 10;
+        const GOLDEN_HASH: u64 = 12910061690345730492;
         let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
         let mut feed = |bytes: &[u8]| {
             for b in bytes {

@@ -5,6 +5,8 @@ use crate::item::{Gear, Item, ItemKind, Suffix, MUSHROOM_LOOKS, POTION_LOOKS, SC
 use crate::map::{idx, Map, Tile, H, W};
 use crate::monster::{MonsterKind, KINDS};
 use crate::rng::Rng;
+use crate::status::{Change, Status, StatusEvent, StatusSet};
+use crate::trap::{Trap, TrapKind};
 
 const FOV_RADIUS: i32 = 9;
 const EXPLORE_STEP_LIMIT: u32 = 1000;
@@ -17,7 +19,6 @@ const HUNGRY_AT: i32 = 100;
 const WEAK_AT: i32 = 30;
 /// この HP 以下で毒や飢えが続くと、自動移動を止めて知らせる
 const DANGER_HP: i32 = 5;
-const MAX_POISON: u32 = 15;
 const MAX_MONSTERS: usize = 6;
 /// 装備して、このターン数が過ぎると、その装備の正体（接尾辞と補正値）が分かる
 const IDENTIFY_AFTER_WORN: u32 = 50;
@@ -43,6 +44,10 @@ pub struct Outcome {
     pub depth: u32,
     pub turn: u32,
     pub hp: i32,
+    /// このコマンドの間に起きた状態の付与・解除
+    pub status_events: Vec<StatusEvent>,
+    /// 実行直後にかかっている状態（残りターンつき）
+    pub statuses: Vec<(Status, u32)>,
 }
 
 /// 描画用の1マス。
@@ -61,6 +66,8 @@ pub struct EnemyView {
     pub hp: i32,
     pub max_hp: i32,
     pub pos: (i32, i32),
+    /// 敵にかかっている状態（残りターンつき）
+    pub statuses: Vec<(Status, u32)>,
 }
 
 /// 持ち物の1スタック（同じ種類は重なる）。文字は拾った時に決まり、使い切るまで変わらない。
@@ -99,6 +106,7 @@ struct Monster {
     hp: i32,
     max_hp: i32,
     pos: (i32, i32),
+    status: StatusSet,
 }
 
 pub struct Game {
@@ -135,16 +143,20 @@ pub struct Game {
     armor: Option<char>,
     /// 満腹度。時間とともに減り、0 になると体力が削られる
     food: i32,
-    /// 毒の残りターン。1ターンごとに1ダメージ
-    poison: u32,
+    /// プレイヤーにかかっている状態（毒を含む）
+    status: StatusSet,
+    /// 加速中、行動のうち世界のターンが進まない側の番か
+    free_action: bool,
+    /// 隠れていたり見つかったりした罠
+    traps: Vec<Trap>,
     /// 実行中の自動移動を止めるべき出来事（被弾など）
     hit: bool,
     alert: Option<String>,
-    /// 眠りなど、このコマンドのあとに追加で経過するターン
-    extra_turns: u32,
     log: Vec<LogEntry>,
     /// 実行中のコマンドで起きた出来事（Outcome に添える）
     events: Vec<String>,
+    /// 実行中のコマンドで起きた状態の変化（Outcome に添える）
+    status_events: Vec<StatusEvent>,
 }
 
 fn shuffle<T>(rng: &mut Rng, v: &mut [T]) {
@@ -241,16 +253,19 @@ impl Game {
             weapon: None,
             armor: None,
             food: MAX_FOOD - 50,
-            poison: 0,
+            status: StatusSet::default(),
+            free_action: false,
+            traps: Vec::new(),
             hit: false,
             alert: None,
-            extra_turns: 0,
             log: Vec::new(),
             events: Vec::new(),
+            status_events: Vec::new(),
         };
         game.spawn_monsters();
         game.spawn_items();
-        game.map.update_fov(game.pos, FOV_RADIUS);
+        game.spawn_traps();
+        game.refresh_fov();
         game.push_log("冒険が始まった。");
         game
     }
@@ -313,7 +328,8 @@ impl Game {
         self.stairs = g.stairs;
         self.spawn_monsters();
         self.spawn_items();
-        self.map.update_fov(self.pos, FOV_RADIUS);
+        self.spawn_traps();
+        self.refresh_fov();
     }
 
     fn spawn_items(&mut self) {
@@ -629,6 +645,9 @@ impl Game {
             return (false, format!("持ち物 {letter} はない。"), false);
         };
         let kind = self.inventory[si].kind;
+        if matches!(how, Consume::Read) && kind.is_scroll() && self.status.has(Status::Blind) {
+            return (false, "目が見えなくて、巻物が読めない。".to_string(), false);
+        }
         let fits = match how {
             Consume::Quaff => kind.is_potion(),
             Consume::Eat => kind.is_food() || kind.is_mushroom(),
@@ -674,8 +693,7 @@ impl Game {
                 let gained = (self.max_hp - self.hp).min(10);
                 self.hp += gained;
                 let mut s = format!("HPが{gained}回復した。(HP {}/{})", self.hp, self.max_hp);
-                if self.poison > 0 {
-                    self.poison = 0;
+                if self.cure(Status::Poisoned) {
                     s.push_str(" 毒が抜けた。");
                 }
                 s
@@ -724,8 +742,7 @@ impl Game {
                 s
             }
             ItemKind::Antidote => {
-                if self.poison > 0 {
-                    self.poison = 0;
+                if self.cure(Status::Poisoned) {
                     "毒が抜けた。".to_string()
                 } else {
                     "毒は受けていなかった。".to_string()
@@ -736,8 +753,7 @@ impl Game {
                 format!("経験値 +{EXPERIENCE_POTION_XP}。")
             }
             ItemKind::Sleep => {
-                self.extra_turns = 4;
-                "ぐっすり眠ってしまった…。".to_string()
+                self.inflict(Status::Asleep, 5)
             }
             ItemKind::MagicMap => {
                 self.map.reveal_all();
@@ -756,7 +772,7 @@ impl Game {
                         break;
                     }
                 }
-                self.map.update_fov(self.pos, FOV_RADIUS);
+                self.refresh_fov();
                 "景色が一変した。".to_string()
             }
             // 装備品は上で equip に回している。ここに来たら作り間違いなので、落とさずに失敗にする
@@ -864,8 +880,114 @@ impl Game {
         if self.armor_suffix() == Some(Suffix::Warding) {
             return false;
         }
-        self.poison = (self.poison + n).min(MAX_POISON);
+        self.inflict(Status::Poisoned, n);
         true
+    }
+
+    /// 毒の残りターン。
+    fn poison(&self) -> u32 {
+        self.status.get(Status::Poisoned)
+    }
+
+    /// プレイヤーに状態を付ける。状態のはじまりのメッセージを返す。
+    fn inflict(&mut self, s: Status, turns: u32) -> String {
+        let left = self.status.apply(s, turns);
+        self.status_events.push(StatusEvent {
+            target: "player".to_string(),
+            status: s,
+            change: Change::Apply(left),
+        });
+        if s == Status::Blind {
+            self.refresh_fov();
+        }
+        s.def().start.to_string()
+    }
+
+    /// プレイヤーの状態を解く。かかっていたなら true。
+    fn cure(&mut self, s: Status) -> bool {
+        let was = self.status.clear(s);
+        if was {
+            self.status_events.push(StatusEvent {
+                target: "player".to_string(),
+                status: s,
+                change: Change::End,
+            });
+            if s == Status::Blind {
+                self.refresh_fov();
+            }
+        }
+        was
+    }
+
+    /// 敵に状態を付ける。効かない状態なら false。
+    fn inflict_monster(&mut self, i: usize, s: Status, turns: u32) -> bool {
+        if !s.def().on_monster {
+            return false;
+        }
+        let left = self.monsters[i].status.apply(s, turns);
+        self.status_events.push(StatusEvent {
+            target: self.monsters[i].name.to_string(),
+            status: s,
+            change: Change::Apply(left),
+        });
+        true
+    }
+
+    /// 動けない（睡眠・停止）。
+    fn incapacitated(&self) -> bool {
+        self.status.has(Status::Asleep) || self.status.has(Status::Paralyzed)
+    }
+
+    /// 今の視界の半径。
+    fn sight_radius(&self) -> i32 {
+        FOV_RADIUS
+    }
+
+    /// 視界を更新する。盲目なら何も見えず、新しく覚えることもない。
+    fn refresh_fov(&mut self) {
+        if self.status.has(Status::Blind) {
+            self.map.clear_visible();
+        } else {
+            self.map.update_fov(self.pos, self.sight_radius());
+        }
+    }
+
+    /// 幻覚で見える敵の種類（ターンと敵ごとに決まる。乱数は使わない）。
+    fn hallu_kind(&self, i: usize) -> &'static MonsterKind {
+        let mut x = self.seed ^ ((self.turn as u64) << 24) ^ (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        x ^= x >> 33;
+        KINDS[(x % KINDS.len() as u64) as usize]
+    }
+
+    /// 敵 `i` がいま見えているか（視界の中で、盲目でも透明でもない）。
+    fn can_see_monster(&self, i: usize) -> bool {
+        let m = &self.monsters[i];
+        !self.status.has(Status::Blind)
+            && self.map.is_visible(m.pos.0, m.pos.1)
+            && (!m.status.has(Status::Invisible) || self.status.has(Status::SeeInvisible))
+    }
+
+    /// メッセージや一覧に出る敵の名前。見えなければ「何か」、幻覚ならでたらめ。
+    fn foe_name(&self, i: usize) -> &'static str {
+        if !self.can_see_monster(i) {
+            "何か"
+        } else if self.status.has(Status::Hallucinating) {
+            self.hallu_kind(i).name
+        } else {
+            self.monsters[i].name
+        }
+    }
+
+    fn foe_glyph(&self, i: usize) -> char {
+        if self.status.has(Status::Hallucinating) {
+            self.hallu_kind(i).glyph
+        } else {
+            self.monsters[i].glyph
+        }
     }
 
     /// 満腹度を増やす。結果の説明を返す。
@@ -898,8 +1020,9 @@ impl Game {
         if let Some(l) = self.hunger_label() {
             s.push_str(&format!("({l})"));
         }
-        if self.poison > 0 {
-            s.push_str(&format!(" 毒{}", self.poison));
+        let fx = self.status.short_text();
+        if !fx.is_empty() {
+            s.push_str(&format!(" {fx}"));
         }
         s
     }
@@ -1047,6 +1170,7 @@ impl Game {
                 hp,
                 max_hp: hp,
                 pos: (x, y),
+                status: StatusSet::default(),
             });
         }
     }
@@ -1056,12 +1180,28 @@ impl Game {
     }
 
     fn visible_monster_indices(&self) -> Vec<usize> {
-        (0..self.monsters.len())
-            .filter(|&i| {
-                let p = self.monsters[i].pos;
-                self.map.is_visible(p.0, p.1)
-            })
-            .collect()
+        (0..self.monsters.len()).filter(|&i| self.can_see_monster(i)).collect()
+    }
+
+    /// 敵 `i` が、いまこちらに気づいているか。見通せる範囲に入ったとき気づく。
+    /// 怒っている敵はどこにいても気づく。透明だと近づかれるまで気づかれない。
+    fn monster_aware(&self, i: usize) -> bool {
+        let m = &self.monsters[i];
+        if m.status.has(Status::Enraged) {
+            return true;
+        }
+        let r = self.notice_radius();
+        let (dx, dy) = (m.pos.0 - self.pos.0, m.pos.1 - self.pos.1);
+        dx * dx + dy * dy <= r * r && self.map.los(self.pos, m.pos)
+    }
+
+    /// 敵がこちらに気づく距離。
+    fn notice_radius(&self) -> i32 {
+        if self.status.has(Status::Invisible) {
+            2
+        } else {
+            FOV_RADIUS
+        }
     }
 
     pub fn visible_enemies(&self) -> Vec<EnemyView> {
@@ -1070,14 +1210,129 @@ impl Game {
             .map(|i| {
                 let m = &self.monsters[i];
                 EnemyView {
-                    name: m.name,
-                    glyph: m.glyph,
+                    name: self.foe_name(i),
+                    glyph: self.foe_glyph(i),
                     hp: m.hp,
                     max_hp: m.max_hp,
                     pos: m.pos,
+                    statuses: m.status.active(),
                 }
             })
             .collect()
+    }
+
+    /// 混乱していると、向きがときどきずれる。(実際の向き, ずれたか)
+    fn confuse_dir(&mut self, d: Dir) -> (Dir, bool) {
+        if self.status.has(Status::Confused) && self.rng.range(0, 2) == 0 {
+            (Dir::ALL[self.rng.range(0, Dir::ALL.len() as i32) as usize], true)
+        } else {
+            (d, false)
+        }
+    }
+
+    /// この階に罠を隠す。落とし穴は、最深部とアミュレット所持中には置かない。
+    fn spawn_traps(&mut self) {
+        self.traps.clear();
+        let want = (1 + self.depth / 4).min(4);
+        let can_fall = self.depth < AMULET_DEPTH && !self.has_amulet;
+        let kinds: Vec<TrapKind> = TrapKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| can_fall || *k != TrapKind::Trapdoor)
+            .collect();
+        let total: u32 = kinds.iter().map(|k| k.weight()).sum();
+        for _ in 0..300 {
+            if self.traps.len() as u32 >= want {
+                break;
+            }
+            let x = self.rng.range(1, W - 1);
+            let y = self.rng.range(1, H - 1);
+            if self.map.tile(x, y) != Tile::Floor
+                || (x, y) == self.pos
+                || self.traps.iter().any(|t| t.pos == (x, y))
+            {
+                continue;
+            }
+            let mut roll = self.rng.range(0, total as i32) as u32;
+            let mut kind = kinds[0];
+            for k in &kinds {
+                if roll < k.weight() {
+                    kind = *k;
+                    break;
+                }
+                roll -= k.weight();
+            }
+            self.traps.push(Trap { pos: (x, y), kind, revealed: false });
+        }
+    }
+
+    /// 足元に罠があれば発動する。浮遊中は無視する。
+    fn trigger_trap(&mut self) {
+        let Some(ti) = self.traps.iter().position(|t| t.pos == self.pos) else {
+            return;
+        };
+        if self.status.has(Status::Levitating) {
+            return;
+        }
+        self.traps[ti].revealed = true;
+        let kind = self.traps[ti].kind;
+        match kind {
+            TrapKind::Trapdoor => {
+                let dmg = self.rng.range(1, 4);
+                self.hp -= dmg;
+                if self.hp <= 0 {
+                    self.dead = true;
+                    self.note("落とし穴に落ちた！ 打ちどころが悪かった…。ゲームオーバー。");
+                    return;
+                }
+                self.depth += 1;
+                self.new_level();
+                self.note(&format!(
+                    "落とし穴に落ちた！ {dmg}のダメージ。地下{}階に着いた。(HP {}/{})",
+                    self.depth, self.hp, self.max_hp
+                ));
+                self.alert = Some("落とし穴に落ちて中断した。".to_string());
+            }
+            TrapKind::Dart => {
+                self.hp -= 2;
+                self.hit = true;
+                self.note(&format!("毒矢の罠だ！ 2のダメージを受けた。(HP {}/{})", self.hp.max(0), self.max_hp));
+                if self.hp <= 0 {
+                    self.dead = true;
+                    self.note("あなたは力尽きた…。ゲームオーバー。");
+                } else if self.try_poison(5) {
+                    self.note("毒を受けた！");
+                } else {
+                    self.note("毒は守りに阻まれた。");
+                }
+            }
+            TrapKind::SleepGas => {
+                let msg = self.inflict(Status::Asleep, 5);
+                self.note(&format!("眠りガスの罠だ！ {msg}"));
+                self.alert = Some("眠りガスで中断した。".to_string());
+            }
+        }
+    }
+
+    /// 周りの隠れた罠を見つける。半径 `radius` 以内の罠が、`percent`% の確率で見つかる。
+    fn search_traps(&mut self, radius: i32, percent: i32) {
+        for ti in 0..self.traps.len() {
+            let t = self.traps[ti];
+            let (dx, dy) = ((t.pos.0 - self.pos.0).abs(), (t.pos.1 - self.pos.1).abs());
+            if t.revealed || dx.max(dy) > radius {
+                continue;
+            }
+            if percent >= 100 || self.rng.range(0, 100) < percent {
+                self.traps[ti].revealed = true;
+                self.map.mark_seen(t.pos.0, t.pos.1);
+                self.note(&format!("{}を見つけた！", t.kind.name()));
+            }
+        }
+    }
+
+    /// 知っている罠（見つけたもの）が `p` にあるか。
+    fn known_trap_at(&self, p: (i32, i32)) -> Option<Trap> {
+        self.traps.iter().copied().find(|t| t.pos == p && t.revealed)
     }
 
     /// 敵が見えていて自動移動できないなら、その理由。
@@ -1086,7 +1341,7 @@ impl Game {
         if idxs.is_empty() {
             return None;
         }
-        let names: Vec<&str> = idxs.iter().map(|&i| self.monsters[i].name).collect();
+        let names: Vec<&str> = idxs.iter().map(|&i| self.foe_name(i)).collect();
         Some(format!(
             "敵が見えている({})。先に倒すか、手動で動こう。",
             names.join("、")
@@ -1101,15 +1356,34 @@ impl Game {
         if self.dead {
             return;
         }
+        self.search_traps(1, 25);
         if self.turn.is_multiple_of(REGEN_INTERVAL)
             && self.hp < self.max_hp
-            && self.poison == 0
+            && !self.status.has(Status::Poisoned)
             && self.food > 0
-            && self.visible_monster_indices().is_empty()
+            && !(0..self.monsters.len()).any(|i| self.monster_aware(i))
         {
             self.hp += 1;
         }
         self.monsters_act();
+    }
+
+    /// プレイヤーの1回の行動のあとに世界を進める。加速中は2回に1回だけ、減速中は2ターン進む。
+    fn pass_action(&mut self) {
+        let hasted = self.status.has(Status::Hasted);
+        let slowed = self.status.has(Status::Slowed);
+        if hasted && !slowed {
+            self.free_action = !self.free_action;
+            if self.free_action {
+                return;
+            }
+        } else {
+            self.free_action = false;
+        }
+        self.pass_turn();
+        if slowed && !hasted && !self.dead {
+            self.pass_turn();
+        }
     }
 
     /// 1ターンぶんの空腹と毒。
@@ -1142,32 +1416,54 @@ impl Game {
             self.hp -= 1;
             cause = Some("飢え");
         }
-        if self.poison > 0 {
-            self.poison -= 1;
+        if self.status.has(Status::Poisoned) {
             self.hp -= 1;
             cause = Some("毒");
         }
-        let Some(cause) = cause else { return };
-        let msg = format!("{cause}で1ダメージ。(HP {}/{})", self.hp.max(0), self.max_hp);
-        self.note(&msg);
-        if self.poison == 0 && cause == "毒" && self.hp > 0 {
-            self.note("毒が抜けた。");
+        if let Some(cause) = cause {
+            let msg = format!("{cause}で1ダメージ。(HP {}/{})", self.hp.max(0), self.max_hp);
+            self.note(&msg);
+            if self.hp <= 0 {
+                self.dead = true;
+                self.note(&format!("{cause}で力尽きた…。ゲームオーバー。"));
+                return;
+            } else if self.hp <= DANGER_HP {
+                self.alert = Some("体力が危ない。".to_string());
+            }
         }
-        if self.hp <= 0 {
-            self.dead = true;
-            self.note(&format!("{cause}で力尽きた…。ゲームオーバー。"));
-        } else if self.hp <= DANGER_HP {
-            self.alert = Some("体力が危ない。".to_string());
+        self.tick_statuses();
+    }
+
+    /// 状態の残りターンを1つ減らす。切れたものは知らせる。
+    fn tick_statuses(&mut self) {
+        for s in self.status.tick() {
+            self.status_events.push(StatusEvent {
+                target: "player".to_string(),
+                status: s,
+                change: Change::End,
+            });
+            if s == Status::Blind {
+                self.refresh_fov();
+            }
+            self.note(s.def().end);
         }
     }
 
     fn monsters_act(&mut self) {
         for i in 0..self.monsters.len() {
+            self.tick_monster(i);
             let kind = self.monsters[i].kind;
-            if kind.slow && self.turn % 2 == 1 {
-                continue; // 2ターンに1回しか動けない
+            let st = self.monsters[i].status;
+            if self.monsters[i].hp <= 0 || st.has(Status::Asleep) || st.has(Status::Paralyzed) {
+                continue;
             }
-            for _ in 0..kind.actions_per_turn {
+            // 遅い敵・減速した敵は行動が半分に、加速した敵は倍になる（打ち消し合う）
+            let net = kind.slow as i32 + st.has(Status::Slowed) as i32 - st.has(Status::Hasted) as i32;
+            if net > 0 && self.turn % (1 << net) != 0 {
+                continue;
+            }
+            let acts = kind.actions_per_turn * if net < 0 { 2 } else { 1 };
+            for _ in 0..acts {
                 // Thorns で倒された敵は、ターンの終わりにまとめて取り除く
                 if self.dead || self.monsters[i].hp <= 0 {
                     break;
@@ -1178,24 +1474,64 @@ impl Game {
         self.monsters.retain(|m| m.hp > 0);
     }
 
+    /// 敵1体の1ターンぶんの状態（毒のダメージと、残りターンの減少）。
+    fn tick_monster(&mut self, i: usize) {
+        if self.monsters[i].status.has(Status::Poisoned) {
+            self.monsters[i].hp -= 1;
+            if self.monsters[i].hp <= 0 {
+                let name = self.foe_name(i);
+                let xp = self.monsters[i].kind.xp + self.depth - 1;
+                self.pending_xp += xp;
+                self.note(&format!("{name}は毒で倒れた！ (経験値 +{xp})"));
+                return;
+            }
+        }
+        for s in self.monsters[i].status.tick() {
+            self.status_events.push(StatusEvent {
+                target: self.monsters[i].name.to_string(),
+                status: s,
+                change: Change::End,
+            });
+        }
+    }
+
+    /// `from` から見て、プレイヤーからいちばん遠ざかれる空きマス（今より遠くなるときだけ）。
+    fn flee_step(&self, from: (i32, i32)) -> Option<(i32, i32)> {
+        let dist = |p: (i32, i32)| (p.0 - self.pos.0).pow(2) + (p.1 - self.pos.1).pow(2);
+        Dir::ALL
+            .iter()
+            .map(|d| {
+                let (dx, dy) = d.delta();
+                (from.0 + dx, from.1 + dy)
+            })
+            .filter(|&p| self.map.tile(p.0, p.1).walkable() && p != self.pos && self.monster_at(p).is_none())
+            .filter(|&p| dist(p) > dist(from))
+            .max_by_key(|&p| dist(p))
+    }
+
     /// 敵1体の1回の行動。
     fn monster_act(&mut self, i: usize) {
-        let (mpos, name, kind) = (
-            self.monsters[i].pos,
-            self.monsters[i].name,
-            self.monsters[i].kind,
-        );
-        // こちらから見えている間だけ追いかけてくる
-        // (視線判定は向きによって結果が違うことがあるので、プレイヤーの視界に合わせる)
-        if !self.map.is_visible(mpos.0, mpos.1) {
+        let (mpos, kind) = (self.monsters[i].pos, self.monsters[i].kind);
+        let st = self.monsters[i].status;
+        // こちらに気づいている間だけ追いかけてくる
+        if !self.monster_aware(i) {
             return;
         }
-        if kind.erratic && self.rng.range(0, 3) == 0 {
+        if st.has(Status::Scared) {
+            if let Some(np) = self.flee_step(mpos) {
+                self.monsters[i].pos = np;
+                return;
+            }
+            // 追い詰められたら戦う
+        }
+        let lost = st.has(Status::Confused) || st.has(Status::Blind);
+        if (kind.erratic && self.rng.range(0, 3) == 0) || (lost && self.rng.range(0, 2) == 0) {
             if let Some(np) = self.random_free_step(mpos) {
                 self.monsters[i].pos = np;
             }
             return;
         }
+        let name = self.foe_name(i);
         let (dx, dy) = (self.pos.0 - mpos.0, self.pos.1 - mpos.1);
         if dx.abs() <= 1 && dy.abs() <= 1 {
             let bonus = (self.depth as i32 - 1) / 3;
@@ -1221,7 +1557,6 @@ impl Game {
                     self.note(&format!("トゲが{name}に1ダメージを返した。"));
                 }
             }
-            // Thorns で倒された敵は、毒を撒けない
             // Thorns で倒された敵は、毒を撒けない
             if kind.poisons && self.hp > 0 && self.monsters[i].hp > 0 && self.rng.range(0, 2) == 0 {
                 if self.try_poison(5) {
@@ -1297,10 +1632,11 @@ impl Game {
     fn attack_monster(&mut self, i: usize) -> String {
         let (lo, hi) = self.attack_range();
         let dmg = self.rng.range(lo, hi + 1);
+        let name = self.foe_name(i);
         self.monsters[i].hp -= dmg;
-        let (name, hp, max_hp) = {
+        let (hp, max_hp) = {
             let m = &self.monsters[i];
-            (m.name, m.hp, m.max_hp)
+            (m.hp, m.max_hp)
         };
         let suffix = self.weapon_gear().and_then(|g| g.suffix);
         let mut msg = if hp <= 0 {
@@ -1327,9 +1663,12 @@ impl Game {
     /// 1歩移動して1ターン進める（自動移動用）。
     fn step_to(&mut self, p: (i32, i32)) {
         self.pos = p;
-        self.map.update_fov(self.pos, FOV_RADIUS);
-        self.pickup_here();
-        self.pass_turn();
+        self.refresh_fov();
+        self.trigger_trap();
+        if !self.dead {
+            self.pickup_here();
+            self.pass_action();
+        }
     }
 
     /// 現在地から、既知の歩ける床だけを通って最寄りのゴールまでの経路（現在地は含まない）。
@@ -1357,6 +1696,7 @@ impl Game {
                 if !Map::in_bounds(np.0, np.1)
                     || !self.map.is_seen(np.0, np.1)
                     || !self.map.tile(np.0, np.1).walkable()
+                    || (!self.status.has(Status::Levitating) && self.known_trap_at(np).is_some())
                 {
                     continue;
                 }
@@ -1400,6 +1740,8 @@ impl Game {
 
     /// 1つのコロンコマンド文字列を実行する。
     pub fn run(&mut self, line: &str) -> Outcome {
+        self.events.clear();
+        self.status_events.clear();
         match command::parse(line) {
             Ok(cmd) => self.exec(cmd),
             Err(msg) => self.outcome(line.trim().to_string(), false, msg),
@@ -1414,11 +1756,14 @@ impl Game {
             depth: self.depth,
             turn: self.turn,
             hp: self.hp,
+            status_events: self.status_events.clone(),
+            statuses: self.status.active(),
         }
     }
 
     pub fn exec(&mut self, cmd: Command) -> Outcome {
         self.events.clear();
+        self.status_events.clear();
         if self.won {
             return self.outcome(
                 cmd.to_string(),
@@ -1437,28 +1782,36 @@ impl Game {
         // (成功か, メッセージ, このコマンド自身が1ターン消費するか)
         let (ok, mut message, spent) = match cmd {
             Command::Move(d) => {
+                let (d, reeled) = self.confuse_dir(d);
+                let lead = if reeled { format!("混乱して{}へ向かってしまった。 ", d.name()) } else { String::new() };
                 let (dx, dy) = d.delta();
                 let t = (self.pos.0 + dx, self.pos.1 + dy);
                 if let Some(i) = self.monster_at(t) {
-                    (true, self.attack_monster(i), true)
+                    (true, format!("{lead}{}", self.attack_monster(i)), true)
                 } else if self.map.tile(t.0, t.1).walkable() {
                     self.pos = t;
-                    self.map.update_fov(self.pos, FOV_RADIUS);
+                    self.refresh_fov();
                     if self.pos == self.stairs {
                         let hint = if self.has_amulet { "ascend で登れる" } else { "descend で降りられる" };
-                        (true, format!("階段の上にいる。({hint})"), true)
+                        (true, format!("{lead}階段の上にいる。({hint})"), true)
                     } else {
-                        (true, format!("{}へ進んだ。", d.name()), true)
+                        (true, format!("{lead}{}へ進んだ。", d.name()), true)
                     }
+                } else if reeled {
+                    // 混乱してぶつかったときは、ターンを使う
+                    (true, format!("{lead}壁にぶつかった。"), true)
                 } else {
                     (false, "壁にぶつかった。".to_string(), false)
                 }
             }
             Command::Attack(d) => {
+                let (d, reeled) = self.confuse_dir(d);
+                let lead = if reeled { format!("混乱して{}を攻撃してしまった。 ", d.name()) } else { String::new() };
                 let (dx, dy) = d.delta();
                 let t = (self.pos.0 + dx, self.pos.1 + dy);
                 match self.monster_at(t) {
-                    Some(i) => (true, self.attack_monster(i), true),
+                    Some(i) => (true, format!("{lead}{}", self.attack_monster(i)), true),
+                    None if reeled => (true, format!("{lead}空振りした。"), true),
                     None => (false, "そこには何もいない。".to_string(), false),
                 }
             }
@@ -1525,21 +1878,19 @@ impl Game {
         if xp > 0 {
             self.gain_xp(xp);
         }
-        // 歩いたり転移したりして着いた場所のアイテムを拾う
+        // 歩いたり転移したりして着いた場所の罠を踏み、アイテムを拾う
         if self.pos != pos_before && !self.dead {
-            self.pickup_here();
+            self.trigger_trap();
+            if !self.dead {
+                self.pickup_here();
+            }
         }
         if spent && !self.dead {
-            self.pass_turn();
+            self.pass_action();
         }
-        let slept = self.extra_turns > 0;
-        while self.extra_turns > 0 && !self.dead {
-            self.extra_turns -= 1;
+        // 眠りや停止の間は行動できないので、解けるまで時間が過ぎる
+        while self.incapacitated() && !self.dead {
             self.pass_turn();
-        }
-        self.extra_turns = 0;
-        if slept && !self.dead {
-            self.note("目が覚めた。");
         }
         // 敵のターンに倒した敵（Thorns）の経験値
         let xp = std::mem::take(&mut self.pending_xp);
@@ -1575,7 +1926,21 @@ impl Game {
         (true, format!("{n}ターン留まった。"))
     }
 
+    /// 自動移動できない状態（混乱・盲目）なら、その理由。
+    fn refuse_auto_move(&self) -> Option<String> {
+        if self.status.has(Status::Confused) {
+            Some("混乱していて自動移動できない。".to_string())
+        } else if self.status.has(Status::Blind) {
+            Some("目が見えなくて自動移動できない。".to_string())
+        } else {
+            None
+        }
+    }
+
     fn travel_to_stairs(&mut self) -> (bool, String) {
+        if let Some(m) = self.refuse_auto_move() {
+            return (false, m);
+        }
         if self.pos == self.stairs {
             return (true, "すでに階段の上にいる。".to_string());
         }
@@ -1596,7 +1961,7 @@ impl Game {
             if let Some(i) = self.monster_at(p) {
                 return (
                     true,
-                    format!("階段へ向かう途中({n}歩)、進路上に{}がいる。", self.monsters[i].name),
+                    format!("階段へ向かう途中({n}歩)、進路上に{}がいる。", self.foe_name(i)),
                 );
             }
             self.step_to(p);
@@ -1615,6 +1980,9 @@ impl Game {
         if self.dead {
             return Some("力尽きた。".to_string());
         }
+        if self.incapacitated() {
+            return Some("動けなくなって中断した。".to_string());
+        }
         if hit {
             return Some("攻撃を受けて中断した。".to_string());
         }
@@ -1623,10 +1991,13 @@ impl Game {
         }
         self.visible_monster_indices()
             .first()
-            .map(|&i| format!("{}が現れて中断した。", self.monsters[i].name))
+            .map(|&i| format!("{}が現れて中断した。", self.foe_name(i)))
     }
 
     fn explore(&mut self) -> (bool, String) {
+        if let Some(m) = self.refuse_auto_move() {
+            return (false, m);
+        }
         if let Some(m) = self.refuse_if_enemies() {
             return (false, m);
         }
@@ -1649,7 +2020,7 @@ impl Game {
             if let Some(i) = self.monster_at(path[0]) {
                 return (
                     true,
-                    format!("{steps}歩探索したが、進路上に{}がいる。", self.monsters[i].name),
+                    format!("{steps}歩探索したが、進路上に{}がいる。", self.foe_name(i)),
                 );
             }
             self.step_to(path[0]);
@@ -1664,6 +2035,14 @@ impl Game {
     }
 
     fn describe_surroundings(&self) -> String {
+        if self.status.has(Status::Blind) {
+            let mut s = "目が見えない。周りの様子は分からない。".to_string();
+            let under = self.underfoot_text();
+            if !under.is_empty() {
+                s.push_str(&format!(" {under}。"));
+            }
+            return s;
+        }
         let mut parts = Vec::new();
         if !self.map.is_seen(self.stairs.0, self.stairs.1) {
             parts.push("階段はまだ見つけていない。".to_string());
@@ -1676,13 +2055,23 @@ impl Game {
             ));
         }
         for e in self.visible_enemies() {
+            let fx = if e.statuses.is_empty() {
+                String::new()
+            } else {
+                format!("[{}]", e.statuses.iter().map(|(s, n)| format!("{}{n}", s.name())).collect::<Vec<_>>().join(" "))
+            };
             parts.push(format!(
-                "{}(HP {}/{})が{}にいる。",
+                "{}(HP {}/{}){fx}が{}にいる。",
                 e.name,
                 e.hp,
                 e.max_hp,
                 rel_text(self.pos, e.pos)
             ));
+        }
+        for t in self.traps.iter().filter(|t| t.revealed) {
+            if t.pos != self.pos {
+                parts.push(format!("{} {}が{}にある。", crate::trap::TRAP_GLYPH, t.kind.name(), rel_text(self.pos, t.pos)));
+            }
         }
         if let Some(p) = self.amulet.filter(|p| self.map.is_seen(p.0, p.1)) {
             parts.push(format!(", 魔除けのアミュレットが{}にある。", rel_text(self.pos, p)));
@@ -1712,16 +2101,27 @@ impl Game {
                 seen: true,
             };
         }
-        if self.map.is_visible(x, y) {
-            if let Some(i) = self.monster_at((x, y)) {
-                return Cell {
-                    ch: self.monsters[i].glyph,
-                    visible: true,
-                    seen: true,
-                };
-            }
+        let blind = self.status.has(Status::Blind);
+        if let Some(i) = self.monster_at((x, y)).filter(|&i| self.can_see_monster(i)) {
+            return Cell {
+                ch: self.foe_glyph(i),
+                visible: true,
+                seen: true,
+            };
         }
         let seen = self.map.is_seen(x, y);
+        if blind {
+            // 目が見えない間は、覚えている地形だけ（物も敵も分からない）
+            return Cell {
+                ch: match self.map.tile(x, y) {
+                    _ if !seen => ' ',
+                    Tile::Stairs if self.has_amulet => '<',
+                    t => t.glyph(),
+                },
+                visible: false,
+                seen,
+            };
+        }
         if seen && self.amulet == Some((x, y)) {
             return Cell {
                 ch: ',',
@@ -1737,6 +2137,13 @@ impl Game {
                     seen,
                 };
             }
+        }
+        if seen && self.known_trap_at((x, y)).is_some() {
+            return Cell {
+                ch: crate::trap::TRAP_GLYPH,
+                visible: self.map.is_visible(x, y),
+                seen,
+            };
         }
         Cell {
             ch: match self.map.tile(x, y) {
@@ -1774,16 +2181,38 @@ impl Game {
             self.pos.0,
             self.pos.1
         );
-        for line in self.map_lines() {
-            s.push_str(line.trim_end());
-            s.push('\n');
+        if self.status.has(Status::Blind) {
+            s.push_str("-- マップ --\n(目が見えない！ マップも敵も見えない。壁にぶつかっても分からない。盲目が治るまで待つか、手探りで動く)\n");
+        } else {
+            for line in self.map_lines() {
+                s.push_str(line.trim_end());
+                s.push('\n');
+            }
+        }
+        let active = self.status.active();
+        if !active.is_empty() {
+            s.push_str("-- 状態 --\n");
+            for (st, n) in active {
+                s.push_str(&format!("{}: 残り{n}ターン — {}\n", st.name(), st.def().effect));
+            }
         }
         let enemies = self.visible_enemies();
         if !enemies.is_empty() {
             s.push_str("-- 見えている敵 --\n");
+            if self.status.has(Status::Hallucinating) {
+                s.push_str("(幻覚中: 名前と記号はでたらめ。HPと位置は本物)\n");
+            }
             for e in enemies {
+                let fx = if e.statuses.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " [{}]",
+                        e.statuses.iter().map(|(s, n)| format!("{}{n}", s.name())).collect::<Vec<_>>().join(" ")
+                    )
+                };
                 s.push_str(&format!(
-                    "{} {} HP {}/{} ({})\n",
+                    "{} {} HP {}/{}{fx} ({})\n",
                     e.glyph,
                     e.name,
                     e.hp,
@@ -1791,6 +2220,8 @@ impl Game {
                     rel_text(self.pos, e.pos)
                 ));
             }
+        } else if self.status.has(Status::Blind) {
+            s.push_str("-- 見えている敵 --\n(目が見えないので敵の有無は分からない)\n");
         }
         let under = self.underfoot_text();
         if !under.is_empty() {
@@ -1826,6 +2257,7 @@ mod tests {
             hp,
             max_hp: hp,
             pos,
+            status: StatusSet::default(),
         }
     }
 
@@ -1848,6 +2280,7 @@ mod tests {
         let mut g = Game::new(seed);
         g.monsters.clear();
         g.floor_items.clear();
+        g.traps.clear();
         g.hp = 1000;
         g.max_hp = 1000;
         let p = (g.pos.0 + 1, g.pos.1);
@@ -2177,12 +2610,12 @@ mod tests {
         for _ in 0..40 {
             g.run("wait");
         }
-        assert_eq!(g.poison, 0);
+        assert_eq!(g.poison(), 0);
         assert!(g.hp < 1000, "攻撃自体は受ける");
         g.take(ItemKind::PoisonShroom);
         let l = g.inventory.iter().find(|s| s.kind == ItemKind::PoisonShroom).unwrap().letter;
         let o = g.run(&format!("eat {l}"));
-        assert_eq!(g.poison, 0, "{}", o.message);
+        assert_eq!(g.poison(), 0, "{}", o.message);
     }
 
     #[test]
@@ -2332,9 +2765,9 @@ mod tests {
             g.monsters.clear();
             let p = (g.pos.0 + 1, g.pos.1);
             g.monsters.push(monster(&crate::monster::SPIDER, p, 1));
-            g.poison = 0;
+            g.status.clear(Status::Poisoned);
             g.run("wait");
-            assert_eq!(g.poison, 0, "倒された毒グモが毒を撒いた");
+            assert_eq!(g.poison(), 0, "倒された毒グモが毒を撒いた");
             assert!(g.monsters.is_empty());
         }
     }
@@ -2778,7 +3211,7 @@ mod tests {
     fn poison_hurts_each_turn_blocks_regen_and_wears_off() {
         let mut g = quiet(1);
         g.hp = 10;
-        g.poison = 3;
+        g.status.apply(Status::Poisoned, 3);
         let mut text = String::new();
         for _ in 0..3 {
             text.push_str(&g.run("wait").message);
@@ -2786,10 +3219,10 @@ mod tests {
         assert_eq!(g.hp(), 7);
         assert!(text.contains("毒で1ダメージ"), "{text}");
         assert!(text.contains("毒が抜けた"), "{text}");
-        assert_eq!(g.poison, 0);
+        assert_eq!(g.poison(), 0);
         // 毒の間は自然回復しない
         g.hp = 20;
-        g.poison = 15;
+        g.status.apply(Status::Poisoned, 15);
         let hp = g.hp();
         for _ in 0..REGEN_INTERVAL {
             g.run("wait");
@@ -2801,24 +3234,24 @@ mod tests {
     fn poison_can_kill_and_healing_potion_cures_it() {
         let mut g = quiet(1);
         g.hp = 1;
-        g.poison = 5;
+        g.status.apply(Status::Poisoned, 5);
         let o = g.run("wait");
         assert!(g.is_dead() && o.message.contains("毒で力尽きた"), "{}", o.message);
 
         let mut g = with_gear(&[ItemKind::Healing]);
-        g.poison = 9;
+        g.status.apply(Status::Poisoned, 9);
         let o = g.run("quaff a");
         assert!(o.message.contains("毒が抜けた"), "{}", o.message);
-        assert_eq!(g.poison, 0);
+        assert_eq!(g.poison(), 0);
     }
 
     #[test]
     fn antidote_cures_poison_and_is_harmless_otherwise() {
         let mut g = with_gear(&[ItemKind::Antidote, ItemKind::Antidote]);
-        g.poison = 9;
+        g.status.apply(Status::Poisoned, 9);
         let o = g.run("quaff a");
         assert!(o.ok && o.message.contains("毒が抜けた"), "{}", o.message);
-        assert_eq!(g.poison, 0);
+        assert_eq!(g.poison(), 0);
         let o = g.run("quaff a");
         assert!(o.ok && o.message.contains("毒は受けていなかった"), "{}", o.message);
     }
@@ -2846,7 +3279,7 @@ mod tests {
     fn poison_stops_auto_walk_when_hp_is_low() {
         let mut g = quiet(2);
         g.hp = DANGER_HP + 2;
-        g.poison = 10;
+        g.status.apply(Status::Poisoned, 10);
         let o = g.run("explore");
         assert!(o.message.contains("体力が危ない"), "{}", o.message);
         assert!(!g.is_dead());
@@ -2863,7 +3296,7 @@ mod tests {
             assert!(o.ok);
             if o.message.contains("腐っていた") {
                 rotten += 1;
-                assert!(g.poison > 0 && g.food < 200, "{}", o.message);
+                assert!(g.poison() > 0 && g.food < 200, "{}", o.message);
             } else {
                 fine += 1;
                 assert!(g.food >= 240, "{}", o.message); // 100 + 150 - 1ターン
@@ -2890,7 +3323,7 @@ mod tests {
         let mut g = with_gear(&[ItemKind::PoisonShroom]);
         let o = g.run("eat a");
         assert!(o.message.contains("これは毒キノコだった"), "{}", o.message);
-        assert!(g.poison >= 7, "{}", g.poison);
+        assert!(g.poison() >= 7, "{}", g.poison());
         let mut g = with_gear(&[ItemKind::VigorShroom]);
         g.hp = 5;
         let o = g.run("eat a");
@@ -2906,7 +3339,7 @@ mod tests {
             let o = g.run("wait");
             if o.message.contains("毒を受けた！") {
                 saw = true;
-                assert!(g.poison > 0);
+                assert!(g.poison() > 0);
                 break;
             }
         }
@@ -3061,6 +3494,7 @@ mod tests {
         for seed in 0..30 {
             let mut g = Game::new(seed);
             g.monsters.clear();
+            g.traps.clear();
             let mut found = false;
             for _ in 0..50 {
                 let o = g.run("explore");
@@ -3194,6 +3628,7 @@ mod tests {
         let mut g = Game::new(seed);
         g.monsters.clear();
         g.floor_items.clear();
+        g.traps.clear();
         g
     }
 
@@ -3398,6 +3833,7 @@ mod tests {
         for seed in 0..10 {
             let mut g = Game::new(seed);
             g.monsters.clear();
+            g.traps.clear();
             let n = g.floor_items.len();
             assert!(n > 0);
             for _ in 0..200 {
@@ -3441,7 +3877,7 @@ mod tests {
     fn dying_from_a_poison_potion_does_not_advance_another_turn() {
         let mut g = with_gear(&[ItemKind::Poison]);
         g.hp = 3;
-        g.poison = 4;
+        g.status.apply(Status::Poisoned, 4);
         let t = g.turn();
         let o = g.run("quaff a");
         assert!(g.is_dead());
@@ -3593,5 +4029,411 @@ mod tests {
         // 一気に複数レベル上がることもある
         g.gain_xp(1000);
         assert!(g.level() > 4 && g.xp() < g.xp_for_next());
+    }
+
+    // ---- 状態異常 ----
+
+    #[test]
+    fn confusion_sometimes_sends_you_the_wrong_way_and_a_stumble_costs_a_turn() {
+        let mut g = quiet(1);
+        g.status.apply(Status::Confused, 1000);
+        let (mut reeled, mut straight) = (0, 0);
+        for _ in 0..60 {
+            let before = g.turn();
+            let o = g.run("move east");
+            if o.message.contains("混乱して") {
+                reeled += 1;
+                // 向きがずれたときは、壁にぶつかってもターンを使って成功扱い
+                assert!(o.ok && g.turn() > before, "{}", o.message);
+            } else {
+                straight += 1;
+            }
+        }
+        assert!(reeled > 10 && straight > 10, "{reeled} {straight}");
+        // 混乱していなければ、ずれない
+        let mut g = quiet(1);
+        for _ in 0..30 {
+            assert!(!g.run("move east").message.contains("混乱して"));
+        }
+    }
+
+    #[test]
+    fn confusion_and_blindness_forbid_auto_walk() {
+        let mut g = quiet(1);
+        g.status.apply(Status::Confused, 5);
+        let o = g.run("explore");
+        assert!(!o.ok && o.message.contains("混乱"), "{}", o.message);
+        assert!(!g.run("travel >").ok);
+        let mut g = quiet(1);
+        g.status.apply(Status::Blind, 5);
+        let o = g.run("explore");
+        assert!(!o.ok && o.message.contains("見え"), "{}", o.message);
+    }
+
+    #[test]
+    fn blindness_hides_the_map_and_enemies_and_says_so() {
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        let seen_before = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| g.map.is_seen(x, y)).count();
+        g.inflict(Status::Blind, 30);
+        let text = g.observe_text(5);
+        assert!(text.contains("目が見えない"), "{text}");
+        assert!(text.contains("盲目"), "{text}");
+        // マップの行も、敵の一覧も出ない
+        assert!(!text.contains('@') || !text.contains("###"), "{text}");
+        assert!(!text.contains("ゴブリン"), "{text}");
+        assert!(g.visible_enemies().is_empty());
+        // 襲われても正体は分からない
+        let o = g.run("wait");
+        assert!(o.message.contains("何かの攻撃！"), "{}", o.message);
+        assert!(!o.message.contains("ゴブリン"), "{}", o.message);
+        // 手探りで動いても、新しい場所は覚えない
+        for _ in 0..5 {
+            g.run("move west");
+        }
+        let seen_after = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| g.map.is_seen(x, y)).count();
+        assert_eq!(seen_before, seen_after);
+        assert!(g.run("look").message.contains("目が見えない"));
+    }
+
+    #[test]
+    fn sight_returns_when_blindness_ends() {
+        let mut g = quiet(2);
+        g.inflict(Status::Blind, 3);
+        assert!(!g.map.is_visible(g.pos.0, g.pos.1));
+        for _ in 0..3 {
+            g.run("wait");
+        }
+        assert!(!g.status.has(Status::Blind));
+        assert!(g.map.is_visible(g.pos.0, g.pos.1));
+        assert!(g.log().iter().any(|l| l.text.contains("目が見えるようになった")));
+    }
+
+    #[test]
+    fn hallucination_scrambles_names_and_glyphs_but_not_hp_or_position() {
+        let mut g = with_adjacent(3, &crate::monster::OGRE);
+        g.monsters[0].hp = 7;
+        g.monsters[0].max_hp = 10;
+        g.inflict(Status::Hallucinating, 1000);
+        let mut names = std::collections::HashSet::new();
+        let mut glyphs = std::collections::HashSet::new();
+        for _ in 0..40 {
+            let e = &g.visible_enemies()[0];
+            assert_eq!((e.hp, e.max_hp, e.pos), (7, 10, (g.pos.0 + 1, g.pos.1)));
+            names.insert(e.name);
+            glyphs.insert(e.glyph);
+            g.turn += 1; // ターンが進むと見え方が変わる
+        }
+        assert!(names.len() >= 3 && glyphs.len() >= 3, "{names:?} {glyphs:?}");
+        // 同じターンの見え方は安定していて、観測が乱数を消費しない
+        let a = g.observe_text(3);
+        assert_eq!(a, g.observe_text(3));
+        assert!(g.observe_text(3).contains("幻覚"));
+        // 一覧と地図の記号は、同じでたらめを指している
+        let e = &g.visible_enemies()[0];
+        assert_eq!(g.cell(e.pos.0, e.pos.1).ch, e.glyph);
+    }
+
+    #[test]
+    fn observing_never_changes_what_happens() {
+        let play = |observe: bool| {
+            let mut g = with_adjacent(5, &crate::monster::GOBLIN);
+            g.inflict(Status::Hallucinating, 100);
+            let mut out = Vec::new();
+            for _ in 0..10 {
+                if observe {
+                    let _ = g.observe_text(5);
+                    let _ = g.visible_enemies();
+                }
+                out.push(g.run("attack east").message);
+            }
+            out
+        };
+        assert_eq!(play(true), play(false));
+    }
+
+    #[test]
+    fn sleep_and_paralysis_pass_time_until_they_wear_off() {
+        let mut g = quiet(1);
+        g.inflict(Status::Paralyzed, 6);
+        let t = g.turn();
+        let o = g.run("wait");
+        assert_eq!(g.turn() - t, 6, "{}", o.message);
+        assert!(o.message.contains("体が動くようになった"), "{}", o.message);
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        g.inflict(Status::Asleep, 4);
+        let hp = g.hp;
+        let o = g.run("wait");
+        assert!(g.hp < hp && o.message.contains("目が覚めた"), "{}", o.message);
+    }
+
+    #[test]
+    fn haste_halves_and_slow_doubles_the_cost_of_actions() {
+        let mut g = quiet(1);
+        g.status.apply(Status::Hasted, 1000);
+        let t = g.turn();
+        for _ in 0..10 {
+            g.run("wait");
+        }
+        assert_eq!(g.turn() - t, 5);
+        let mut g = quiet(1);
+        g.status.apply(Status::Slowed, 1000);
+        let t = g.turn();
+        for _ in 0..10 {
+            g.run("wait");
+        }
+        assert_eq!(g.turn() - t, 20);
+        // 打ち消し合う
+        let mut g = quiet(1);
+        g.status.apply(Status::Slowed, 1000);
+        g.status.apply(Status::Hasted, 1000);
+        let t = g.turn();
+        for _ in 0..10 {
+            g.run("wait");
+        }
+        assert_eq!(g.turn() - t, 10);
+    }
+
+    #[test]
+    fn statuses_count_down_each_turn_and_announce_the_end() {
+        let mut g = quiet(1);
+        g.inflict(Status::Hasted, 3);
+        g.inflict(Status::Levitating, 2);
+        assert_eq!(g.status.short_text(), "加速3 浮遊2");
+        let o = g.run("stay 1");
+        assert_eq!(o.statuses, vec![(Status::Hasted, 2), (Status::Levitating, 1)]);
+        let o = g.run("stay 1");
+        assert!(o.message.contains("浮遊が切れて"), "{}", o.message);
+        assert!(o.status_events.iter().any(|e| e.status == Status::Levitating && e.change == Change::End));
+        assert!(g.observe_text(3).contains("加速: 残り1ターン"));
+    }
+
+    #[test]
+    fn outcome_carries_status_changes_for_the_record() {
+        use crate::record::Event;
+        let mut g = quiet(1);
+        g.take(ItemKind::Sleep);
+        let o = g.run("quaff a");
+        assert!(o.status_events.iter().any(|e| e.target == "player"
+            && e.status == Status::Asleep
+            && matches!(e.change, Change::Apply(_))), "{:?}", o.status_events);
+        assert!(o.status_events.iter().any(|e| e.status == Status::Asleep && e.change == Change::End));
+        let line = Event::from_outcome(&o, None).to_line();
+        assert!(line.contains("\"status_events\"") && line.contains("asleep") && line.contains("apply"), "{line}");
+        assert_eq!(Event::parse(&line), Ok(Event::from_outcome(&o, None)));
+        // 状態のないコマンドは、余計な欄を作らない
+        let o = g.run("wait");
+        assert!(!Event::from_outcome(&o, None).to_line().contains("status"));
+    }
+
+    fn put_trap(g: &mut Game, kind: TrapKind) -> (i32, i32) {
+        let p = (g.pos.0 + 1, g.pos.1);
+        assert!(g.map.tile(p.0, p.1).walkable());
+        g.traps.push(Trap { pos: p, kind, revealed: false });
+        p
+    }
+
+    #[test]
+    fn traps_are_hidden_until_stepped_on_and_then_shown_on_the_map() {
+        let mut g = quiet(3);
+        let p = put_trap(&mut g, TrapKind::Dart);
+        assert_ne!(g.cell(p.0, p.1).ch, '^');
+        let hp = g.hp;
+        let o = g.run("move east");
+        assert!(o.message.contains("毒矢"), "{}", o.message);
+        assert!(g.hp < hp && g.status.has(Status::Poisoned));
+        g.run("move west");
+        assert_eq!(g.cell(p.0, p.1).ch, '^');
+        assert!(g.run("look").message.contains("毒矢の罠"));
+    }
+
+    #[test]
+    fn trapdoor_drops_you_a_floor_and_levitation_ignores_traps() {
+        let mut g = quiet(3);
+        put_trap(&mut g, TrapKind::Trapdoor);
+        let o = g.run("move east");
+        assert_eq!(g.depth(), 2, "{}", o.message);
+        assert!(o.message.contains("落とし穴に落ちた"), "{}", o.message);
+        let mut g = quiet(3);
+        let p = put_trap(&mut g, TrapKind::Trapdoor);
+        g.inflict(Status::Levitating, 20);
+        let o = g.run("move east");
+        assert_eq!((g.depth(), g.pos()), (1, p), "{}", o.message);
+        assert!(!o.message.contains("落とし穴"));
+        // 眠りガス
+        let mut g = quiet(3);
+        put_trap(&mut g, TrapKind::SleepGas);
+        let t = g.turn();
+        let o = g.run("move east");
+        assert!(g.turn() - t >= 5 && o.message.contains("目が覚めた"), "{}", o.message);
+    }
+
+    #[test]
+    fn trapdoors_are_never_placed_where_they_cannot_drop() {
+        let mut g = quiet(4);
+        g.depth = AMULET_DEPTH;
+        for _ in 0..30 {
+            g.spawn_traps();
+            assert!(g.traps.iter().all(|t| t.kind != TrapKind::Trapdoor));
+        }
+        let mut g = quiet(4);
+        g.has_amulet = true;
+        for _ in 0..30 {
+            g.spawn_traps();
+            assert!(g.traps.iter().all(|t| t.kind != TrapKind::Trapdoor));
+        }
+    }
+
+    #[test]
+    fn standing_next_to_a_trap_can_reveal_it() {
+        let mut g = quiet(3);
+        let p = put_trap(&mut g, TrapKind::Dart);
+        for _ in 0..60 {
+            g.run("wait");
+        }
+        assert!(g.traps[0].revealed, "60ターン隣に立って見つからなかった");
+        assert_eq!(g.cell(p.0, p.1).ch, '^');
+    }
+
+    #[test]
+    fn explore_walks_around_a_known_trap() {
+        let mut g = quiet(3);
+        let p = put_trap(&mut g, TrapKind::Trapdoor);
+        g.traps[0].revealed = true;
+        for _ in 0..40 {
+            let o = g.run("explore");
+            if o.message.contains("探索し尽くした") || o.message.contains("もう探索") {
+                break;
+            }
+        }
+        assert_eq!(g.depth(), 1);
+        let _ = p;
+    }
+
+    #[test]
+    fn an_invisible_player_is_only_noticed_up_close() {
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        g.hp = 1000;
+        // 4 マス離れたゴブリン
+        let far = (g.pos.0 + 4, g.pos.1);
+        if !g.map.tile(far.0, far.1).walkable() {
+            return;
+        }
+        g.monsters[0].pos = far;
+        assert!(g.monster_aware(0));
+        g.status.apply(Status::Invisible, 100);
+        assert!(!g.monster_aware(0));
+        g.monsters[0].pos = (g.pos.0 + 2, g.pos.1);
+        assert!(g.monster_aware(0));
+    }
+
+    #[test]
+    fn a_paralyzed_or_sleeping_monster_does_not_act() {
+        for st in [Status::Paralyzed, Status::Asleep] {
+            let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+            let hp = g.hp;
+            assert!(g.inflict_monster(0, st, 5));
+            g.run("wait");
+            g.run("wait");
+            assert_eq!(g.hp, hp, "{st:?}");
+            // 切れたら殴ってくる
+            for _ in 0..6 {
+                g.run("wait");
+            }
+            assert!(g.hp < hp, "{st:?}");
+        }
+    }
+
+    #[test]
+    fn a_scared_monster_flees_and_a_cornered_one_fights() {
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        g.inflict_monster(0, Status::Scared, 50);
+        let hp = g.hp;
+        let d0 = (g.monsters[0].pos.0 - g.pos.0).abs();
+        for _ in 0..3 {
+            g.run("wait");
+        }
+        let d1 = (g.monsters[0].pos.0 - g.pos.0).abs().max((g.monsters[0].pos.1 - g.pos.1).abs());
+        assert!(d1 > d0 && g.hp == hp, "{d0} {d1}");
+        // 逃げ場がなければ戦う
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        g.inflict_monster(0, Status::Scared, 50);
+        let m = g.monsters[0].pos;
+        for d in Dir::ALL {
+            let (dx, dy) = d.delta();
+            let n = (m.0 + dx, m.1 + dy);
+            if n != g.pos && g.map.tile(n.0, n.1).walkable() {
+                g.monsters.push(monster(&crate::monster::SLIME, n, 1000));
+                g.inflict_monster(g.monsters.len() - 1, Status::Paralyzed, 100);
+            }
+        }
+        let hp = g.hp;
+        g.run("wait");
+        assert!(g.hp < hp);
+    }
+
+    #[test]
+    fn poison_kills_monsters_and_gives_experience() {
+        let mut g = with_adjacent(3, &crate::monster::SLIME);
+        g.monsters[0].hp = 2;
+        g.monsters[0].max_hp = 2;
+        g.inflict_monster(0, Status::Poisoned, 10);
+        let xp = g.xp();
+        let hp = g.hp;
+        g.run("wait");
+        g.run("wait");
+        assert!(g.monsters.is_empty());
+        assert!(g.xp() > xp && g.hp >= hp - 3);
+        assert!(g.log().iter().any(|l| l.text.contains("毒で倒れた")));
+    }
+
+    #[test]
+    fn hasted_monsters_act_twice_and_slowed_ones_every_other_turn() {
+        let hits = |st: Option<Status>| {
+            let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+            if let Some(s) = st {
+                g.inflict_monster(0, s, 1000);
+            }
+            let mut n = 0;
+            for _ in 0..20 {
+                n += g.run("wait").message.matches("の攻撃！").count();
+            }
+            n
+        };
+        let (base, fast, slow) = (hits(None), hits(Some(Status::Hasted)), hits(Some(Status::Slowed)));
+        assert_eq!(base, 20);
+        assert_eq!(fast, 40);
+        assert_eq!(slow, 10);
+    }
+
+    #[test]
+    fn statuses_that_make_no_sense_for_monsters_are_refused() {
+        let mut g = with_adjacent(3, &crate::monster::SLIME);
+        assert!(!g.inflict_monster(0, Status::Hallucinating, 5));
+        assert!(!g.inflict_monster(0, Status::Levitating, 5));
+        assert!(g.monsters[0].status.active().is_empty());
+        assert!(g.inflict_monster(0, Status::Confused, 5));
+        assert_eq!(g.visible_enemies()[0].statuses, vec![(Status::Confused, 5)]);
+        assert!(g.observe_text(3).contains("[混乱5]"));
+    }
+
+    #[test]
+    fn poison_is_a_status_like_the_others() {
+        let mut g = quiet(1);
+        g.try_poison(5);
+        assert!(g.observe_text(3).contains("毒: 残り5ターン"));
+        let o = g.run("stay 1");
+        assert_eq!(o.statuses, vec![(Status::Poisoned, 4)]);
+    }
+
+    #[test]
+    fn a_blind_player_cannot_read_scrolls_but_can_still_drink() {
+        let mut g = quiet(1);
+        g.take(ItemKind::Teleport);
+        g.take(ItemKind::Healing);
+        g.inflict(Status::Blind, 20);
+        let t = g.turn();
+        let o = g.run("read a");
+        assert!(!o.ok && o.message.contains("読めない") && g.turn() == t, "{}", o.message);
+        assert!(g.run("quaff b").ok);
     }
 }

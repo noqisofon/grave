@@ -227,6 +227,8 @@ mod tests {
             depth,
             turn,
             hp: Some(hp),
+            status_events: vec![],
+            statuses: vec![],
         }
     }
 
