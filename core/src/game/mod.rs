@@ -1262,6 +1262,11 @@ impl Game {
         if self.status.has(Status::Levitating) {
             return;
         }
+        self.fire_trap(ti);
+    }
+
+    /// 罠 `ti` を発動する（足元の罠として）。
+    fn fire_trap(&mut self, ti: usize) {
         self.traps[ti].revealed = true;
         let kind = self.traps[ti].kind;
         match kind {
@@ -1300,6 +1305,50 @@ impl Game {
                 self.alert = Some("眠りガスで中断した。".to_string());
             }
         }
+    }
+
+    /// 罠の解除の成功率(%)。器用さの指輪で上がり、混乱していると下がる。
+    fn disarm_percent(&self) -> i32 {
+        let mut p = 60 + 10 * self.ring_fx().dexterity;
+        if self.status.has(Status::Confused) {
+            p -= 30;
+        }
+        p.clamp(10, 95)
+    }
+
+    /// `disarm [向き]`: 見つけた罠を解除する。向きを省くと足元。確率で成功し、失敗すると罠が作動することがある。
+    fn disarm(&mut self, d: Option<Dir>) -> (bool, String, bool) {
+        if self.status.has(Status::Blind) {
+            return (false, "目が見えなくて、罠をいじれない。".to_string(), false);
+        }
+        let target = match d {
+            Some(d) => (self.pos.0 + d.delta().0, self.pos.1 + d.delta().1),
+            None => self.pos,
+        };
+        let Some(ti) = self.traps.iter().position(|t| t.pos == target && t.revealed) else {
+            return (false, "そこには見つけた罠がない。(隠れた罠は解除できない。近くに立って探そう)".to_string(), false);
+        };
+        let kind = self.traps[ti].kind;
+        let percent = self.disarm_percent();
+        if self.rng.range(0, 100) < percent {
+            self.traps.remove(ti);
+            self.map.mark_seen(target.0, target.1);
+            return (true, format!("{}を解除した！ (成功率{percent}%)", kind.name()), true);
+        }
+        let mut msg = format!("{}の解除に失敗した。(成功率{percent}%)", kind.name());
+        // 失敗すると3回に1回は作動する。足元の罠以外の落とし穴は、落ちずに済む
+        if self.rng.range(0, 3) == 0 {
+            if target == self.pos && !self.status.has(Status::Levitating) {
+                msg.push_str(" 手元が狂って罠が作動した！");
+                self.fire_trap(ti);
+            } else if kind != TrapKind::Trapdoor {
+                msg.push_str(" 手元が狂って罠が作動した！");
+                self.fire_trap(ti);
+            } else {
+                msg.push_str(" 床板がきしんだが、落ちずに済んだ。");
+            }
+        }
+        (true, msg, true)
     }
 
     /// 周りの隠れた罠を見つける。半径 `radius` 以内の罠が、`percent`% の確率で見つかる。
@@ -1881,6 +1930,7 @@ impl Game {
                 (true, msg, false)
             }
             Command::Look => (true, self.describe_surroundings(), false),
+            Command::Disarm(d) => self.disarm(d),
             Command::Travel(TravelTarget::Stairs) => {
                 let (ok, msg) = self.travel_to_stairs();
                 (ok, msg, false)
@@ -5620,6 +5670,79 @@ mod tests {
                 }
                 assert!(g.rings[0].is_none() || g.rings[0] != g.rings[1]);
             }
+        }
+    }
+
+    #[test]
+    fn disarm_removes_a_known_trap_with_some_probability() {
+        let (mut ok, mut fail) = (0, 0);
+        for seed in 0..60 {
+            let mut g = quiet(3);
+            g.hp = 1000;
+            g.max_hp = 1000;
+            g.rng = Rng::new(seed);
+            let p = put_trap(&mut g, TrapKind::SleepGas);
+            g.traps[0].revealed = true;
+            let t = g.turn();
+            let o = g.run("disarm east");
+            assert!(o.ok && g.turn() > t, "{}", o.message);
+            if o.message.contains("解除した") {
+                assert!(g.traps.is_empty());
+                assert_ne!(g.cell(p.0, p.1).ch, '^');
+                ok += 1;
+            } else {
+                assert!(o.message.contains("失敗") && g.traps.len() == 1, "{}", o.message);
+                fail += 1;
+            }
+        }
+        assert!(ok > 20 && fail > 5, "{ok} {fail}");
+    }
+
+    #[test]
+    fn disarm_needs_a_known_trap_and_sight_and_can_trigger_on_failure() {
+        let mut g = quiet(3);
+        put_trap(&mut g, TrapKind::Dart); // 隠れている
+        let t = g.turn();
+        let o = g.run("disarm east");
+        assert!(!o.ok && o.message.contains("見つけた罠がない") && g.turn() == t, "{}", o.message);
+        g.traps[0].revealed = true;
+        g.status.apply(Status::Blind, 10);
+        assert!(!g.run("disarm east").ok);
+        g.status.clear(Status::Blind);
+        // 失敗すると罠が作動することがある
+        let mut fired = false;
+        for seed in 0..80 {
+            let mut g = quiet(3);
+            g.hp = 1000;
+            g.max_hp = 1000;
+            g.rng = Rng::new(seed);
+            put_trap(&mut g, TrapKind::Dart);
+            g.traps[0].revealed = true;
+            let o = g.run("disarm east");
+            if o.message.contains("作動した") {
+                fired = true;
+                assert!(g.hp < 1000 && g.status.has(Status::Poisoned), "{}", o.message);
+                break;
+            }
+        }
+        assert!(fired);
+        // 器用さの指輪で成功率が上がる
+        let mut g = quiet(3);
+        let base = g.disarm_percent();
+        g.take(ring(ItemKind::RingDexterity, 3));
+        g.run("equip a");
+        assert!(g.disarm_percent() > base);
+    }
+
+    #[test]
+    fn a_failed_disarm_next_to_a_trapdoor_never_drops_you() {
+        for seed in 0..60 {
+            let mut g = quiet(3);
+            g.rng = Rng::new(seed);
+            put_trap(&mut g, TrapKind::Trapdoor);
+            g.traps[0].revealed = true;
+            g.run("disarm east");
+            assert_eq!(g.depth(), 1);
         }
     }
 }

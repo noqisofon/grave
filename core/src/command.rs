@@ -112,6 +112,8 @@ pub enum Command {
     /// その場に指定ターンだけ留まる（敵に襲われたら中断）
     Stay(u32),
     Look,
+    /// 見つけた罠を解除する（向きを省くと足元）。確率で成功する
+    Disarm(Option<Dir>),
 }
 
 impl fmt::Display for Command {
@@ -142,6 +144,8 @@ impl fmt::Display for Command {
             Command::Wait => write!(f, "wait"),
             Command::Stay(n) => write!(f, "stay {n}"),
             Command::Look => write!(f, "look"),
+            Command::Disarm(None) => write!(f, "disarm"),
+            Command::Disarm(Some(d)) => write!(f, "disarm {}", d.name()),
         }
     }
 }
@@ -167,6 +171,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "wait",
     "stay",
     "look",
+    "disarm",
 ];
 
 pub const COMMAND_HELP: &str = "\
@@ -190,6 +195,7 @@ explore        未探索の場所へ自動移動 (階段を見つける・敵が
 wait           1ターン待つ
 stay [ターン数]  その場に指定ターンだけ留まる。足元のアイテムを拾う (省略すると1ターン。敵に襲われたり体力が危なくなったら中断。上限1000)
 look           階段や見えている敵の位置を調べる (ターン消費なし)
+disarm [向き]  見つけた罠(^)を解除する (1ターン。向きは隣のマス、省くと足元。成功率は約60%で、器用さの指輪で上がり、混乱で下がる。失敗すると3回に1回は罠が作動する。隠れた罠は解除できない)
 複数のコマンドは ; で区切って連続実行できる (失敗したらそこで止まる)
 時間が経つと満腹度が減り、0 になると体力が削られる。食べ物 (パン・干し肉) やキノコで回復する。パンは腐っていることがある。キノコは最初は未識別で、食べると毒になるものもある。毒状態では1ターンごとに1ダメージを受け、自然回復しない (回復の薬・解毒の薬で治る)。
 敵を倒すと経験値を得て、たまるとレベルが上がる(最大HP+4でその分回復、2レベルごとに攻撃+1)。武器は攻撃のダメージを、防具は受けるダメージ(最低1)を変える。素手は攻撃 2〜4。
@@ -331,6 +337,10 @@ fn parse_body(line: &str) -> Result<Command, String> {
             },
         },
         "look" | "l" => Ok(Command::Look),
+        "disarm" => match args.first() {
+            None => Ok(Command::Disarm(None)),
+            Some(a) => Dir::parse(a).map(|d| Command::Disarm(Some(d))).ok_or_else(|| format!("不明な方角: {a}")).map(Ok)?,
+        },
         other => Err(format!("不明なコマンド: {other}")),
     }
 }
@@ -436,6 +446,8 @@ mod tests {
             Command::Stay(1),
             Command::Stay(4),
             Command::Look,
+            Command::Disarm(None),
+            Command::Disarm(Some(Dir::NW)),
         ] {
             assert_eq!(parse(&c.to_string()), Ok(c));
         }
