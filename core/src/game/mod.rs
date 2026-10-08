@@ -1259,12 +1259,12 @@ impl Game {
         }
     }
 
-    /// 足元に罠があれば発動する。浮遊中は落とし穴と毒矢を避ける(眠りガスは浮いていても吸ってしまう)。
+    /// 足元に罠があれば発動する。浮遊中は、どの罠も作動しない。
     fn trigger_trap(&mut self) {
         let Some(ti) = self.traps.iter().position(|t| t.pos == self.pos) else {
             return;
         };
-        if self.status.has(Status::Levitating) && self.traps[ti].kind.avoided_by_levitation() {
+        if self.status.has(Status::Levitating) {
             return;
         }
         self.fire_trap(ti);
@@ -1343,7 +1343,7 @@ impl Game {
         let mut msg = format!("{}の解除に失敗した。(成功率{percent}%)", kind.name());
         // 失敗すると3回に1回は作動する。足元の罠以外の落とし穴は、落ちずに済む
         if self.rng.range(0, 3) == 0 {
-            if kind.avoided_by_levitation() && self.status.has(Status::Levitating) {
+            if self.status.has(Status::Levitating) {
                 msg.push_str(" 手元が狂ったが、浮いているので罠は作動しなかった。");
             } else if kind == TrapKind::Trapdoor && target != self.pos {
                 msg.push_str(" 床板がきしんだが、落ちずに済んだ。");
@@ -1763,7 +1763,7 @@ impl Game {
                 if !Map::in_bounds(np.0, np.1)
                     || !self.map.is_seen(np.0, np.1)
                     || !self.map.tile(np.0, np.1).walkable()
-                    || self.known_trap_at(np).is_some_and(|t| !(t.kind.avoided_by_levitation() && self.status.has(Status::Levitating)))
+                    || (!self.status.has(Status::Levitating) && self.known_trap_at(np).is_some())
                 {
                     continue;
                 }
@@ -5962,38 +5962,38 @@ mod tests {
     }
 
     #[test]
-    fn levitation_helps_against_trapdoors_and_darts_when_a_disarm_slips_but_not_gas() {
-        for (kind, foot) in [(TrapKind::Trapdoor, true), (TrapKind::Dart, true), (TrapKind::Dart, false)] {
-            let mut slipped = false;
-            for seed in 0..120 {
-                let mut g = quiet(3);
-                g.hp = 1000;
-                g.max_hp = 1000;
-                g.rng = Rng::new(seed);
-                let p = put_trap(&mut g, kind);
-                g.traps[0].revealed = true;
-                if foot {
-                    g.pos = p;
+    fn levitation_keeps_every_kind_of_trap_from_firing_even_when_a_disarm_slips() {
+        for kind in TrapKind::ALL {
+            for foot in [true, false] {
+                let mut slipped = false;
+                for seed in 0..120 {
+                    let mut g = quiet(3);
+                    g.hp = 1000;
+                    g.max_hp = 1000;
+                    g.rng = Rng::new(seed);
+                    let p = put_trap(&mut g, kind);
+                    g.traps[0].revealed = true;
+                    if foot {
+                        g.pos = p;
+                    }
+                    g.status.apply(Status::Levitating, 1000);
+                    let o = g.run(if foot { "disarm" } else { "disarm east" });
+                    assert!(!o.message.contains("作動した！"), "{kind:?}: {}", o.message);
+                    assert_eq!(
+                        (g.hp, g.depth(), g.status.has(Status::Poisoned), g.status.has(Status::Asleep)),
+                        (1000, 1, false, false),
+                        "{kind:?}"
+                    );
+                    slipped |= o.message.contains("浮いているので罠は作動しなかった") || o.message.contains("落ちずに済んだ");
                 }
-                g.status.apply(Status::Levitating, 1000);
-                let o = g.run(if foot { "disarm" } else { "disarm east" });
-                assert!(!o.message.contains("作動した！"), "{kind:?}: {}", o.message);
-                assert_eq!((g.hp, g.depth(), g.status.has(Status::Poisoned)), (1000, 1, false), "{kind:?}");
-                slipped |= o.message.contains("浮いているので罠は作動しなかった");
+                assert!(slipped, "{kind:?} foot={foot}");
             }
-            assert!(slipped, "{kind:?}");
         }
-        // 眠りガスは、浮いていても作動する
-        let (_, o) = disarm_failure_that_fires(TrapKind::SleepGas, false, |g| {
-            g.status.apply(Status::Levitating, 1000);
-        })
-        .expect("作動する seed がある");
-        assert!(o.message.contains("眠りガス"), "{}", o.message);
     }
 
     #[test]
-    fn levitation_walks_over_trapdoors_and_darts_but_not_gas() {
-        for kind in [TrapKind::Trapdoor, TrapKind::Dart] {
+    fn levitation_walks_over_every_kind_of_trap() {
+        for kind in TrapKind::ALL {
             let mut g = quiet(3);
             g.hp = 1000;
             g.max_hp = 1000;
@@ -6001,25 +6001,19 @@ mod tests {
             g.status.apply(Status::Levitating, 100);
             let o = g.run("move east");
             assert_eq!((g.depth(), g.pos(), g.hp), (1, p, 1000), "{kind:?}: {}", o.message);
-            assert!(!g.status.has(Status::Poisoned));
+            assert!(!g.status.has(Status::Poisoned) && !g.status.has(Status::Asleep), "{kind:?}");
         }
-        let mut g = quiet(3);
-        put_trap(&mut g, TrapKind::SleepGas);
-        g.status.apply(Status::Levitating, 100);
-        let o = g.run("move east");
-        assert!(o.message.contains("眠りガス"), "{}", o.message);
     }
 
     #[test]
-    fn auto_walk_avoids_known_gas_traps_even_when_floating() {
-        let mut g = quiet(3);
-        let p = put_trap(&mut g, TrapKind::SleepGas);
-        g.traps[0].revealed = true;
-        g.map.mark_seen(p.0, p.1);
-        g.status.apply(Status::Levitating, 100);
-        assert!(g.find_path(&|q| q == p).is_none());
-        for kind in [TrapKind::Dart, TrapKind::Trapdoor] {
-            g.traps[0].kind = kind;
+    fn auto_walk_goes_through_known_traps_only_while_floating() {
+        for kind in TrapKind::ALL {
+            let mut g = quiet(3);
+            let p = put_trap(&mut g, kind);
+            g.traps[0].revealed = true;
+            g.map.mark_seen(p.0, p.1);
+            assert!(g.find_path(&|q| q == p).is_none(), "{kind:?}");
+            g.status.apply(Status::Levitating, 100);
             assert!(g.find_path(&|q| q == p).is_some(), "{kind:?}");
         }
     }

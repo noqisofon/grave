@@ -13,11 +13,6 @@ pub enum TrapKind {
 impl TrapKind {
     pub const ALL: [TrapKind; 3] = [TrapKind::Trapdoor, TrapKind::Dart, TrapKind::SleepGas];
 
-    /// 浮遊中に避けられるか(地面に仕掛けられた落とし穴と毒矢。ガスは浮いていても吸ってしまう)。
-    pub fn avoided_by_levitation(self) -> bool {
-        matches!(self, TrapKind::Trapdoor | TrapKind::Dart)
-    }
-
     pub fn name(self) -> &'static str {
         match self {
             TrapKind::Trapdoor => "落とし穴",
