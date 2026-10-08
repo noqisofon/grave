@@ -74,7 +74,7 @@ impl App {
                 true
             }
             "help" => {
-                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 使う(q の後に文字) / i 持ち物 / > 降りる / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new :q".to_string();
+                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 使う(q の後に文字) / i 持ち物 / > 降りる / < 登る(アミュレット所持時) / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new :q".to_string();
                 true
             }
             "new" => {
@@ -383,7 +383,13 @@ fn render_scene(
             game.hp().max(0),
             game.max_hp(),
             game.status_text(),
-            if game.is_dead() { "  ★ゲームオーバー (:new で再開)" } else { "" }
+            if game.is_dead() {
+                "  ★ゲームオーバー (:new で再開)"
+            } else if game.is_won() {
+                "  ★クリア！ (:new で再開)"
+            } else {
+                ""
+            }
         ))
     )?;
     for y in 0..H {
@@ -392,7 +398,7 @@ fn render_scene(
             let c = game.cell(x, y);
             let color = if c.ch == '@' {
                 Color::Yellow
-            } else if c.ch == '>' {
+            } else if c.ch == '>' || c.ch == '<' {
                 Color::Green
             } else if c.ch == '!' {
                 Color::Magenta
@@ -400,6 +406,8 @@ fn render_scene(
                 Color::Cyan
             } else if c.ch == ')' || c.ch == '[' {
                 Color::Blue
+            } else if c.ch == ',' {
+                Color::Yellow
             } else if c.ch == '%' {
                 Color::DarkYellow
             } else if c.ch.is_ascii_alphabetic() {

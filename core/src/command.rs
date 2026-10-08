@@ -76,6 +76,8 @@ pub enum Command {
     Move(Dir),
     Attack(Dir),
     Descend,
+    /// アミュレットを持っているとき、足元の階段で上の階へ登る（地下1階なら地上へ脱出）
+    Ascend,
     /// 持ち物の文字と、（識別の巻物のための）任意の対象
     Use(char, Option<char>),
     Inventory,
@@ -97,6 +99,7 @@ impl fmt::Display for Command {
             Command::Move(d) => write!(f, "move {}", d.name()),
             Command::Attack(d) => write!(f, "attack {}", d.name()),
             Command::Descend => write!(f, "descend"),
+            Command::Ascend => write!(f, "ascend"),
             Command::Use(c, None) => write!(f, "use {c}"),
             Command::Use(c, Some(t)) => write!(f, "use {c} {t}"),
             Command::Inventory => write!(f, "inventory"),
@@ -116,6 +119,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "move",
     "attack",
     "descend",
+    "ascend",
     "use",
     "inventory",
     "equip",
@@ -131,12 +135,13 @@ pub const COMMAND_HELP: &str = "\
 move <dir>     1歩移動 (north/south/east/west/northeast/northwest/southeast/southwest, 略: n s e w ne nw se sw)
                敵のいる方向へ move すると攻撃になる
 attack <dir>   その方向の敵を攻撃する (敵がいなければ失敗、ターン消費なし)
-descend        足元の階段で下の階へ降りる
+descend        足元の階段で下の階へ降りる (地下30階が最深部。アミュレットを持っていると降りられない)
+ascend         アミュレットを持っているとき、足元の階段で上の階へ登る (地下1階で登ると地上へ脱出してクリア)
 use <文字> [対象]  持ち物を使う (薬は飲む、巻物は読む、食べ物は食べる。eat でも可)。識別の巻物は対象の文字を指定できる
 inventory      持ち物の一覧 (ターン消費なし。装備中のものには (装備中) と付く)
 equip <文字>   武器や防具を身につける (武器・防具はそれぞれ1つずつ。付け替えもこれ)
 unequip <文字> 装備をはずす
-travel >       既知の階段まで自動移動
+travel > (<)   既知の階段まで自動移動
 explore        未探索の場所へ自動移動 (階段を見つける・敵が見える・攻撃を受けると止まる。敵が見えている間は使えない)
 wait           1ターン待つ
 stay [ターン数]  その場に指定ターンだけ留まる。足元のアイテムを拾う (省略すると1ターン。敵に襲われたり体力が危なくなったら中断。上限1000)
@@ -145,7 +150,8 @@ look           階段や見えている敵の位置を調べる (ターン消費
 時間が経つと満腹度が減り、0 になると体力が削られる。食べ物 (パン・干し肉) やキノコで回復する。パンは腐っていることがある。キノコは最初は未識別で、食べると毒になるものもある。毒状態では1ターンごとに1ダメージを受け、自然回復しない (回復の薬で治る)。
 武器は攻撃のダメージを、防具は受けるダメージ(最低1)を変える。素手は攻撃 2〜4。
 アイテムの上を歩くと自動で拾う。薬と巻物は最初は未識別で、使うと正体が分かる (ゲームごとに見た目と効果の対応が変わる)
-凡例: @ 自分  > 階段  ! 薬  ? 巻物  ) 武器  [ 防具  % 食べ物・キノコ  s スライム  b コウモリ  g ゴブリン  O オーガ  S 毒グモ";
+クリア条件: 地下30階の魔除けのアミュレット(,)を手に入れ、階段を登って地上まで持ち帰る。アミュレットを持つと階段は登り階段(<)になる。
+凡例: @ 自分  > 階段(アミュレットを持つと <)  , アミュレット  ! 薬  ? 巻物  ) 武器  [ 防具  % 食べ物・キノコ  s スライム  b コウモリ  g ゴブリン  O オーガ  S 毒グモ";
 
 /// 持ち物の文字（小文字1つ）。
 fn letter_arg(s: &str) -> Option<char> {
@@ -191,6 +197,7 @@ fn parse_body(line: &str) -> Result<Command, String> {
                 .ok_or_else(|| format!("不明な方角: {d}"))
         }
         "descend" | "d" => Ok(Command::Descend),
+        "ascend" | "up" => Ok(Command::Ascend),
         "inventory" | "i" => Ok(Command::Inventory),
         "use" | "u" | "drink" | "read" | "eat" => {
             let letter = args
@@ -218,7 +225,7 @@ fn parse_body(line: &str) -> Result<Command, String> {
             })
         }
         "travel" | "t" => match args.first().copied() {
-            Some(">") | Some("stairs") => Ok(Command::Travel(TravelTarget::Stairs)),
+            Some(">") | Some("<") | Some("stairs") => Ok(Command::Travel(TravelTarget::Stairs)),
             Some(other) => Err(format!("不明な移動先: {other} (travel > のみ対応)")),
             None => Err("travel には移動先が必要です (例: travel >)".to_string()),
         },
@@ -278,6 +285,7 @@ mod tests {
         }
         for c in [
             Command::Descend,
+            Command::Ascend,
             Command::Use('a', None),
             Command::Use('b', Some('a')),
             Command::Inventory,

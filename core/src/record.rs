@@ -11,7 +11,7 @@ use crate::game::Outcome;
 /// 生成や抽選、ダメージ計算、乱数の使い方など）をしたら、必ず 1 上げる。
 /// 記録の `new_game` に入り、観戦側が「古いルールで録られた記録」を見分けるのに使う。
 /// 上げ忘れは `rules_version_matches_golden_run` が検出する。
-pub const RULES_VERSION: u32 = 3;
+pub const RULES_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -266,7 +266,7 @@ mod tests {
     /// 落ちたら、意図した変更なら RULES_VERSION を上げて GOLDEN_* を更新する。
     #[test]
     fn rules_version_matches_golden_run() {
-        const GOLDEN_RULES: u32 = 3;
+        const GOLDEN_RULES: u32 = 4;
         const GOLDEN_HASH: u64 = 5304141228267021435;
         let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
         let mut feed = |bytes: &[u8]| {
