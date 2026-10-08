@@ -21,7 +21,7 @@ pub enum Status {
     Hasted,
     /// 行動が半分になる
     Slowed,
-    /// 罠を無視する
+    /// 落とし穴の上を通り過ぎる
     Levitating,
     /// 敵から見つかりにくい（敵なら姿が見えない）
     Invisible,
@@ -155,7 +155,7 @@ pub const DEFS: [StatusDef; Status::COUNT] = [
         key: "levitating",
         start: "体がふわりと浮いた。",
         end: "浮遊が切れて、地面に降りた。",
-        effect: "罠や落とし穴を無視する",
+        effect: "落とし穴を無視する(毒矢や眠りガスは防げない)",
         good: true,
         on_player: true,
         on_monster: false,

@@ -1259,12 +1259,12 @@ impl Game {
         }
     }
 
-    /// 足元に罠があれば発動する。浮遊中は無視する。
+    /// 足元に罠があれば発動する。浮遊中は落とし穴の上を通り過ぎる(毒矢や眠りガスは浮いていても作動する)。
     fn trigger_trap(&mut self) {
         let Some(ti) = self.traps.iter().position(|t| t.pos == self.pos) else {
             return;
         };
-        if self.status.has(Status::Levitating) {
+        if self.status.has(Status::Levitating) && self.traps[ti].kind == TrapKind::Trapdoor {
             return;
         }
         self.fire_trap(ti);
@@ -1343,9 +1343,8 @@ impl Game {
         let mut msg = format!("{}の解除に失敗した。(成功率{percent}%)", kind.name());
         // 失敗すると3回に1回は作動する。足元の罠以外の落とし穴は、落ちずに済む
         if self.rng.range(0, 3) == 0 {
-            if self.status.has(Status::Levitating) {
-                // 浮いているので、罠は作動しない
-                msg.push_str(" 手元が狂ったが、浮いているので罠は作動しなかった。");
+            if kind == TrapKind::Trapdoor && self.status.has(Status::Levitating) {
+                msg.push_str(" 手元が狂ったが、浮いているので落ちなかった。");
             } else if kind == TrapKind::Trapdoor && target != self.pos {
                 msg.push_str(" 床板がきしんだが、落ちずに済んだ。");
             } else {
@@ -1764,7 +1763,7 @@ impl Game {
                 if !Map::in_bounds(np.0, np.1)
                     || !self.map.is_seen(np.0, np.1)
                     || !self.map.tile(np.0, np.1).walkable()
-                    || (!self.status.has(Status::Levitating) && self.known_trap_at(np).is_some())
+                    || self.known_trap_at(np).is_some_and(|t| !(t.kind == TrapKind::Trapdoor && self.status.has(Status::Levitating)))
                 {
                     continue;
                 }
@@ -5963,27 +5962,60 @@ mod tests {
     }
 
     #[test]
-    fn levitation_keeps_a_failed_disarm_from_firing_the_trap() {
-        for (kind, foot) in [(TrapKind::Dart, false), (TrapKind::Dart, true), (TrapKind::SleepGas, true), (TrapKind::Trapdoor, true)] {
-            let mut saw_failure_with_slip = false;
-            for seed in 0..120 {
-                let mut g = quiet(3);
-                g.hp = 1000;
-                g.max_hp = 1000;
-                g.rng = Rng::new(seed);
-                let p = put_trap(&mut g, kind);
-                g.traps[0].revealed = true;
-                if foot {
-                    g.pos = p;
-                }
-                g.status.apply(Status::Levitating, 1000);
-                let o = g.run(if foot { "disarm" } else { "disarm east" });
-                assert!(!o.message.contains("作動した！"), "{kind:?}: {}", o.message);
-                assert_eq!((g.hp, g.depth(), g.status.has(Status::Poisoned), g.status.has(Status::Asleep)), (1000, 1, false, false), "{kind:?}");
-                saw_failure_with_slip |= o.message.contains("浮いているので罠は作動しなかった");
-            }
-            assert!(saw_failure_with_slip, "{kind:?}: 失敗して手元が狂う場面が一度もなかった");
+    fn levitation_only_helps_against_the_trapdoor_when_a_disarm_slips() {
+        // 落とし穴は、足元でも浮いていれば落ちない
+        let mut slipped = false;
+        for seed in 0..120 {
+            let mut g = quiet(3);
+            g.rng = Rng::new(seed);
+            let p = put_trap(&mut g, TrapKind::Trapdoor);
+            g.traps[0].revealed = true;
+            g.pos = p;
+            g.status.apply(Status::Levitating, 1000);
+            let o = g.run("disarm");
+            assert_eq!(g.depth(), 1, "{}", o.message);
+            slipped |= o.message.contains("浮いているので落ちなかった");
         }
+        assert!(slipped);
+        // 毒矢と眠りガスは、浮いていても作動する
+        for kind in [TrapKind::Dart, TrapKind::SleepGas] {
+            let (g, o) = disarm_failure_that_fires(kind, false, |g| {
+                g.status.apply(Status::Levitating, 1000);
+            })
+            .expect("作動する seed がある");
+            assert!(g.hp < 1000 || g.log().iter().any(|l| l.text.contains("眠りガス")), "{kind:?}: {}", o.message);
+        }
+    }
+
+    #[test]
+    fn levitation_walks_over_trapdoors_but_not_darts_or_gas() {
+        let mut g = quiet(3);
+        let p = put_trap(&mut g, TrapKind::Trapdoor);
+        g.status.apply(Status::Levitating, 100);
+        g.run("move east");
+        assert_eq!((g.depth(), g.pos()), (1, p));
+        for kind in [TrapKind::Dart, TrapKind::SleepGas] {
+            let mut g = quiet(3);
+            g.hp = 1000;
+            g.max_hp = 1000;
+            put_trap(&mut g, kind);
+            g.status.apply(Status::Levitating, 100);
+            let o = g.run("move east");
+            let fired = g.hp < 1000 || o.message.contains("眠りガス");
+            assert!(fired, "{kind:?}: {}", o.message);
+        }
+    }
+
+    #[test]
+    fn auto_walk_avoids_known_darts_even_when_floating_but_not_known_trapdoors() {
+        let mut g = quiet(3);
+        let p = put_trap(&mut g, TrapKind::Dart);
+        g.traps[0].revealed = true;
+        g.map.mark_seen(p.0, p.1);
+        g.status.apply(Status::Levitating, 100);
+        assert!(g.find_path(&|q| q == p).is_none());
+        g.traps[0].kind = TrapKind::Trapdoor;
+        assert!(g.find_path(&|q| q == p).is_some());
     }
 
     #[test]
