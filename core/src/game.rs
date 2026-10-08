@@ -2375,7 +2375,6 @@ mod tests {
         let c = give(&mut g, suffix_gear(ItemKind::Axe, Suffix::Cataclysm));
         g.take(ItemKind::Healing);
         g.run(&format!("equip {w}"));
-        let t = g.turn();
         // 装備中
         let o = g.run(&format!("drop {w}"));
         assert!(!o.ok && o.message.contains("unequip"), "{}", o.message);
