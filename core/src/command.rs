@@ -121,6 +121,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "descend",
     "ascend",
     "use",
+    "quaff",
+    "eat",
     "inventory",
     "equip",
     "unequip",
@@ -137,7 +139,7 @@ move <dir>     1歩移動 (north/south/east/west/northeast/northwest/southeast/s
 attack <dir>   その方向の敵を攻撃する (敵がいなければ失敗、ターン消費なし)
 descend        足元の階段で下の階へ降りる (地下30階が最深部。アミュレットを持っていると降りられない)
 ascend         アミュレットを持っているとき、足元の階段で上の階へ登る (地下1階で登ると地上へ脱出してクリア)
-use <文字> [対象]  持ち物を使う (薬は飲む、巻物は読む、食べ物は食べる。eat でも可)。識別の巻物は対象の文字を指定できる
+use <文字> [対象]  持ち物を使う (薬は飲む、巻物は読む、食べ物は食べる。薬は quaff、食べ物は eat でも可)。識別の巻物は対象の文字を指定できる
 inventory      持ち物の一覧 (ターン消費なし。装備中のものには (装備中) と付く)
 equip <文字>   武器や防具を身につける (武器・防具はそれぞれ1つずつ。付け替えもこれ)
 unequip <文字> 装備をはずす
@@ -199,7 +201,7 @@ fn parse_body(line: &str) -> Result<Command, String> {
         "descend" | "d" => Ok(Command::Descend),
         "ascend" | "up" => Ok(Command::Ascend),
         "inventory" | "i" => Ok(Command::Inventory),
-        "use" | "u" | "drink" | "read" | "eat" => {
+        "use" | "u" | "quaff" | "drink" | "read" | "eat" => {
             let letter = args
                 .first()
                 .and_then(|a| letter_arg(a))
@@ -254,6 +256,12 @@ mod tests {
         assert_eq!(parse("travel >"), Ok(Command::Travel(TravelTarget::Stairs)));
         assert!(parse("move").is_err());
         assert!(parse("dance").is_err());
+    }
+
+    #[test]
+    fn quaff_and_eat_are_aliases_of_use() {
+        assert_eq!(parse("quaff b"), Ok(Command::Use('b', None)));
+        assert_eq!(parse("eat c"), Ok(Command::Use('c', None)));
     }
 
     #[test]
