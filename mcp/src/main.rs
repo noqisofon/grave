@@ -62,7 +62,7 @@ fn tools() -> Value {
         },
         {
             "name": "observe",
-            "description": "Show the current map (@ = you, > = stairs, > = stairs (< once you hold the amulet), , = the Amulet on depth 30, s = slime, ! = potion, ? = scroll; remembered tiles stay), visible enemies, your inventory and the recent message log. Does not consume a turn.",
+            "description": "Show the current map (@ = you, > = stairs, > = stairs (< once you hold the amulet), , = the Amulet on depth 30, s = slime, ! = potion, ? = scroll; remembered tiles stay), visible enemies, the items under your feet (numbered, as used by pickup), your inventory and the recent message log. Does not consume a turn.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
