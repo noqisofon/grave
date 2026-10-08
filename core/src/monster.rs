@@ -20,6 +20,8 @@ pub struct MonsterKind {
     pub min_depth: u32,
     /// 出やすさ（相対的な重み）
     pub weight: u32,
+    /// 倒したときの経験値の基本値（深い階ほど上乗せされる）
+    pub xp: u32,
 }
 
 /// 基本の敵。
@@ -35,6 +37,7 @@ pub static SLIME: MonsterKind = MonsterKind {
     poisons: false,
     min_depth: 1,
     weight: 5,
+    xp: 3,
 };
 
 /// 倒しやすいが、素早く2回動き、ふらふら飛び回る。
@@ -50,6 +53,7 @@ pub static BAT: MonsterKind = MonsterKind {
     poisons: false,
     min_depth: 1,
     weight: 3,
+    xp: 2,
 };
 
 /// 普通の速さだが、殴られると痛い。
@@ -65,6 +69,7 @@ pub static GOBLIN: MonsterKind = MonsterKind {
     poisons: false,
     min_depth: 2,
     weight: 3,
+    xp: 6,
 };
 
 /// 2ターンに1回しか動けないが、一撃が重くて硬い。
@@ -80,6 +85,7 @@ pub static OGRE: MonsterKind = MonsterKind {
     poisons: false,
     min_depth: 4,
     weight: 1,
+    xp: 12,
 };
 
 /// 噛まれると毒を受けることがある。
@@ -95,6 +101,7 @@ pub static SPIDER: MonsterKind = MonsterKind {
     poisons: true,
     min_depth: 3,
     weight: 2,
+    xp: 5,
 };
 
 pub static KINDS: [&MonsterKind; 5] = [&SLIME, &BAT, &GOBLIN, &OGRE, &SPIDER];

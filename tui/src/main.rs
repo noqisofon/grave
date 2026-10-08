@@ -377,8 +377,9 @@ fn render_scene(
     queue!(
         out,
         Print(format!(
-            "地下{}階  ターン{}  HP {}/{}  {}{}",
+            "地下{}階  Lv{}  ターン{}  HP {}/{}  {}{}",
             game.depth(),
+            game.level(),
             game.turn(),
             game.hp().max(0),
             game.max_hp(),
