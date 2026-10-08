@@ -339,7 +339,9 @@ fn parse_body(line: &str) -> Result<Command, String> {
         "look" | "l" => Ok(Command::Look),
         "disarm" => match args.first() {
             None => Ok(Command::Disarm(None)),
-            Some(a) => Dir::parse(a).map(|d| Command::Disarm(Some(d))).ok_or_else(|| format!("不明な方角: {a}")).map(Ok)?,
+            Some(a) => Dir::parse(a)
+                .map(|d| Command::Disarm(Some(d)))
+                .ok_or_else(|| format!("不明な向き: {a} (8方向)")),
         },
         other => Err(format!("不明なコマンド: {other}")),
     }

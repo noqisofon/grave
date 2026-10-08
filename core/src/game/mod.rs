@@ -1343,14 +1343,14 @@ impl Game {
         let mut msg = format!("{}の解除に失敗した。(成功率{percent}%)", kind.name());
         // 失敗すると3回に1回は作動する。足元の罠以外の落とし穴は、落ちずに済む
         if self.rng.range(0, 3) == 0 {
-            if target == self.pos && !self.status.has(Status::Levitating) {
-                msg.push_str(" 手元が狂って罠が作動した！");
-                self.fire_trap(ti);
-            } else if kind != TrapKind::Trapdoor {
-                msg.push_str(" 手元が狂って罠が作動した！");
-                self.fire_trap(ti);
-            } else {
+            if self.status.has(Status::Levitating) {
+                // 浮いているので、罠は作動しない
+                msg.push_str(" 手元が狂ったが、浮いているので罠は作動しなかった。");
+            } else if kind == TrapKind::Trapdoor && target != self.pos {
                 msg.push_str(" 床板がきしんだが、落ちずに済んだ。");
+            } else {
+                msg.push_str(" 手元が狂って罠が作動した！");
+                self.fire_trap(ti);
             }
         }
         (true, msg, true)
@@ -5933,5 +5933,95 @@ mod tests {
             g.run("disarm east");
             assert_eq!(g.depth(), 1);
         }
+    }
+
+    /// 失敗して罠が作動する seed を探して、そのゲームを返す(作動前の状態)。
+    fn disarm_failure_that_fires(kind: TrapKind, under_foot: bool, setup: impl Fn(&mut Game)) -> Option<(Game, Outcome)> {
+        for seed in 0..300 {
+            let mut g = quiet(3);
+            g.hp = 1000;
+            g.max_hp = 1000;
+            g.rng = Rng::new(seed);
+            let p = put_trap(&mut g, kind);
+            g.traps[0].revealed = true;
+            if under_foot {
+                g.pos = p;
+            }
+            setup(&mut g);
+            let o = g.run(if under_foot { "disarm" } else { "disarm east" });
+            if o.message.contains("作動した！") {
+                return Some((g, o));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn a_failed_disarm_of_the_trapdoor_underfoot_drops_you() {
+        let (g, o) = disarm_failure_that_fires(TrapKind::Trapdoor, true, |_| {}).expect("作動する seed がある");
+        assert_eq!(g.depth(), 2, "{}", o.message);
+    }
+
+    #[test]
+    fn levitation_keeps_a_failed_disarm_from_firing_the_trap() {
+        for (kind, foot) in [(TrapKind::Dart, false), (TrapKind::Dart, true), (TrapKind::SleepGas, true), (TrapKind::Trapdoor, true)] {
+            let mut saw_failure_with_slip = false;
+            for seed in 0..120 {
+                let mut g = quiet(3);
+                g.hp = 1000;
+                g.max_hp = 1000;
+                g.rng = Rng::new(seed);
+                let p = put_trap(&mut g, kind);
+                g.traps[0].revealed = true;
+                if foot {
+                    g.pos = p;
+                }
+                g.status.apply(Status::Levitating, 1000);
+                let o = g.run(if foot { "disarm" } else { "disarm east" });
+                assert!(!o.message.contains("作動した！"), "{kind:?}: {}", o.message);
+                assert_eq!((g.hp, g.depth(), g.status.has(Status::Poisoned), g.status.has(Status::Asleep)), (1000, 1, false, false), "{kind:?}");
+                saw_failure_with_slip |= o.message.contains("浮いているので罠は作動しなかった");
+            }
+            assert!(saw_failure_with_slip, "{kind:?}: 失敗して手元が狂う場面が一度もなかった");
+        }
+    }
+
+    #[test]
+    fn confusion_lowers_the_disarm_chance_and_the_message_shows_it() {
+        let mut g = quiet(3);
+        let base = g.disarm_percent();
+        g.status.apply(Status::Confused, 50);
+        assert_eq!(g.disarm_percent(), base - 30);
+        let p = put_trap(&mut g, TrapKind::SleepGas);
+        g.traps[0].revealed = true;
+        let _ = p;
+        g.status.clear(Status::Confused);
+        let o = g.run("disarm east");
+        assert!(o.message.contains(&format!("成功率{base}%")), "{}", o.message);
+    }
+
+    #[test]
+    fn disarming_a_known_trap_lets_auto_walk_path_through_it() {
+        let mut g = quiet(3);
+        let p = put_trap(&mut g, TrapKind::Dart);
+        g.traps[0].revealed = true;
+        g.map.mark_seen(p.0, p.1);
+        assert!(g.find_path(&|q| q == p).is_none(), "既知の罠は経路から外れる");
+        g.hp = 1000;
+        g.max_hp = 1000;
+        for seed in 0..100 {
+            g.rng = Rng::new(seed);
+            if g.run("disarm east").message.contains("解除した") {
+                break;
+            }
+        }
+        assert!(g.traps.is_empty());
+        assert!(g.find_path(&|q| q == p).is_some(), "解除した罠のマスには入れる");
+    }
+
+    #[test]
+    fn disarm_rejects_bad_directions_with_the_same_wording_as_zap() {
+        assert!(crate::command::parse("disarm sideways").unwrap_err().contains("不明な向き"));
+        assert!(crate::command::parse("zap a sideways").unwrap_err().contains("不明な向き"));
     }
 }
