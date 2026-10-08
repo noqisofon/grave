@@ -335,7 +335,7 @@ impl Game {
                 }
                 roll -= k.weight();
             }
-            self.floor_items.push(((x, y), Item::from(kind)));
+            self.floor_items.push(((x, y), Item::roll(&mut self.rng, kind, self.depth)));
         }
         // 飢え死にしないよう、どの階にも食べ物を1つは置く
         let food = if self.depth >= 2 && self.rng.range(0, 4) == 0 {
@@ -1571,7 +1571,7 @@ mod tests {
         let mut g = with_gear(&[ItemKind::Axe]);
         let o = g.run("equip a");
         assert!(o.ok, "{}", o.message);
-        assert!(o.message.contains("斧を装備した"), "{}", o.message);
+        assert!(o.message.contains("Axeを装備した"), "{}", o.message);
         assert!(g.inventory_lines()[0].contains("(装備中)"));
         assert!(g.observe_text(3).contains("攻撃 5〜9"));
         // 敵の隣で殴る: ダメージは 5..=9
@@ -1596,7 +1596,7 @@ mod tests {
         let mut g = with_gear(&[ItemKind::Dagger, ItemKind::Sword, ItemKind::Leather]);
         assert!(g.run("equip a").ok);
         let o = g.run("equip b");
-        assert!(o.ok && o.message.contains("短剣をはずした"), "{}", o.message);
+        assert!(o.ok && o.message.contains("Daggerをはずした"), "{}", o.message);
         assert!(g.run("equip c").ok); // 防具は別枠
         let lines = g.inventory_lines();
         assert!(!lines[0].contains("(装備中)"));
@@ -1615,7 +1615,7 @@ mod tests {
     #[test]
     fn equip_only_takes_gear_and_consumables_need_the_matching_verb() {
         let mut g = with_gear(&[ItemKind::Plate, ItemKind::Healing]);
-        assert!(g.run("equip a").message.contains("板金鎧を装備した"));
+        assert!(g.run("equip a").message.contains("Plate Armorを装備した"));
         let o = g.run("equip b");
         assert!(!o.ok);
         assert!(!g.run("unequip b").ok);
@@ -1688,7 +1688,101 @@ mod tests {
         let p = (g.pos.0 + 1, g.pos.1);
         g.floor_items.push((p, ItemKind::Sword.into()));
         let o = g.run("move east");
-        assert!(o.message.contains("剣を拾った"), "{}", o.message);
+        assert!(o.message.contains("Swordを拾った"), "{}", o.message);
+    }
+
+    /// 指定の個体を持ち物に直接入れる。
+    fn give(g: &mut Game, gear: Gear) -> char {
+        g.take(Item::Gear(gear)).unwrap()
+    }
+
+    fn quality_gear(kind: ItemKind, quality: crate::item::Quality, bonus: i32) -> Gear {
+        Gear { kind, quality, word: quality.words()[0], bonus }
+    }
+
+    #[test]
+    fn quality_weights_shift_deeper_and_always_sum_to_100() {
+        use crate::item::Quality;
+        for d in 1..=30 {
+            let w = Quality::weights(d);
+            assert_eq!(w.iter().sum::<i32>(), 100, "depth {d}");
+            assert!(w.iter().all(|x| *x >= 0), "depth {d}: {w:?}");
+        }
+        assert_eq!(Quality::weights(1)[2..], [0, 0]);
+        assert!(Quality::weights(20)[3] > 0);
+        assert!(Quality::weights(20)[0] < Quality::weights(1)[0]);
+    }
+
+    #[test]
+    fn rolled_gear_stays_inside_its_quality() {
+        use crate::item::Quality;
+        let mut rng = Rng::new(9);
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..2000 {
+            let depth = 1 + (i % 30);
+            let g = Gear::roll(&mut rng, ItemKind::Sword, depth);
+            let (lo, hi) = g.quality.bonus_range();
+            assert!((lo..=hi).contains(&g.bonus), "{g:?}");
+            assert!(g.quality.words().contains(&g.word), "{g:?}");
+            seen.insert(g.quality);
+        }
+        assert_eq!(seen.len(), Quality::ALL.len());
+    }
+
+    #[test]
+    fn gear_drops_are_deterministic_for_a_seed() {
+        let drops = |seed: u64| {
+            let mut g = Game::new(seed);
+            let mut v = Vec::new();
+            for depth in [3u32, 9, 15] {
+                g.depth = depth;
+                g.spawn_items();
+                v.extend(g.floor_items.iter().cloned());
+            }
+            v
+        };
+        for seed in 0..10 {
+            assert_eq!(drops(seed), drops(seed), "seed {seed}");
+        }
+        assert!((0..30).any(|s| drops(s) != drops(s + 100)));
+    }
+
+    #[test]
+    fn gear_does_not_stack_and_takes_one_letter_each() {
+        let mut g = quiet(2);
+        let a = g.take(ItemKind::Dagger).unwrap();
+        let b = g.take(ItemKind::Dagger).unwrap();
+        assert_ne!(a, b);
+        assert!(g.inventory.iter().all(|s| s.count == 1));
+        // 薬は今までどおり重なる
+        let p1 = g.take(ItemKind::Healing).unwrap();
+        assert_eq!(g.take(ItemKind::Healing), Some(p1));
+        assert_eq!(g.inventory.len(), 3);
+    }
+
+    #[test]
+    fn quality_bonus_applies_to_attack_range_and_defense() {
+        use crate::item::Quality;
+        let mut g = quiet(2);
+        let w = give(&mut g, quality_gear(ItemKind::Sword, Quality::Rare, 3));
+        let a = give(&mut g, quality_gear(ItemKind::Chain, Quality::Uncommon, 2));
+        assert!(g.run(&format!("equip {w}")).ok);
+        assert!(g.run(&format!("equip {a}")).ok);
+        assert_eq!(g.attack_range(), (4 + 3, 7 + 3));
+        assert_eq!(g.defense(), 2 + 2);
+        let o = g.observe_text(3);
+        assert!(o.contains("攻撃 7〜10") && o.contains("防御 4"), "{o}");
+        // 実際の殴りダメージも範囲内
+        let p = (g.pos.0 + 1, g.pos.1);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..60 {
+            g.monsters.clear();
+            g.monsters.push(monster(&crate::monster::OGRE, p, 1000));
+            g.hp = 1000;
+            g.run("attack east");
+            seen.insert(1000 - g.monsters[0].hp);
+        }
+        assert!(seen.iter().all(|d| (7..=10).contains(d)), "{seen:?}");
     }
 
     #[test]

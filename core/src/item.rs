@@ -1,5 +1,7 @@
 //! アイテムの種類。薬と巻物は、ゲームごとに見た目（未識別名）がシャッフルされる。
 
+use crate::rng::Rng;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ItemKind {
     /// HPを回復する
@@ -78,6 +80,19 @@ impl ItemKind {
             ItemKind::EdibleShroom => "食用キノコ",
             ItemKind::PoisonShroom => "毒キノコ",
             ItemKind::VigorShroom => "元気キノコ",
+        }
+    }
+
+    /// 装備品の基本名（接頭辞が付く前）。
+    pub fn base_name(self) -> &'static str {
+        match self {
+            ItemKind::Dagger => "Dagger",
+            ItemKind::Sword => "Sword",
+            ItemKind::Axe => "Axe",
+            ItemKind::Leather => "Leather Armor",
+            ItemKind::Chain => "Chain Mail",
+            ItemKind::Plate => "Plate Armor",
+            _ => self.true_name(),
         }
     }
 
@@ -202,31 +217,144 @@ impl ItemKind {
     }
 }
 
+/// 装備の品質ランク。接頭辞の語がランクを表す。
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Quality {
+    Common,
+    Uncommon,
+    Rare,
+    Ancient,
+}
+
+impl Quality {
+    pub const ALL: [Quality; 4] = [Quality::Common, Quality::Uncommon, Quality::Rare, Quality::Ancient];
+
+    /// このランクを表す接頭辞の候補。
+    pub fn words(self) -> &'static [&'static str] {
+        match self {
+            Quality::Common => &["Basic", "Okay", "Regular", "Usual"],
+            Quality::Uncommon => &["Superior", "Prime", "First Rate"],
+            Quality::Rare => &["Mystical", "Sanctified", "Glorious"],
+            Quality::Ancient => &["Eldritch", "Primeval", "Legendary"],
+        }
+    }
+
+    /// 攻撃・防御の加算値の幅 (最小, 最大)。Common は補正なし。
+    /// 語からは幅しか分からず、個体の正確な値は識別するまで分からない。
+    pub fn bonus_range(self) -> (i32, i32) {
+        match self {
+            Quality::Common => (0, 0),
+            Quality::Uncommon => (1, 2),
+            Quality::Rare => (2, 3),
+            Quality::Ancient => (3, 5),
+        }
+    }
+
+    /// 接尾辞が付く確率（%）。
+    fn suffix_percent(self) -> i32 {
+        match self {
+            Quality::Common => 0,
+            Quality::Uncommon => 30,
+            Quality::Rare => 60,
+            Quality::Ancient => 100,
+        }
+    }
+
+    /// 深さごとの出現の重み (Common, Uncommon, Rare, Ancient)。合計は常に 100。
+    pub fn weights(depth: u32) -> [i32; 4] {
+        let d = depth as i32;
+        let uncommon = (10 + 3 * d).min(40);
+        let rare = if d >= 3 { ((d - 2) * 2).min(25) } else { 0 };
+        let ancient = if d >= 8 { (d - 7).min(10) } else { 0 };
+        [100 - uncommon - rare - ancient, uncommon, rare, ancient]
+    }
+}
+
 /// 装備品の1個体。装備は1個ずつ別物なので、スタックしない。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Gear {
     pub kind: ItemKind,
+    pub quality: Quality,
+    /// 接頭辞の語（`quality.words()` のどれか）
+    pub word: &'static str,
+    /// 攻撃・防御への加算値（品質ランクの幅の中。識別するまで正確な値は分からない）
+    pub bonus: i32,
 }
 
 impl Gear {
-    /// 何の変哲もない装備。
+    /// 何の変哲もない装備 (Common)。
     pub fn plain(kind: ItemKind) -> Gear {
         debug_assert!(kind.is_equipment());
-        Gear { kind }
+        Gear {
+            kind,
+            quality: Quality::Common,
+            word: Quality::Common.words()[0],
+            bonus: 0,
+        }
+    }
+
+    /// ゲームの乱数から個体を作る。深い階ほど上位ランクが出やすい。
+    pub fn roll(rng: &mut Rng, kind: ItemKind, depth: u32) -> Gear {
+        let w = Quality::weights(depth);
+        let mut r = rng.range(0, 100);
+        let mut quality = Quality::Common;
+        for (q, wt) in Quality::ALL.iter().zip(w) {
+            if r < wt {
+                quality = *q;
+                break;
+            }
+            r -= wt;
+        }
+        let words = quality.words();
+        let word = words[rng.range(0, words.len() as i32) as usize];
+        let (lo, hi) = quality.bonus_range();
+        let bonus = rng.range(lo, hi + 1);
+        Gear {
+            kind,
+            quality,
+            word,
+            bonus,
+        }
     }
 
     pub fn name(&self) -> String {
-        self.kind.true_name().to_string()
+        format!("{} {}", self.word, self.kind.base_name())
     }
 
     /// 武器の攻撃範囲 (最小, 最大)。武器でなければ None。
     pub fn weapon_range(&self) -> Option<(i32, i32)> {
-        self.kind.weapon_dmg()
+        self.kind
+            .weapon_dmg()
+            .map(|(lo, hi)| (lo + self.bonus, hi + self.bonus))
     }
 
     /// 防具の防御値。防具でなければ 0。
     pub fn armor_value(&self) -> i32 {
-        self.kind.armor()
+        if self.kind.is_armor() {
+            self.kind.armor() + self.bonus
+        } else {
+            0
+        }
+    }
+
+    /// 性能の説明（品質補正を含む）。
+    pub fn stats_text(&self) -> String {
+        if let Some((lo, hi)) = self.weapon_range() {
+            format!("攻撃 {lo}〜{hi}")
+        } else {
+            format!("防御 {}", self.armor_value())
+        }
+    }
+}
+
+impl Item {
+    /// 床に置くために、種類から品物を作る。装備なら個体を抽選する。
+    pub fn roll(rng: &mut Rng, kind: ItemKind, depth: u32) -> Item {
+        if kind.is_equipment() {
+            Item::Gear(Gear::roll(rng, kind, depth))
+        } else {
+            Item::Plain(kind)
+        }
     }
 }
 
