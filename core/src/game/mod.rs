@@ -2,7 +2,8 @@ use std::collections::VecDeque;
 
 use crate::command::{self, Command, Dir, TravelTarget};
 use crate::item::{
-    Class, Effect, Gear, Item, ItemKind, Suffix, Tool, MUSHROOM_LOOKS, POTION_LOOKS, SCROLL_LOOKS, WAND_LOOKS,
+    Class, Effect, Gear, Item, ItemKind, Suffix, Tool, MUSHROOM_LOOKS, POTION_LOOKS, RING_LOOKS, SCROLL_LOOKS,
+    WAND_LOOKS,
 };
 use crate::map::{idx, Map, Tile, H, W};
 use crate::monster::{MonsterKind, KINDS};
@@ -11,7 +12,10 @@ use crate::status::{Change, Status, StatusEvent, StatusSet};
 use crate::trap::{Trap, TrapKind};
 
 mod effects;
+mod rings;
 mod wands;
+
+use rings::RingFx;
 
 const FOV_RADIUS: i32 = 9;
 const EXPLORE_STEP_LIMIT: u32 = 1000;
@@ -31,6 +35,8 @@ const IDENTIFY_AFTER_WORN: u32 = 50;
 const HP_PER_LEVEL: i32 = 4;
 /// 腕力の初期値。10 より大きいと攻撃が増え、小さいと減る（2ごとに1）
 const START_STRENGTH: i32 = 10;
+/// 最初に持っている松明の燃料
+const START_TORCH_FUEL: i32 = 1500;
 /// 強化の巻物で付く、攻撃・防御の加算の限度（錆びで下がる限度も同じ）
 const MAX_ENCHANT: i32 = 9;
 const MIN_STRENGTH: i32 = 3;
@@ -164,6 +170,10 @@ pub struct Game {
     /// 装備中の武器と防具（持ち物の文字で指す）
     weapon: Option<char>,
     armor: Option<char>,
+    /// はめている指輪（スロットは2つ。持ち物の文字で指す）
+    rings: [Option<char>; 2],
+    /// 装備中の光源（持ち物の外にある。ほかの光源は持ち物に入り、`equip` で持ち替える）
+    light: Option<Tool>,
     /// 腕力（今の値と最大値）。攻撃のダメージに効く。毒の薬などで下がる
     strength: i32,
     max_strength: i32,
@@ -199,18 +209,21 @@ fn roll_looks(rng: &mut Rng) -> [&'static str; ItemKind::COUNT] {
     let mut scrolls = SCROLL_LOOKS;
     let mut shrooms = MUSHROOM_LOOKS;
     let mut wands = WAND_LOOKS;
+    let mut rings = RING_LOOKS;
     shuffle(rng, &mut potions);
     shuffle(rng, &mut scrolls);
     shuffle(rng, &mut shrooms);
     shuffle(rng, &mut wands);
+    shuffle(rng, &mut rings);
     let mut looks = [""; ItemKind::COUNT];
-    let (mut pi, mut si, mut mi, mut wi) = (0, 0, 0, 0);
+    let (mut pi, mut si, mut mi, mut wi, mut ri) = (0, 0, 0, 0, 0);
     for k in ItemKind::ALL {
         let pool = match k.class() {
             Class::Potion => Some((&potions[..], &mut pi)),
             Class::Scroll => Some((&scrolls[..], &mut si)),
             Class::Mushroom => Some((&shrooms[..], &mut mi)),
             Class::Wand => Some((&wands[..], &mut wi)),
+            Class::Ring => Some((&rings[..], &mut ri)),
             _ => None,
         };
         looks[k.index()] = match pool {
@@ -296,9 +309,11 @@ impl Game {
             has_amulet: false,
             won: false,
             looks,
-            known: ItemKind::ALL.map(|k| k.is_equipment() || k.is_food()),
+            known: ItemKind::ALL.map(|k| k.starts_known()),
             weapon: None,
             armor: None,
+            rings: [None, None],
+            light: Some(Tool::charged(ItemKind::Torch, START_TORCH_FUEL)),
             strength: START_STRENGTH,
             max_strength: START_STRENGTH,
             detect_marks: Vec::new(),
@@ -581,9 +596,13 @@ impl Game {
         };
         let stack = &self.inventory[si];
         // 装備中のものは捨てられない。呪われていれば、はずせないので同じこと
-        if self.weapon == Some(letter) || self.armor == Some(letter) {
-            let name = stack.gear.map_or(String::new(), |g| g.name());
-            return if stack.gear.is_some_and(|g| g.is_sticky()) {
+        if self.is_equipped(letter) {
+            let name = match (stack.gear, stack.tool) {
+                (Some(g), _) => g.name(),
+                (_, Some(t)) => self.ring_name(&t),
+                _ => String::new(),
+            };
+            return if stack.gear.is_some_and(|g| g.is_sticky()) || stack.tool.is_some_and(|t| t.is_sticky()) {
                 (false, format!("{name}は呪われていて、はずせない。捨てられない。"), false)
             } else {
                 (false, format!("{name}は装備中だ。先に unequip {letter} ではずそう。"), false)
@@ -663,11 +682,37 @@ impl Game {
             .collect()
     }
 
+    /// 装備中の光源の1行（持ち物の外にあるので、一覧とは別に出す）。
+    pub fn light_line(&self) -> String {
+        match self.light {
+            Some(l) => format!("光源: {} (装備中){}", self.light_text(&l), if l.val <= 0 { " 燃え尽きている" } else { "" }),
+            None => "光源: なし".to_string(),
+        }
+    }
+
     /// 杖などの持ち物の1行。残りの使用回数は識別前でも分かる。
     fn tool_line(&self, letter: char, t: &Tool) -> String {
+        if t.kind.is_ring() {
+            let mut line = format!("{letter}) {}", self.ring_name(t));
+            if !self.known[t.kind.index()] {
+                line.push_str(" (未識別)");
+            } else if t.identified {
+                line.push_str(&format!(" [{}]", t.kind.ring_def().map_or(String::new(), |r| r.effect.describe(t.val))));
+                if t.cursed {
+                    line.push_str(if t.freed { " (呪い解除済み)" } else { " (呪われている)" });
+                }
+            }
+            if self.rings.contains(&Some(letter)) {
+                line.push_str(" (装備中)");
+            }
+            return line;
+        }
         let mut line = format!("{letter}) {}", self.display_name(t.kind));
         if t.kind.is_wand() {
             line.push_str(&format!(" [残り{}回]", t.val));
+        } else if t.kind.is_light() {
+            let max = t.kind.light_def().map_or(0, |d| d.max_fuel);
+            line.push_str(&format!(" [燃料 {}/{}]", t.val, max));
         }
         if !self.known[t.kind.index()] {
             line.push_str(" (未識別)");
@@ -714,9 +759,10 @@ impl Game {
 
     /// 識別の対象になるか。薬・巻物・キノコは種類が未知のもの、装備は正体が未識別のもの。
     fn needs_identify(&self, s: &Stack) -> bool {
-        match &s.gear {
-            Some(g) => !g.identified,
-            None => !self.known[s.kind.index()],
+        match (&s.gear, &s.tool) {
+            (Some(g), _) => !g.identified,
+            (_, Some(t)) if t.kind.is_ring() => !self.known[s.kind.index()] || !t.identified,
+            _ => !self.known[s.kind.index()],
         }
     }
 
@@ -826,7 +872,10 @@ impl Game {
 
     /// 今の視界の半径。
     fn sight_radius(&self) -> i32 {
-        FOV_RADIUS
+        match self.light {
+            Some(l) if l.val > 0 => FOV_RADIUS,
+            _ => crate::item::DARK_RADIUS,
+        }
     }
 
     /// 視界を更新する。盲目なら何も見えず、新しく覚えることもない。
@@ -854,7 +903,9 @@ impl Game {
         let m = &self.monsters[i];
         !self.status.has(Status::Blind)
             && self.map.is_visible(m.pos.0, m.pos.1)
-            && (!m.status.has(Status::Invisible) || self.status.has(Status::SeeInvisible))
+            && (!m.status.has(Status::Invisible)
+                || self.status.has(Status::SeeInvisible)
+                || self.ring_fx().see_invisible)
     }
 
     /// メッセージや一覧に出る敵の名前。見えなければ「何か」、幻覚ならでたらめ。
@@ -899,7 +950,7 @@ impl Game {
 
     /// 満腹度と毒の状態（観測やTUIの見出し用）。
     pub fn status_text(&self) -> String {
-        let mut s = format!("腕力 {}/{} 満腹度 {}/{}", self.strength, self.max_strength, self.food, MAX_FOOD);
+        let mut s = format!("腕力 {}/{} 満腹度 {}/{}", self.effective_strength(), self.max_strength, self.food, MAX_FOOD);
         if self.has_amulet {
             s.push_str(" ★アミュレット所持");
         }
@@ -909,6 +960,18 @@ impl Game {
         let wands = self.wands_text();
         if !wands.is_empty() {
             s.push_str(&format!(" 杖残り[{wands}]"));
+        }
+        match self.light {
+            Some(l) => {
+                let max = l.kind.light_def().map_or(0, |d| d.max_fuel);
+                s.push_str(&format!(" 光源:{} 燃料{}/{}", l.kind.true_name(), l.val, max));
+                if l.val <= 0 {
+                    s.push_str("(暗闇: 視界が狭い)");
+                } else if l.val <= 100 {
+                    s.push_str("(もうすぐ尽きる)");
+                }
+            }
+            None => s.push_str(" 光源なし(暗闇: 視界が狭い)"),
         }
         let fx = self.status.short_text();
         if !fx.is_empty() {
@@ -924,13 +987,18 @@ impl Game {
 
     /// 腕力による攻撃の上乗せ。10 を基準に、2ごとに +1（下がると減る）。
     fn strength_bonus(&self) -> i32 {
-        (self.strength - START_STRENGTH) / 2
+        (self.effective_strength() - START_STRENGTH) / 2
+    }
+
+    /// 指輪を含めた今の腕力。
+    fn effective_strength(&self) -> i32 {
+        (self.strength + self.ring_fx().strength).max(1)
     }
 
     /// 武器の攻撃範囲（含む）。装備がなければ素手。レベルの上乗せを含む。
     fn attack_range(&self) -> (i32, i32) {
         let (lo, hi) = self.weapon_gear().and_then(|g| g.weapon_range()).unwrap_or((2, 4));
-        let b = self.level_bonus() + self.strength_bonus();
+        let b = self.level_bonus() + self.strength_bonus() + self.ring_fx().damage;
         ((lo + b).max(1), (hi + b).max(1))
     }
 
@@ -965,7 +1033,7 @@ impl Game {
     }
 
     fn defense(&self) -> i32 {
-        self.armor_gear().map_or(0, |g| g.armor_value())
+        self.armor_gear().map_or(0, |g| g.armor_value()) + self.ring_fx().protection
     }
 
     /// 武器・防具を身につける。(成功か, メッセージ, 1ターン消費するか)
@@ -973,6 +1041,13 @@ impl Game {
         let Some(s) = self.inventory.iter().find(|s| s.letter == letter) else {
             return (false, format!("持ち物 {letter} はない。"), false);
         };
+        if let Some(t) = s.tool {
+            match t.kind.class() {
+                Class::Ring => return self.equip_ring(letter, t),
+                Class::Light => return self.equip_light(letter, t),
+                _ => {}
+            }
+        }
         let Some(gear) = s.gear else {
             return (false, format!("{}は装備できない。", self.display_name(s.kind)), false);
         };
@@ -993,7 +1068,7 @@ impl Game {
         if let Some(o) = old {
             msg.push_str(&format!(" {o}をはずした。"));
         }
-        if gear.is_cursed() {
+        if gear.is_sticky() {
             // 呪いは装備して初めて分かる。正体も明らかになる
             if let Some(g) = self.inventory.iter_mut().find(|s| s.letter == letter).and_then(|s| s.gear.as_mut()) {
                 g.identified = true;
@@ -1008,6 +1083,9 @@ impl Game {
         let Some(s) = self.inventory.iter().find(|s| s.letter == letter) else {
             return (false, format!("持ち物 {letter} はない。"), false);
         };
+        if let Some(t) = s.tool.filter(|t| t.kind.is_ring()) {
+            return self.unequip_ring(letter, t);
+        }
         let Some(gear) = s.gear else {
             return (false, format!("{}は装備品ではない。", self.display_name(s.kind)), false);
         };
@@ -1095,7 +1173,7 @@ impl Game {
     /// 怒っている敵はどこにいても気づく。透明だと近づかれるまで気づかれない。
     fn monster_aware(&self, i: usize) -> bool {
         let m = &self.monsters[i];
-        if m.status.has(Status::Enraged) {
+        if m.status.has(Status::Enraged) || self.ring_fx().aggravate {
             return true;
         }
         let r = self.notice_radius();
@@ -1105,10 +1183,11 @@ impl Game {
 
     /// 敵がこちらに気づく距離。
     fn notice_radius(&self) -> i32 {
+        let r = FOV_RADIUS - 3 * self.ring_fx().stealth;
         if self.status.has(Status::Invisible) {
-            2
+            r.min(2)
         } else {
-            FOV_RADIUS
+            r.max(2)
         }
     }
 
@@ -1256,23 +1335,17 @@ impl Game {
         ))
     }
 
-    /// 1ターン進める。敵が動き、HPが自然回復する。
+    /// 1ターン進める。空腹・毒・状態、指輪と光源の効果、そして敵の行動。
     fn pass_turn(&mut self) {
         self.turn += 1;
+        let fx = self.ring_fx();
         self.tick_worn();
-        self.tick_body();
+        self.tick_rings_worn();
+        self.tick_body(&fx);
         if self.dead {
             return;
         }
-        self.search_traps(1, 25);
-        if self.turn.is_multiple_of(REGEN_INTERVAL)
-            && self.hp < self.max_hp
-            && !self.status.has(Status::Poisoned)
-            && self.food > 0
-            && !(0..self.monsters.len()).any(|i| self.monster_aware(i))
-        {
-            self.hp += 1;
-        }
+        self.tick_equipment(&fx);
         self.monsters_act();
     }
 
@@ -1295,9 +1368,15 @@ impl Game {
     }
 
     /// 1ターンぶんの空腹と毒。
-    fn tick_body(&mut self) {
-        // Famine の防具は、2ターンに1回、満腹度を余計に減らす
-        let drain = if self.armor_suffix() == Some(Suffix::Famine) && self.turn % 2 == 0 { 2 } else { 1 };
+    fn tick_body(&mut self, fx: &RingFx) {
+        // Famine の防具は、2ターンに1回、満腹度を余計に減らす。消化遅延の指輪は減る回数を間引く
+        let drain = if fx.slow_digestion > 0 && self.turn % (fx.slow_digestion as u32 + 1) != 0 {
+            0
+        } else if self.armor_suffix() == Some(Suffix::Famine) && self.turn % 2 == 0 {
+            2
+        } else {
+            1
+        };
         for _ in 0..drain {
             if self.food <= 0 {
                 break;
@@ -1442,6 +1521,12 @@ impl Game {
         let name = self.foe_name(i);
         let (dx, dy) = (self.pos.0 - mpos.0, self.pos.1 - mpos.1);
         if dx.abs() <= 1 && dy.abs() <= 1 {
+            // 器用さの指輪で、攻撃をかわすことがある
+            let dex = self.ring_fx().dexterity;
+            if dex > 0 && self.rng.range(0, 100) < (10 * dex).min(50) {
+                self.note(&format!("{name}の攻撃を身軽にかわした！"));
+                return;
+            }
             let bonus = (self.depth as i32 - 1) / 3;
             let raw = self.rng.range(kind.dmg.0, kind.dmg.1 + 1 + bonus);
             // 防御で減らして「最低1」にしたあとに足す。重い鎧でも呪いの代償は必ず受ける
@@ -1547,9 +1632,14 @@ impl Game {
     }
 
     fn attack_monster(&mut self, i: usize) -> String {
+        let name = self.foe_name(i);
+        // 不器用な指輪のせいで、空振りすることがある
+        let dex = self.ring_fx().dexterity;
+        if dex < 0 && self.rng.range(0, 100) < (-10 * dex).min(30) {
+            return format!("{name}への攻撃は空を切った。");
+        }
         let (lo, hi) = self.attack_range();
         let dmg = self.rng.range(lo, hi + 1);
-        let name = self.foe_name(i);
         let seen = self.can_see_monster(i);
         self.monsters[i].hp -= dmg;
         let (hp, max_hp) = {
@@ -1775,6 +1865,7 @@ impl Game {
             Command::Eat(letter) => self.consume(letter, None, Consume::Eat),
             Command::Read(letter, target) => self.consume(letter, target, Consume::Read),
             Command::Zap(letter, target) => self.zap_cmd(letter, target),
+            Command::Refill(flask) => self.refill_cmd(flask),
             Command::Equip(letter) => self.equip(letter),
             Command::Unequip(letter) => self.unequip(letter),
             Command::Drop(letter, n) => self.drop_cmd(letter, n),
@@ -1782,9 +1873,9 @@ impl Game {
             Command::Inventory => {
                 let lines = self.inventory_lines();
                 let msg = if lines.is_empty() {
-                    "持ち物はない。".to_string()
+                    format!("持ち物はない。 {}", self.light_line())
                 } else {
-                    format!("持ち物: {}", lines.join(" / "))
+                    format!("持ち物: {} / {}", lines.join(" / "), self.light_line())
                 };
                 (true, msg, false)
             }
@@ -2162,6 +2253,8 @@ impl Game {
             s.push_str(&format!("-- {under} --\n"));
         }
         s.push_str("-- 持ち物 --\n");
+        s.push_str(&self.light_line());
+        s.push('\n');
         let inv = self.inventory_lines();
         if inv.is_empty() {
             s.push_str("(なし)\n");
@@ -3578,7 +3671,7 @@ mod tests {
         let b = Game::new(9);
         assert_eq!(a.looks, b.looks);
         for k in ItemKind::ALL {
-            assert_eq!(a.known[k.index()], k.is_equipment() || k.is_food(), "{k:?}");
+            assert_eq!(a.known[k.index()], k.starts_known(), "{k:?}");
         }
         let groups: [fn(ItemKind) -> bool; 3] =
             [|k| k.is_potion(), |k| k.is_scroll(), |k| k.is_mushroom()];
@@ -4703,7 +4796,7 @@ mod tests {
         let mut g = quiet(2);
         g.hp = 20;
         g.max_hp = 20;
-        g.take(Tool { kind, val: charges });
+        g.take(Tool::charged(kind, charges));
         g
     }
 
@@ -4712,7 +4805,7 @@ mod tests {
         let mut g = with_adjacent(3, mk);
         g.monsters[0].hp = hp;
         g.monsters[0].max_hp = hp;
-        g.take(Tool { kind, val: 5 });
+        g.take(Tool::charged(kind, 5));
         g
     }
 
@@ -4796,7 +4889,7 @@ mod tests {
         let mut g = quiet(3);
         g.hp = 1000;
         g.max_hp = 1000;
-        g.take(Tool { kind: ItemKind::WandFire, val: 5 });
+        g.take(Tool::charged(ItemKind::WandFire, 5));
         // 東に2体並べる
         let (p1, p2) = ((g.pos.0 + 1, g.pos.1), (g.pos.0 + 2, g.pos.1));
         assert!(g.map.tile(p2.0, p2.1).walkable());
@@ -4818,7 +4911,7 @@ mod tests {
         let mut g = quiet(3);
         g.hp = 1000;
         g.max_hp = 1000;
-        g.take(Tool { kind: ItemKind::WandLightning, val: 5 });
+        g.take(Tool::charged(ItemKind::WandLightning, 5));
         let (p1, p2) = ((g.pos.0 + 1, g.pos.1), (g.pos.0 + 2, g.pos.1));
         assert!(g.map.tile(p2.0, p2.1).walkable());
         g.monsters.push(monster(&crate::monster::OGRE, p1, 500));
@@ -4832,7 +4925,7 @@ mod tests {
     #[test]
     fn bolts_do_not_pass_through_walls() {
         let mut g = quiet(3);
-        g.take(Tool { kind: ItemKind::WandFire, val: 5 });
+        g.take(Tool::charged(ItemKind::WandFire, 5));
         // 壁の向こうに敵を置く
         let mut dir = None;
         for d in Dir::ALL {
@@ -4948,7 +5041,7 @@ mod tests {
         let mut tried = false;
         for seed in 0..60 {
             let mut g = quiet(seed);
-            g.take(Tool { kind: ItemKind::WandLight, val: 3 });
+            g.take(Tool::charged(ItemKind::WandLight, 3));
             g.map.forget_all();
             for d in Dir::ALL {
                 let (dx, dy) = d.delta();
@@ -4989,8 +5082,8 @@ mod tests {
     #[test]
     fn wands_are_individuals_and_survive_drop_and_pickup_with_their_charges() {
         let mut g = quiet(2);
-        g.take(Tool { kind: ItemKind::WandFire, val: 4 });
-        g.take(Tool { kind: ItemKind::WandFire, val: 2 });
+        g.take(Tool::charged(ItemKind::WandFire, 4));
+        g.take(Tool::charged(ItemKind::WandFire, 2));
         assert_eq!(g.inventory.len(), 2);
         assert!(g.inventory_lines()[0].contains("[残り4回]") && g.inventory_lines()[1].contains("[残り2回]"));
         g.run("drop a");
@@ -5024,9 +5117,474 @@ mod tests {
     fn identify_scroll_can_identify_an_unknown_wand() {
         let mut g = quiet(2);
         g.take(ItemKind::Identify);
-        g.take(Tool { kind: ItemKind::WandSlow, val: 4 });
+        g.take(Tool::charged(ItemKind::WandSlow, 4));
         let o = g.run("read a b");
         assert!(o.ok && g.known[ItemKind::WandSlow.index()], "{}", o.message);
         assert!(g.inventory_lines()[0].contains("敵減速の杖 [残り4回]"));
+    }
+
+    // ---- 段階4: 指輪と光源 ----
+
+    fn ring(kind: ItemKind, val: i32) -> Tool {
+        let mut t = Tool::charged(kind, val);
+        t.identified = false;
+        t.cursed = val < 0 || kind.ring_def().is_some_and(|r| r.always_cursed);
+        t
+    }
+
+    /// 指輪を持って（まだはめていない）いる静かなゲーム。文字は a, b, ...
+    fn with_rings(rings: &[Tool]) -> Game {
+        let mut g = quiet(2);
+        g.hp = 20;
+        g.max_hp = 20;
+        for r in rings {
+            g.take(*r);
+        }
+        g
+    }
+
+    #[test]
+    fn all_the_rogue_rings_exist_with_gem_looks() {
+        for name in [
+            "防御の指輪", "腕力の指輪", "器用さの指輪", "ダメージ増加の指輪", "再生の指輪", "消化遅延の指輪", "隠密の指輪",
+            "探索の指輪", "透明視認の指輪", "装飾の指輪", "怒らせる指輪", "テレポート癖の指輪",
+        ] {
+            assert!(ItemKind::ALL.iter().any(|k| k.is_ring() && k.true_name() == name), "{name}");
+        }
+        let g = Game::new(7);
+        let looks: Vec<&str> = ItemKind::ALL.iter().filter(|k| k.is_ring()).map(|k| g.looks[k.index()]).collect();
+        assert_eq!(looks.iter().collect::<std::collections::HashSet<_>>().len(), looks.len());
+        assert!(looks.iter().all(|l| l.ends_with("の指輪")) && !looks.iter().any(|l| l.contains("防御")));
+    }
+
+    #[test]
+    fn rings_are_unknown_until_worn_for_a_while_and_effects_apply_meanwhile() {
+        let mut g = with_rings(&[ring(ItemKind::RingProtection, 2)]);
+        let look = g.looks[ItemKind::RingProtection.index()];
+        assert!(g.inventory_lines()[0].contains(look) && g.inventory_lines()[0].contains("未識別"));
+        let def = g.defense();
+        let o = g.run("equip a");
+        assert!(o.ok && o.message.contains("効果はまだ分からない"), "{}", o.message);
+        assert_eq!(g.defense(), def + 2, "識別前でも効果は効いている");
+        assert!(g.inventory_lines()[0].contains("(装備中)"));
+        for _ in 0..27 {
+            g.run("wait");
+        }
+        assert!(!g.known[ItemKind::RingProtection.index()]);
+        let mut msg = String::new();
+        for _ in 0..4 {
+            msg.push_str(&g.run("wait").message);
+        }
+        assert!(msg.contains("正体が分かった") && msg.contains("防御の指輪 +2"), "{msg}");
+        assert!(g.known[ItemKind::RingProtection.index()]);
+        assert!(g.inventory_lines()[0].contains("防御の指輪 +2") && g.inventory_lines()[0].contains("防御+2"));
+    }
+
+    #[test]
+    fn a_known_kind_is_identified_as_soon_as_it_is_worn() {
+        let mut g = with_rings(&[ring(ItemKind::RingStrength, 1)]);
+        g.known[ItemKind::RingStrength.index()] = true;
+        assert!(g.inventory_lines()[0].contains("腕力の指輪 (+?)"), "{}", g.inventory_lines()[0]);
+        let o = g.run("equip a");
+        assert!(o.message.contains("腕力の指輪 +1") && o.message.contains("腕力+1"), "{}", o.message);
+    }
+
+    #[test]
+    fn two_ring_slots_and_unequip() {
+        let mut g = with_rings(&[
+            ring(ItemKind::RingTrinket, 0),
+            ring(ItemKind::RingSearching, 1),
+            ring(ItemKind::RingStealth, 1),
+        ]);
+        assert!(g.run("equip a").ok && g.run("equip b").ok);
+        let o = g.run("equip c");
+        assert!(!o.ok && o.message.contains("ふさがっている"), "{}", o.message);
+        assert!(!g.run("equip a").ok);
+        assert!(g.run("unequip a").ok);
+        assert!(g.run("equip c").ok);
+        assert!(!g.run("unequip a").ok);
+        // 装備中の指輪は捨てられない
+        assert!(!g.run("drop b").ok);
+        assert!(g.run("unequip b").ok && g.run("drop b").ok);
+    }
+
+    #[test]
+    fn cursed_rings_cannot_be_removed_until_remove_curse() {
+        let mut g = with_rings(&[ring(ItemKind::RingProtection, -2)]);
+        let def = g.defense();
+        let o = g.run("equip a");
+        assert!(o.message.contains("呪われていた") && o.message.contains("防御の指輪 -2"), "{}", o.message);
+        assert_eq!(g.defense(), def - 2);
+        let o = g.run("unequip a");
+        assert!(!o.ok && o.message.contains("はずせない"), "{}", o.message);
+        assert!(!g.run("drop a").ok);
+        assert!(g.inventory_lines()[0].contains("(呪われている)"));
+        g.take(ItemKind::RemoveCurse);
+        let o = g.run("read b");
+        assert!(o.message.contains("呪いの束縛が解けた"), "{}", o.message);
+        assert!(g.run("unequip a").ok);
+        assert!(g.inventory_lines()[0].contains("(呪い解除済み)"));
+    }
+
+    #[test]
+    fn strength_damage_and_dexterity_rings() {
+        let mut g = with_rings(&[ring(ItemKind::RingStrength, 2), ring(ItemKind::RingDamage, 1)]);
+        let (lo, hi) = g.attack_range();
+        g.run("equip a");
+        assert_eq!(g.attack_range(), (lo + 1, hi + 1)); // 腕力 +2 → 攻撃 +1
+        assert!(g.observe_text(3).contains("腕力 12/10"));
+        g.run("equip b");
+        assert_eq!(g.attack_range(), (lo + 2, hi + 2));
+        // 器用さ: 敵の攻撃をかわす
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        g.take(ring(ItemKind::RingDexterity, 5));
+        g.run("equip a");
+        let mut dodged = 0;
+        let mut hit = 0;
+        for _ in 0..60 {
+            let m = g.run("wait").message;
+            dodged += m.matches("かわした").count();
+            hit += m.matches("の攻撃！").count();
+        }
+        assert!(dodged > 10 && hit > 10, "{dodged} {hit}");
+        // 負の器用さ: 自分の攻撃が空振りする
+        let mut g = with_adjacent(3, &crate::monster::OGRE);
+        g.monsters[0].status.apply(Status::Paralyzed, 1000);
+        g.take(ring(ItemKind::RingDexterity, -3));
+        g.run("equip a");
+        let whiffs = (0..60).filter(|_| g.run("attack east").message.contains("空を切った")).count();
+        assert!(whiffs > 8 && whiffs < 40, "{whiffs}");
+    }
+
+    #[test]
+    fn regeneration_heals_faster_even_with_enemies_around() {
+        let mut g = quiet(2);
+        g.take(ring(ItemKind::RingRegeneration, 2));
+        g.run("equip a");
+        g.hp = 1;
+        g.max_hp = 100;
+        for _ in 0..40 {
+            g.run("wait");
+        }
+        assert!(g.hp >= 1 + 40 / 4, "{}", g.hp);
+        // 敵が見えていても治る
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        g.monsters[0].status.apply(Status::Paralyzed, 1000);
+        g.take(ring(ItemKind::RingRegeneration, 3));
+        g.run("equip a");
+        g.hp = 1;
+        for _ in 0..20 {
+            g.run("wait");
+        }
+        assert!(g.hp > 3);
+    }
+
+    #[test]
+    fn slow_digestion_makes_hunger_grow_slower() {
+        let hunger = |with_ring: bool| {
+            let mut g = quiet(2);
+            if with_ring {
+                g.take(ring(ItemKind::RingSlowDigestion, 1));
+                g.run("equip a");
+            }
+            let f = g.food;
+            for _ in 0..40 {
+                g.run("wait");
+            }
+            f - g.food
+        };
+        let (plain, slow) = (hunger(false), hunger(true));
+        assert!(slow * 2 <= plain + 2 && slow * 2 + 2 >= plain, "{plain} {slow}");
+    }
+
+    #[test]
+    fn stealth_shrinks_the_distance_enemies_notice_you() {
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        let far = (g.pos.0 + 5, g.pos.1);
+        if !g.map.tile(far.0, far.1).walkable() {
+            return;
+        }
+        g.monsters[0].pos = far;
+        assert!(g.monster_aware(0));
+        g.take(ring(ItemKind::RingStealth, 2));
+        g.run("equip a");
+        assert!(!g.monster_aware(0)); // 9 - 6 = 3 < 5
+        g.monsters[0].pos = (g.pos.0 + 3, g.pos.1);
+        assert!(g.monster_aware(0));
+    }
+
+    #[test]
+    fn the_searching_ring_finds_traps_more_surely_and_from_further() {
+        let mut g = quiet(3);
+        let p = (g.pos.0 + 3, g.pos.1);
+        assert!(g.map.tile(p.0, p.1).walkable());
+        g.traps.push(Trap { pos: p, kind: TrapKind::Dart, revealed: false });
+        g.take(ring(ItemKind::RingSearching, 3));
+        g.run("equip a");
+        for _ in 0..3 {
+            g.run("wait");
+        }
+        assert!(g.traps[0].revealed, "探索の指輪でも3マス先の罠が見つからなかった");
+    }
+
+    #[test]
+    fn see_invisible_ring_shows_invisible_enemies() {
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        g.monsters[0].status.apply(Status::Invisible, 1000);
+        assert!(g.visible_enemies().is_empty());
+        g.take(ring(ItemKind::RingSeeInvisible, 1));
+        g.run("equip a");
+        assert_eq!(g.visible_enemies().len(), 1);
+    }
+
+    #[test]
+    fn the_aggravate_ring_pulls_every_enemy_toward_you_and_cannot_be_removed() {
+        let mut g = quiet(2);
+        let far = (1..W - 1)
+            .flat_map(|x| (1..H - 1).map(move |y| (x, y)))
+            .find(|&(x, y)| g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs() + (y - g.pos.1).abs() > 25)
+            .unwrap();
+        let id = g.add_monster(&crate::monster::SLIME, far);
+        assert!(!g.monster_aware(id));
+        g.take(ring(ItemKind::RingAggravate, 1));
+        let o = g.run("equip a");
+        assert!(o.message.contains("呪われていた"), "{}", o.message);
+        assert!(g.monster_aware(id));
+        let mut moved = false;
+        for _ in 0..4 {
+            g.run("wait");
+            moved |= g.monsters[id].pos != far;
+        }
+        assert!(moved);
+        assert!(!g.run("unequip a").ok);
+    }
+
+    #[test]
+    fn the_teleportitis_ring_throws_you_around_now_and_then() {
+        let mut g = quiet(2);
+        g.take(ring(ItemKind::RingTeleportitis, 1));
+        g.run("equip a");
+        let mut jumps = 0;
+        for _ in 0..400 {
+            g.hp = g.max_hp;
+            g.food = MAX_FOOD;
+            if g.run("wait").message.contains("飛ばされた") {
+                jumps += 1;
+            }
+        }
+        assert!((3..40).contains(&jumps), "{jumps}");
+    }
+
+    #[test]
+    fn identify_scroll_reveals_a_ring_and_warns_about_a_curse() {
+        let mut g = with_rings(&[ring(ItemKind::RingDamage, -2)]);
+        g.take(ItemKind::Identify);
+        let o = g.run("read b a");
+        assert!(o.ok && o.message.contains("ダメージ増加の指輪 -2") && o.message.contains("呪われている"), "{}", o.message);
+        assert!(g.known[ItemKind::RingDamage.index()]);
+        // 呪いと分かっていれば、はめる前に避けられる
+        assert!(g.inventory_lines()[0].contains("(呪われている)"));
+    }
+
+    #[test]
+    fn rolled_rings_carry_a_strength_and_some_are_cursed() {
+        let mut rng = Rng::new(3);
+        let (mut cursed, mut total) = (0, 0);
+        for k in ItemKind::ALL.into_iter().filter(|k| k.is_ring()) {
+            for _ in 0..80 {
+                let t = Tool::roll(&mut rng, k);
+                let r = k.ring_def().unwrap();
+                total += 1;
+                assert!(!t.identified);
+                if r.always_cursed {
+                    assert!(t.cursed);
+                } else if !r.cursable {
+                    assert!(!t.cursed && t.val >= 0, "{k:?} {t:?}");
+                } else {
+                    assert_eq!(t.cursed, t.val < 0, "{k:?}");
+                    assert!((1..=3).contains(&t.val.abs()));
+                }
+                cursed += t.cursed as u32;
+            }
+        }
+        assert!(cursed * 10 > total && cursed * 2 < total, "{cursed}/{total}");
+    }
+
+    // ---- 光源 ----
+
+    #[test]
+    fn you_start_with_a_lit_torch_and_its_fuel_is_always_shown() {
+        let g = quiet(2);
+        assert!(g.status_text().contains("光源:松明 燃料1500/1500"), "{}", g.status_text());
+        assert!(g.observe_text(3).contains("光源: 松明 [燃料 1500/1500] (装備中)"));
+        assert!(g.light_line().contains("松明"));
+        let mut g = quiet(2);
+        assert!(g.run("inventory").message.contains("光源: 松明 [燃料 1500/1500]"));
+    }
+
+    #[test]
+    fn fuel_burns_each_turn_warns_when_low_and_darkens_when_out() {
+        let mut g = quiet(2);
+        g.light = Some(Tool::charged(ItemKind::Torch, 103));
+        assert!(g.map.is_visible(g.pos.0 + 6, g.pos.1) || !g.map.tile(g.pos.0 + 6, g.pos.1).walkable());
+        let mut warned = false;
+        for _ in 0..3 {
+            warned |= g.run("wait").message.contains("火が弱くなってきた");
+        }
+        assert!(warned);
+        assert_eq!(g.light.unwrap().val, 100);
+        for _ in 0..99 {
+            g.run("wait");
+        }
+        let o = g.run("wait");
+        assert!(o.message.contains("燃え尽きた"), "{}", o.message);
+        assert_eq!(g.light.unwrap().val, 0);
+        assert!(g.status_text().contains("暗闇"));
+        // 視界が狭まる: 半径2より遠くは見えない
+        let far = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| g.map.is_visible(x, y)).all(|(x, y)| {
+            (x - g.pos.0).pow(2) + (y - g.pos.1).pow(2) <= crate::item::DARK_RADIUS.pow(2)
+        });
+        assert!(far);
+        // 燃料は減り続けない
+        g.run("wait");
+        assert_eq!(g.light.unwrap().val, 0);
+    }
+
+    #[test]
+    fn running_out_of_light_interrupts_auto_walk() {
+        let mut g = quiet(2);
+        g.light = Some(Tool::charged(ItemKind::Torch, 5));
+        let o = g.run("explore");
+        assert!(o.message.contains("明かりが消えて中断"), "{}", o.message);
+    }
+
+    #[test]
+    fn swapping_lights_returns_the_old_one_and_a_lantern_can_be_refilled() {
+        let mut g = quiet(2);
+        g.light = Some(Tool::charged(ItemKind::Torch, 40));
+        g.take(Tool::charged(ItemKind::Lantern, 1000));
+        let o = g.run("equip a");
+        assert!(o.ok && o.message.contains("ランタン"), "{}", o.message);
+        assert_eq!(g.light.unwrap().kind, ItemKind::Lantern);
+        // 古い松明が同じ文字に戻る
+        assert!(g.inventory_lines()[0].starts_with("a) 松明 [燃料") , "{:?}", g.inventory_lines());
+        // 油を継ぎ足す
+        let o = g.run("refill");
+        assert!(!o.ok && o.message.contains("油つぼを持っていない"), "{}", o.message);
+        g.take(ItemKind::OilFlask);
+        g.take(ItemKind::OilFlask);
+        let t = g.turn();
+        let o = g.run("refill");
+        assert!(o.ok && g.turn() == t + 1, "{}", o.message);
+        let fuel = g.light.unwrap().val;
+        assert!((2490..=2500).contains(&fuel), "{fuel}");
+        assert!(g.inventory_lines().iter().any(|l| l.contains("油つぼ") && !l.contains("x2")));
+        // 満タンを超えない
+        g.run("refill");
+        let max = ItemKind::Lantern.light_def().unwrap().max_fuel;
+        assert!(g.light.unwrap().val <= max);
+        g.light = Some(Tool::charged(ItemKind::Lantern, max));
+        let o = g.run("refill");
+        assert!(!o.ok && o.message.contains("満タン"), "{}", o.message);
+    }
+
+    #[test]
+    fn a_torch_cannot_be_refilled_and_refilling_a_dead_lantern_relights_the_room() {
+        let mut g = quiet(2);
+        g.take(ItemKind::OilFlask);
+        let o = g.run("refill");
+        assert!(!o.ok && o.message.contains("継ぎ足せない"), "{}", o.message);
+        g.light = Some(Tool::charged(ItemKind::Lantern, 0));
+        g.refresh_fov();
+        assert!(!g.map.is_visible(g.pos.0 + 5, g.pos.1));
+        let o = g.run("refill");
+        assert!(o.ok && o.message.contains("明るくなった"), "{}", o.message);
+        assert!(g.map.is_visible(g.pos.0 + 1, g.pos.1));
+        assert!(!g.run("refill").ok);
+    }
+
+    #[test]
+    fn dark_does_not_blind_the_monsters() {
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        g.light = Some(Tool::charged(ItemKind::Torch, 0));
+        g.refresh_fov();
+        let far = (g.pos.0 + 5, g.pos.1);
+        if g.map.tile(far.0, far.1).walkable() {
+            g.monsters[0].pos = far;
+            assert!(g.monster_aware(0));
+            assert!(g.visible_enemies().is_empty(), "暗闇で遠くの敵が見えている");
+        }
+    }
+
+    #[test]
+    fn lights_and_oil_appear_on_the_floor_and_oil_stacks() {
+        let mut found = (false, false, false);
+        for seed in 0..200 {
+            let mut g = Game::new(seed);
+            g.depth = 4;
+            g.spawn_items();
+            for f in &g.floor_items {
+                match f.item.kind() {
+                    ItemKind::Torch => found.0 = true,
+                    ItemKind::Lantern => found.1 = true,
+                    ItemKind::OilFlask => found.2 = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(found.0 && found.1 && found.2, "{found:?}");
+        let mut g = quiet(2);
+        g.take(ItemKind::OilFlask);
+        g.take(ItemKind::OilFlask);
+        assert_eq!(g.inventory.len(), 1);
+        assert!(g.inventory_lines()[0].contains("油つぼ x2"));
+        // 光源は重ならず、燃料の量が分かる
+        g.take(Tool::charged(ItemKind::Torch, 700));
+        g.take(Tool::charged(ItemKind::Torch, 300));
+        let lines = g.inventory_lines();
+        assert!(lines[1].contains("[燃料 700/1500]") && lines[2].contains("[燃料 300/1500]"), "{lines:?}");
+    }
+
+    #[test]
+    fn random_play_with_every_item_never_panics_and_stays_consistent() {
+        let verbs = ["quaff", "read", "eat", "equip", "unequip", "drop", "zap", "refill"];
+        let dirs = ["north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest", "nearest", ""];
+        for seed in 0..40u64 {
+            let mut g = Game::new(seed);
+            let mut r = Rng::new(seed ^ 0xABCDEF);
+            // 全種類を1つずつ持たせて、乱暴に使う
+            for k in ItemKind::ALL {
+                if g.has_free_letter() {
+                    g.take(Item::roll(&mut r, k, 10));
+                }
+            }
+            for step in 0..400 {
+                if g.is_dead() || g.is_won() {
+                    break;
+                }
+                let letter = (b'a' + r.range(0, 26) as u8) as char;
+                let cmd = match r.range(0, 12) {
+                    0 | 1 => format!("{} {letter}", verbs[r.range(0, verbs.len() as i32) as usize]),
+                    2 => format!("zap {letter} {}", dirs[r.range(0, dirs.len() as i32) as usize]),
+                    3 => "explore".to_string(),
+                    4 => "travel >; descend".to_string(),
+                    5 => "pickup".to_string(),
+                    6 => format!("read {letter} {}", (b'a' + r.range(0, 26) as u8) as char),
+                    7 => "stay 5".to_string(),
+                    8 => "inventory; look".to_string(),
+                    _ => format!("move {}", dirs[r.range(0, 8) as usize]),
+                };
+                for o in g.run_script(&cmd) {
+                    assert!(o.hp <= g.max_hp(), "seed {seed} step {step}: {} -> hp {}", o.command, o.hp);
+                }
+                let text = g.observe_text(5);
+                assert!(text.contains("光源:"), "{text}");
+                // 装備している物は、必ず持ち物にある
+                for l in [g.weapon, g.armor, g.rings[0], g.rings[1]].into_iter().flatten() {
+                    assert!(g.inventory.iter().any(|s| s.letter == l), "seed {seed}: 装備 {l} が持ち物にない");
+                }
+                assert!(g.rings[0].is_none() || g.rings[0] != g.rings[1]);
+            }
+        }
     }
 }

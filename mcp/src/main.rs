@@ -62,7 +62,7 @@ fn tools() -> Value {
         },
         {
             "name": "observe",
-            "description": "Show the current map (@ = you, > = stairs, > = stairs (< once you hold the amulet), , = the Amulet on depth 30, s = slime, ! = potion, ? = scroll; remembered tiles stay), active status effects with remaining turns (poison, confusion, blindness, hallucination, ...; while blind no map is shown), visible enemies, the items under your feet (numbered, as used by pickup), your inventory and the recent message log. Does not consume a turn.",
+            "description": "Show the current map (@ = you, > = stairs, > = stairs (< once you hold the amulet), , = the Amulet on depth 30, s = slime, ! = potion, ? = scroll, / = wand, = = ring, ~ = light/oil, ^ = known trap; remembered tiles stay), active status effects with remaining turns (poison, confusion, blindness, hallucination, ...; while blind no map is shown), visible enemies, the items under your feet (numbered, as used by pickup), your inventory (wands show remaining charges; the equipped light shows its fuel) and the recent message log. Does not consume a turn.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {

@@ -27,6 +27,9 @@ impl Game {
                 Class::Weapon | Class::Armor => ("装備品", "equip"),
                 Class::Food | Class::Mushroom => ("食べ物", "eat"),
                 Class::Wand => ("杖", "zap"),
+                Class::Ring => ("指輪", "equip"),
+                Class::Light => ("光源", "equip"),
+                Class::Fuel => ("油つぼ", "refill"),
             };
             return (
                 false,
@@ -212,6 +215,12 @@ impl Game {
                         n += 1;
                     }
                 }
+                for t in self.inventory.iter_mut().filter_map(|s| s.tool.as_mut()) {
+                    if t.is_sticky() {
+                        t.freed = true;
+                        n += 1;
+                    }
+                }
                 if n > 0 {
                     format!("{n}個の装備にかかった呪いの束縛が解けた。(はずせるようになったが、欠点は残る)")
                 } else {
@@ -268,6 +277,14 @@ impl Game {
                 let letter = self.inventory[i].letter;
                 let (old, text) = self.identify_gear(letter);
                 Ok(format!("{old}の正体が分かった。{text}"))
+            }
+            Some(i) if self.inventory[i].tool.is_some_and(|t| t.kind.is_ring()) => {
+                let letter = self.inventory[i].letter;
+                let old = self.ring_name(&self.inventory[i].tool.expect("指輪"));
+                self.reveal_ring(letter);
+                let t = self.inventory[i].tool.expect("指輪");
+                let cursed = if t.cursed { " 呪われている！" } else { "" };
+                Ok(format!("{old}の正体が分かった。{} ({}){cursed}", self.ring_name(&t), t.kind.ring_def().map_or(String::new(), |r| r.effect.describe(t.val))))
             }
             Some(i) => {
                 let tk = self.inventory[i].kind;

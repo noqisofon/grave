@@ -95,6 +95,8 @@ pub enum Command {
     Read(char, Option<char>),
     /// 杖を振る。向きか、いちばん近い敵。自分に効く杖は向きが要らない
     Zap(char, Option<ZapTarget>),
+    /// 装備中のランタンに油つぼで燃料を継ぎ足す（文字を省くと最初の油つぼ）
+    Refill(Option<char>),
     Inventory,
     /// 持ち物の文字の武器・防具を身につける
     Equip(char),
@@ -126,6 +128,8 @@ impl fmt::Display for Command {
             Command::Zap(c, None) => write!(f, "zap {c}"),
             Command::Zap(c, Some(ZapTarget::Dir(d))) => write!(f, "zap {c} {}", d.name()),
             Command::Zap(c, Some(ZapTarget::Nearest)) => write!(f, "zap {c} nearest"),
+            Command::Refill(None) => write!(f, "refill"),
+            Command::Refill(Some(c)) => write!(f, "refill {c}"),
             Command::Inventory => write!(f, "inventory"),
             Command::Equip(c) => write!(f, "equip {c}"),
             Command::Unequip(c) => write!(f, "unequip {c}"),
@@ -152,6 +156,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "eat",
     "read",
     "zap",
+    "refill",
     "inventory",
     "equip",
     "unequip",
@@ -175,8 +180,9 @@ eat <文字>     食べ物・キノコを食べる (食べ物以外には使え�
 zap <文字> [向き|nearest]  杖を振る (1ターン。向きは move と同じ 8 方向。nearest は一番近い見えている敵。自分に効く杖は向き不要)。使用回数があり、0 になると使えない。残りの回数は inventory とステータスに出る
 read <文字> [対象]  巻物を読む (巻物以外には使えない。盲目だと読めない)。識別の巻物は対象の文字を指定できる
 inventory      持ち物の一覧 (ターン消費なし。装備中のものには (装備中) と付く)
-equip <文字>   武器や防具を身につける (武器・防具はそれぞれ1つずつ。付け替えもこれ)
-unequip <文字> 装備をはずす (呪われた装備ははずせない)
+equip <文字>   武器・防具・指輪・光源を身につける (武器・防具は1つずつ、指輪は2つまで。付け替えもこれ。光源は今の光源と持ち替える)
+unequip <文字> 装備や指輪をはずす (呪われたものははずせない)
+refill [文字]  装備中のランタンに油つぼで燃料を継ぎ足す (文字は油つぼ。省くと最初の油つぼ。松明には使えない。1ターン)
 drop <文字> [数]  持ち物を足元に捨てる (1ターン。数を省くと1個。装備中のものは先に unequip。捨てた物は歩いても stay しても自動では拾われない)
 pickup [番号]  足元の物を1個拾う (別名 get。1ターン。番号は look や観測の「足元」の番号。省くと番号1。捨てた物もこれで拾える)
 travel > (<)   既知の階段まで自動移動
@@ -190,9 +196,11 @@ look           階段や見えている敵の位置を調べる (ターン消費
 装備は1個ずつ別物で、品質(接頭辞の語: Basic/Okay… < Superior/Prime… < Mystical/Sanctified… < Eldritch/Primeval…)が上がるほど強い。Uncommon 以上には特殊効果(of X)が付くことがあり、名前の (?) は接尾辞や正確な補正値が未識別という印。識別の巻物か、装備して一定ターン経つと分かる。呪われた装備(装備して初めて分かる)は強いが、はずせない。
 状態異常は「状態」欄に残りターンつきで出る: 毒(毎ターン1ダメージ) 混乱(移動や攻撃の向きがずれる) 幻覚(敵の名前と記号がでたらめになる。HPと位置は本物) 盲目(マップも敵も見えない。巻物は読めない。観測にマップは出ない) 睡眠・停止(行動できず、解けるまで時間が過ぎる) 加速(1ターンに2回行動) 減速(1回の行動に2ターン) 浮遊(罠を無視) 透明(敵は2マス以内でないと気づかない) 透明視認(透明な敵が見える)。敵にも付き、見えている敵の横に [混乱5] のように出る。混乱・盲目の間は travel / explore が使えない。
 床には隠れた罠がある(落とし穴・毒矢・眠りガス)。踏むか、近くに立っていると見つかり、^ で表示される。見つけた罠は travel / explore が避ける。浮遊中は発動しない。
+指輪(=): 防御・腕力・器用さ・ダメージ増加・再生・消化遅延・隠密・探索・透明視認・装飾 (+呪われた「怒らせる」「テレポート癖」)。見た目(宝石名)では正体が分からず、身につけて30ターン過ごすか識別すると分かる(効果は未識別でも効く)。強さが負の指輪や呪われた指輪は、身につけると外せない(呪い解除の巻物で外せる)。
+光源(~): 最初に松明(燃料1500)を装備している。燃料は1ターンごとに減り、ステータスの「光源:松明 燃料N/M」と inventory に出る。100を切ると知らせ、0で燃え尽きて視界が半径2に狭まる(敵はこちらを見つけられる)。松明を拾って equip で持ち替えるか、ランタン(燃料4000、地下3階〜)に油つぼ(~, +1500)を refill で継ぎ足す。
 アイテムの上を歩くと自動で拾う。薬と巻物は最初は未識別で、使うと正体が分かる (ゲームごとに見た目と効果の対応が変わる)
 クリア条件: 地下30階の魔除けのアミュレット(,)を手に入れ、階段を登って地上まで持ち帰る。アミュレットを持つと階段は登り階段(<)になる。
-凡例: @ 自分  ^ 見つけた罠  > 階段(アミュレットを持つと <)  , アミュレット  ! 薬  ? 巻物  / 杖  ) 武器  [ 防具  % 食べ物・キノコ  s スライム  b コウモリ  g ゴブリン  O オーガ  S 毒グモ  a アクアター(殴られると鎧が錆びる)";
+凡例: @ 自分  ^ 見つけた罠  > 階段(アミュレットを持つと <)  , アミュレット  ! 薬  ? 巻物  / 杖  = 指輪  ~ 光源・油つぼ  ) 武器  [ 防具  % 食べ物・キノコ  s スライム  b コウモリ  g ゴブリン  O オーガ  S 毒グモ  a アクアター(殴られると鎧が錆びる)";
 
 /// 持ち物の文字（小文字1つ）。
 fn letter_arg(s: &str) -> Option<char> {
@@ -266,6 +274,10 @@ fn parse_body(line: &str) -> Result<Command, String> {
             };
             Ok(Command::Zap(letter, target))
         }
+        "refill" | "fuel" => match args.first() {
+            None => Ok(Command::Refill(None)),
+            Some(a) => Ok(Command::Refill(Some(letter_arg(a).ok_or_else(|| format!("不正な油つぼの文字: {a}"))?))),
+        },
         "use" | "u" => Err(
             "use はない。薬は quaff、食べ物は eat、巻物は read、装備は equip を使う".to_string(),
         ),
@@ -409,6 +421,8 @@ mod tests {
             Command::Zap('b', None),
             Command::Zap('b', Some(ZapTarget::Dir(Dir::SE))),
             Command::Zap('b', Some(ZapTarget::Nearest)),
+            Command::Refill(None),
+            Command::Refill(Some('d')),
             Command::Inventory,
             Command::Equip('c'),
             Command::Unequip('c'),

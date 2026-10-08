@@ -25,6 +25,7 @@ impl Keymap {
             ('R', "read "),
             ('a', "zap "),
             ('Z', "zap "),
+            ('F', "refill"),
             ('e', "equip "),
             ('r', "unequip "),
             ('d', "drop "),

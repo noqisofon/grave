@@ -56,6 +56,23 @@ pub enum ItemKind {
     WandCancel,
     WandTeleportOther,
     WandTeleportSelf,
+    // ---- 指輪（装備スロットは2つ）。呪われたものは外せない ----
+    RingProtection,
+    RingStrength,
+    RingDexterity,
+    RingDamage,
+    RingRegeneration,
+    RingSlowDigestion,
+    RingStealth,
+    RingSearching,
+    RingSeeInvisible,
+    RingTrinket,
+    RingAggravate,
+    RingTeleportitis,
+    // ---- 光源と燃料 ----
+    Torch,
+    Lantern,
+    OilFlask,
     // ---- 装備品。見た目の偽装はなく、最初から名前が分かる ----
     Dagger,
     Sword,
@@ -82,7 +99,94 @@ pub enum Class {
     Mushroom,
     /// 杖。使用回数（充填数）がある
     Wand,
+    /// 指輪。身につけると効果が続く
+    Ring,
+    /// 光源。燃料が減っていく
+    Light,
+    /// 燃料（ランタンに継ぎ足す油）
+    Fuel,
 }
+
+/// 指輪の効き方。数値 `n` は個体ごとの強さ（呪われた指輪では負）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RingEffect {
+    /// 防御 +n
+    Protection,
+    /// 腕力 +n
+    Strength,
+    /// n>0: 敵の攻撃を10%×n で避ける / n<0: こちらの攻撃が10%×|n| で空振りする
+    Dexterity,
+    /// 攻撃 +n
+    Damage,
+    /// HPの自然回復が速くなる
+    Regeneration,
+    /// 満腹度の減りが 1/(n+1) になる
+    SlowDigestion,
+    /// 敵に気づかれる距離が 3×n 縮む
+    Stealth,
+    /// 隠れた罠を見つけやすくなる
+    Searching,
+    SeeInvisible,
+    /// 効果のない装飾
+    Trinket,
+    /// 呪い: 階じゅうの敵を引き寄せる
+    Aggravate,
+    /// 呪い: ときどきランダムに飛ばされる
+    Teleportitis,
+}
+
+impl RingEffect {
+    /// 強さ `n` のときの効果の説明。
+    pub fn describe(self, n: i32) -> String {
+        match self {
+            RingEffect::Protection => format!("防御{n:+}"),
+            RingEffect::Strength => format!("腕力{n:+}"),
+            RingEffect::Dexterity if n >= 0 => format!("敵の攻撃を{}%の確率でかわす", (10 * n).min(50)),
+            RingEffect::Dexterity => format!("こちらの攻撃が{}%の確率で空振りする", (-10 * n).min(30)),
+            RingEffect::Damage => format!("攻撃{n:+}"),
+            RingEffect::Regeneration => "HPの自然回復が速くなる(敵がいても回復する)".to_string(),
+            RingEffect::SlowDigestion => format!("満腹度の減りが{}分の1になる", n + 1),
+            RingEffect::Stealth => format!("敵に気づかれる距離が{}縮む", 3 * n),
+            RingEffect::Searching => "隠れた罠を見つけやすくなる".to_string(),
+            RingEffect::SeeInvisible => "透明な敵が見える".to_string(),
+            RingEffect::Trinket => "効果はない(ただの飾り)".to_string(),
+            RingEffect::Aggravate => "階じゅうの敵がこちらに引き寄せられる".to_string(),
+            RingEffect::Teleportitis => "ときどきランダムな場所へ飛ばされる".to_string(),
+        }
+    }
+
+    /// 強さの数字を名前に添える種類か（効果が数値で表せるもの）。
+    pub fn has_magnitude(self) -> bool {
+        !matches!(
+            self,
+            RingEffect::Trinket | RingEffect::Aggravate | RingEffect::Teleportitis | RingEffect::SeeInvisible
+        )
+    }
+}
+
+/// 指輪の仕様。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RingDef {
+    pub effect: RingEffect,
+    /// 呪われた（負の値の）個体が見つかることがある
+    pub cursable: bool,
+    /// 必ず呪われている
+    pub always_cursed: bool,
+}
+
+/// 光源の仕様。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LightDef {
+    /// 燃料の最大値（ターン数）
+    pub max_fuel: i32,
+    /// 油を継ぎ足せるか
+    pub refillable: bool,
+}
+
+/// 油つぼ1個で足せる燃料。
+pub const OIL_FLASK_FUEL: i32 = 1500;
+/// 燃料が尽きたときの視界の半径。
+pub const DARK_RADIUS: i32 = 2;
 
 /// 杖を振ったときの効果。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -169,6 +273,10 @@ pub struct ItemDef {
     pub bad: bool,
     /// 杖の仕様（杖だけ）
     pub zap: Option<Zap>,
+    /// 指輪の仕様（指輪だけ）
+    pub ring: Option<RingDef>,
+    /// 光源の仕様（光源だけ）
+    pub light: Option<LightDef>,
 }
 
 /// 見えているすべての敵、という意味の半径。
@@ -183,7 +291,7 @@ const fn def(
     bad: bool,
     effects: &'static [Effect],
 ) -> ItemDef {
-    ItemDef { kind, name, class, weight, min_depth, effects, bad, zap: None }
+    ItemDef { kind, name, class, weight, min_depth, effects, bad, zap: None, ring: None, light: None }
 }
 
 const fn wand(
@@ -205,6 +313,38 @@ const fn wand(
         effects: &[],
         bad,
         zap: Some(Zap { charges, aimed, fx }),
+        ring: None,
+        light: None,
+    }
+}
+
+const fn ring(kind: ItemKind, name: &'static str, weight: u32, effect: RingEffect, cursable: bool, always_cursed: bool) -> ItemDef {
+    ItemDef {
+        kind,
+        name,
+        class: Class::Ring,
+        weight,
+        min_depth: 2,
+        effects: &[],
+        bad: always_cursed,
+        zap: None,
+        ring: Some(RingDef { effect, cursable, always_cursed }),
+        light: None,
+    }
+}
+
+const fn light(kind: ItemKind, name: &'static str, weight: u32, min_depth: u32, max_fuel: i32, refillable: bool) -> ItemDef {
+    ItemDef {
+        kind,
+        name,
+        class: Class::Light,
+        weight,
+        min_depth,
+        effects: &[],
+        bad: false,
+        zap: None,
+        ring: None,
+        light: Some(LightDef { max_fuel, refillable }),
     }
 }
 
@@ -314,6 +454,23 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
     wand(ItemKind::WandCancel, "消去の杖", 1, 3, false, (3, 5), true, ZapFx::Cancel),
     wand(ItemKind::WandTeleportOther, "敵テレポートの杖", 2, 1, false, (4, 7), true, ZapFx::TeleportOther),
     wand(ItemKind::WandTeleportSelf, "自分テレポートの杖", 1, 1, false, (3, 5), false, ZapFx::TeleportSelf),
+    // 指輪
+    ring(ItemKind::RingProtection, "防御の指輪", 1, RingEffect::Protection, true, false),
+    ring(ItemKind::RingStrength, "腕力の指輪", 1, RingEffect::Strength, true, false),
+    ring(ItemKind::RingDexterity, "器用さの指輪", 1, RingEffect::Dexterity, true, false),
+    ring(ItemKind::RingDamage, "ダメージ増加の指輪", 1, RingEffect::Damage, true, false),
+    ring(ItemKind::RingRegeneration, "再生の指輪", 1, RingEffect::Regeneration, false, false),
+    ring(ItemKind::RingSlowDigestion, "消化遅延の指輪", 1, RingEffect::SlowDigestion, false, false),
+    ring(ItemKind::RingStealth, "隠密の指輪", 1, RingEffect::Stealth, false, false),
+    ring(ItemKind::RingSearching, "探索の指輪", 1, RingEffect::Searching, false, false),
+    ring(ItemKind::RingSeeInvisible, "透明視認の指輪", 1, RingEffect::SeeInvisible, false, false),
+    ring(ItemKind::RingTrinket, "装飾の指輪", 1, RingEffect::Trinket, false, false),
+    ring(ItemKind::RingAggravate, "怒らせる指輪", 1, RingEffect::Aggravate, false, true),
+    ring(ItemKind::RingTeleportitis, "テレポート癖の指輪", 1, RingEffect::Teleportitis, false, true),
+    // 光源と燃料
+    light(ItemKind::Torch, "松明", 3, 1, 1500, false),
+    light(ItemKind::Lantern, "ランタン", 1, 3, 4000, true),
+    def(ItemKind::OilFlask, "油つぼ", Class::Fuel, 3, 1, false, &[]),
     // 装備品
     def(ItemKind::Dagger, "短剣", Weapon, 4, 1, false, &[]),
     def(ItemKind::Sword, "剣", Weapon, 3, 2, false, &[]),
@@ -330,7 +487,7 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
 ];
 
 impl ItemKind {
-    pub const COUNT: usize = 53;
+    pub const COUNT: usize = 68;
     pub const ALL: [ItemKind; ItemKind::COUNT] = [
         ItemKind::Healing,
         ItemKind::ExtraHealing,
@@ -374,6 +531,21 @@ impl ItemKind {
         ItemKind::WandCancel,
         ItemKind::WandTeleportOther,
         ItemKind::WandTeleportSelf,
+        ItemKind::RingProtection,
+        ItemKind::RingStrength,
+        ItemKind::RingDexterity,
+        ItemKind::RingDamage,
+        ItemKind::RingRegeneration,
+        ItemKind::RingSlowDigestion,
+        ItemKind::RingStealth,
+        ItemKind::RingSearching,
+        ItemKind::RingSeeInvisible,
+        ItemKind::RingTrinket,
+        ItemKind::RingAggravate,
+        ItemKind::RingTeleportitis,
+        ItemKind::Torch,
+        ItemKind::Lantern,
+        ItemKind::OilFlask,
         ItemKind::Dagger,
         ItemKind::Sword,
         ItemKind::Axe,
@@ -424,14 +596,35 @@ impl ItemKind {
         self.class() == Class::Wand
     }
 
-    /// 個体ごとに数値（充填数など）を持つ道具か。重ならず、1個ずつ別の文字に入る。
+    pub fn is_ring(self) -> bool {
+        self.class() == Class::Ring
+    }
+
+    pub fn is_light(self) -> bool {
+        self.class() == Class::Light
+    }
+
+    /// 個体ごとに数値（充填数・指輪の強さ・燃料）を持つ道具か。重ならず、1個ずつ別の文字に入る。
     pub fn is_tool(self) -> bool {
-        self.is_wand()
+        matches!(self.class(), Class::Wand | Class::Ring | Class::Light)
+    }
+
+    pub fn ring_def(self) -> Option<&'static RingDef> {
+        self.def().ring.as_ref()
+    }
+
+    pub fn light_def(self) -> Option<&'static LightDef> {
+        self.def().light.as_ref()
     }
 
     /// 杖の仕様。
     pub fn zap(self) -> Option<&'static Zap> {
         self.def().zap.as_ref()
+    }
+
+    /// 最初から名前が分かる種類（装備品・食べ物・光源・燃料）。
+    pub fn starts_known(self) -> bool {
+        self.is_equipment() || matches!(self.class(), Class::Food | Class::Light | Class::Fuel)
     }
 
     pub fn is_scroll(self) -> bool {
@@ -522,6 +715,8 @@ impl ItemKind {
             Class::Armor => '[',
             Class::Food | Class::Mushroom => '%',
             Class::Wand => '/',
+            Class::Ring => '=',
+            Class::Light | Class::Fuel => '~',
         }
     }
 
@@ -835,24 +1030,78 @@ impl Gear {
     }
 }
 
-/// 数値を持つ道具の1個体（杖の充填数など）。重ならない。
+/// 数値を持つ道具の1個体（杖の充填数・指輪の強さ・光源の燃料）。重ならない。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Tool {
     pub kind: ItemKind,
-    /// 杖なら、残りの使用回数（充填数）
+    /// 杖: 残りの使用回数（充填数）/ 指輪: 強さ（呪われていれば負）/ 光源: 残りの燃料
     pub val: i32,
+    /// 指輪: 呪われている（身につけると外せない）
+    pub cursed: bool,
+    /// 呪い解除の巻物で、外せるようになった
+    pub freed: bool,
+    /// 指輪: 強さまで分かっているか
+    pub identified: bool,
+    /// 指輪を身につけて過ごしたターン数（一定に達すると識別される）
+    pub worn: u32,
 }
 
 impl Tool {
-    /// 見つかったときの充填数を抽選する。
-    pub fn roll(rng: &mut Rng, kind: ItemKind) -> Tool {
-        let (lo, hi) = kind.zap().map_or((0, 0), |z| z.charges);
-        Tool { kind, val: rng.range(lo, hi + 1) }
+    /// 値を直接指定して作る。杖や光源はこれで足りる。
+    pub fn charged(kind: ItemKind, val: i32) -> Tool {
+        Tool { kind, val, cursed: false, freed: false, identified: !kind.is_ring(), worn: 0 }
     }
 
-    /// 乱数を使わずに作る（テストや初期装備用）。杖は充填数の最小。
+    /// 見つかったときの個体を抽選する。杖は充填数、指輪は強さと呪い、光源は燃料。
+    pub fn roll(rng: &mut Rng, kind: ItemKind) -> Tool {
+        if let Some(z) = kind.zap() {
+            return Tool::charged(kind, rng.range(z.charges.0, z.charges.1 + 1));
+        }
+        if let Some(l) = kind.light_def() {
+            // 使いかけのこともある
+            let fuel = rng.range(l.max_fuel / 2, l.max_fuel + 1);
+            return Tool::charged(kind, fuel);
+        }
+        let Some(r) = kind.ring_def() else {
+            return Tool::charged(kind, 0);
+        };
+        let mut t = Tool::charged(kind, 0);
+        t.identified = false;
+        match r.effect {
+            RingEffect::Trinket => {}
+            _ if r.always_cursed => {
+                t.val = 1;
+                t.cursed = true;
+            }
+            _ => {
+                t.val = rng.range(1, 4);
+                if r.cursable && rng.range(0, 4) == 0 {
+                    t.val = -t.val;
+                    t.cursed = true;
+                }
+            }
+        }
+        t
+    }
+
+    /// 乱数を使わずに作る（テストや初期装備用）。杖は充填数の最小、光源は満タン、指輪は +1。
     pub fn plain(kind: ItemKind) -> Tool {
-        Tool { kind, val: kind.zap().map_or(0, |z| z.charges.0) }
+        if let Some(z) = kind.zap() {
+            Tool::charged(kind, z.charges.0)
+        } else if let Some(l) = kind.light_def() {
+            Tool::charged(kind, l.max_fuel)
+        } else if kind.is_ring() {
+            let mut t = Tool::charged(kind, if kind.ring_def().is_some_and(|r| r.effect == RingEffect::Trinket) { 0 } else { 1 });
+            t.cursed = kind.ring_def().is_some_and(|r| r.always_cursed);
+            t
+        } else {
+            Tool::charged(kind, 0)
+        }
+    }
+
+    /// 呪いで外せないか。
+    pub fn is_sticky(&self) -> bool {
+        self.cursed && !self.freed
     }
 }
 
@@ -932,6 +1181,24 @@ pub const POTION_LOOKS: [&str; 20] = [
 /// キノコの見た目の候補。
 pub const MUSHROOM_LOOKS: [&str; 4] = ["赤いキノコ", "白いキノコ", "茶色いキノコ", "斑点のキノコ"];
 
+/// 指輪の見た目の候補。
+pub const RING_LOOKS: [&str; 14] = [
+    "ルビーの指輪",
+    "サファイアの指輪",
+    "エメラルドの指輪",
+    "ダイヤモンドの指輪",
+    "オパールの指輪",
+    "トパーズの指輪",
+    "アメジストの指輪",
+    "ガーネットの指輪",
+    "真珠の指輪",
+    "翡翠の指輪",
+    "瑪瑙の指輪",
+    "黒曜石の指輪",
+    "珊瑚の指輪",
+    "琥珀の指輪",
+];
+
 /// 杖の見た目の候補。
 pub const WAND_LOOKS: [&str; 16] = [
     "樫の杖",
@@ -988,6 +1255,7 @@ mod tests {
         // 最後のバリアント (VigorShroom) の番号が COUNT-1 なら、数え間違いはない
         assert_eq!(ItemKind::VigorShroom.index(), ItemKind::COUNT - 1);
         assert!(ItemKind::ALL.iter().filter(|k| k.is_wand()).count() <= WAND_LOOKS.len());
+        assert!(ItemKind::ALL.iter().filter(|k| k.is_ring()).count() <= RING_LOOKS.len());
     }
 
     #[test]
@@ -998,6 +1266,8 @@ mod tests {
             // 薬と巻物には効果があり、それ以外には（game 側で扱う食べ物を除いて）ない
             assert_eq!(!d.effects.is_empty(), matches!(d.class, Class::Potion | Class::Scroll), "{:?}", d.kind);
             assert_eq!(d.zap.is_some(), d.class == Class::Wand, "{:?}", d.kind);
+            assert_eq!(d.ring.is_some(), d.class == Class::Ring, "{:?}", d.kind);
+            assert_eq!(d.light.is_some(), d.class == Class::Light, "{:?}", d.kind);
             if let Some(z) = d.zap {
                 assert!(z.charges.0 >= 1 && z.charges.0 <= z.charges.1, "{:?}", d.kind);
             }
