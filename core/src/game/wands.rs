@@ -104,7 +104,8 @@ impl Game {
                 let (dx, dy) = (t.0 - self.pos.0, t.1 - self.pos.1);
                 let m = dx.abs().max(dy.abs()).max(1);
                 let long = Map::line(self.pos, (self.pos.0 + dx * ZAP_RANGE / m, self.pos.1 + dy * ZAP_RANGE / m));
-                Ok(if long.contains(&t) { long } else { Map::line(self.pos, t) })
+                // 延長した線が壁で先に遮られて敵に届かないときは、敵までの線に戻る
+                Ok(if self.open_cells(&long).contains(&t) { long } else { Map::line(self.pos, t) })
             }
         }
     }

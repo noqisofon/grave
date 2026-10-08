@@ -13,7 +13,7 @@ use crate::status::{Change, Status, StatusEvent};
 /// 記録の `new_game` に入り、観戦側が「古いルールで録られた記録」を見分けるのに使う。
 /// 上げ忘れは `rules_version_matches_golden_run` が検出する。
 /// ソフトウェアのバージョン x.y.z の z（ルートの Cargo.toml の `workspace.package.version`）もこの版に合わせる。
-pub const RULES_VERSION: u32 = 16;
+pub const RULES_VERSION: u32 = 17;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -213,7 +213,8 @@ pub fn golden_player(seed: u64, steps: usize, mut sink: impl FnMut(&crate::game:
                         .iter()
                         .find(|l| l.contains("キノコ") || l.contains("パン") || l.contains("干し肉"))
                         .and_then(|l| l.chars().next());
-                    let mut c = "equip a; equip b; equip c".to_string();
+                    // 装備に加えて、薬・巻物・杖も試す(失敗してもよい)
+                    let mut c = "equip a; equip b; equip c; quaff a; read a; zap a nearest; zap b east".to_string();
                     if let Some(letter) = eat {
                         c.push_str(&format!("; eat {letter}"));
                     }
@@ -350,8 +351,8 @@ mod tests {
     /// 落ちたら、意図した変更なら RULES_VERSION を上げて GOLDEN_* を更新する。
     #[test]
     fn rules_version_matches_golden_run() {
-        const GOLDEN_RULES: u32 = 16;
-        const GOLDEN_HASH: u64 = 4406232421427698382;
+        const GOLDEN_RULES: u32 = 17;
+        const GOLDEN_HASH: u64 = 17851909040731176792;
         let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
         let mut feed = |bytes: &[u8]| {
             for b in bytes {

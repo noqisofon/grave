@@ -5032,6 +5032,44 @@ mod tests {
     }
 
     #[test]
+    fn diagonal_nearest_lightning_pierces_along_the_diagonal() {
+        let mut g = quiet(3);
+        g.hp = 1000;
+        g.max_hp = 1000;
+        g.take(Tool::charged(ItemKind::WandLightning, 5));
+        // 斜めの線を床にして、2体を並べる
+        for k in 1..=4 {
+            g.map.set_tile(g.pos.0 + k, g.pos.1 + k, Tile::Floor);
+        }
+        for k in [1, 3] {
+            g.monsters.push(monster(&crate::monster::OGRE, (g.pos.0 + k, g.pos.1 + k), 500));
+            let i = g.monsters.len() - 1;
+            g.inflict_monster(i, Status::Paralyzed, 100);
+        }
+        g.run("zap a nearest");
+        assert!(g.monsters.iter().all(|m| m.hp < 500), "{:?}", g.monsters.iter().map(|m| m.hp).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_blocked_extension_falls_back_to_the_line_to_the_target() {
+        let mut g = quiet(3);
+        g.hp = 1000;
+        g.max_hp = 1000;
+        g.take(Tool::charged(ItemKind::WandMissile, 5));
+        // 敵の直後に壁を立てても、敵には当たる
+        let p = (g.pos.0 + 2, g.pos.1 + 1);
+        g.map.set_tile(p.0, p.1, Tile::Floor);
+        g.map.set_tile(p.0 + 2, p.1 + 1, Tile::Wall);
+        g.monsters.push(monster(&crate::monster::OGRE, p, 500));
+        g.inflict_monster(0, Status::Paralyzed, 100);
+        g.map.update_fov(g.pos, FOV_RADIUS);
+        if g.can_see_monster(0) {
+            g.run("zap a nearest");
+            assert!(g.monsters[0].hp < 500);
+        }
+    }
+
+    #[test]
     fn nearest_hits_every_visible_enemy_in_open_rooms() {
         // どの向きにいる見えている敵にも、nearest なら必ず当たる(充填だけ減ることがない)
         let mut checked = 0;
@@ -5760,7 +5798,7 @@ mod tests {
 
     #[test]
     fn teleportitis_during_auto_walk_stops_it_and_still_picks_up_what_you_land_on() {
-        let mut jumped = 0;
+        let (mut jumped, mut landed) = (0, 0);
         for seed in 0..40 {
             let mut g = Game::new(seed);
             g.monsters.clear();
@@ -5769,17 +5807,34 @@ mod tests {
             g.max_hp = 1000;
             g.take(ring(ItemKind::RingTeleportitis, 1));
             g.run("equip a");
+            // 床のどこに飛んでも品物がある状態にする(拾いが必ず問われる)
+            let spots: Vec<(i32, i32)> = (1..W - 1)
+                .flat_map(|x| (1..H - 1).map(move |y| (x, y)))
+                .filter(|&(x, y)| g.map.tile(x, y) == Tile::Floor && (x, y) != g.pos)
+                .collect();
+            for p in spots {
+                g.floor_items.push(FloorItem::new(p, ItemKind::OilFlask));
+            }
             for cmd in ["explore", "explore", "travel >", "explore"] {
                 g.food = MAX_FOOD;
                 let o = g.run(cmd);
                 if o.message.contains("飛ばされて中断") || o.message.contains("飛ばされた") {
                     jumped += 1;
                     // 着いた場所に物があれば、飛んだ時点で拾っている(足元に取り残さない)
-                    assert!(g.auto_pickable(g.pos).is_none() || !g.can_take(g.floor_items[g.auto_pickable(g.pos).unwrap()].item), "seed {seed}");
+                    // (1マスにつき自動で拾うのは1個だけ。飛んだ直後に拾った知らせが続く)
+                    if let Some((_, after)) = o.message.rsplit_once("突然どこかへ飛ばされた！") {
+                        // 拾っていないなら、そのマスにはもう何も残っていない(通った場所に飛んだ)
+                        assert!(
+                            after.contains("拾った") || after.contains("いっぱい") || g.floor_order(g.pos).is_empty(),
+                            "seed {seed}: {}",
+                            o.message
+                        );
+                        landed += 1;
+                    }
                 }
             }
         }
-        assert!(jumped > 0, "テレポート癖が一度も発動しなかった");
+        assert!(jumped > 0 && landed > 0, "テレポート癖が発動しなかった({jumped}/{landed})");
     }
 
     #[test]
