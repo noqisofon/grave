@@ -1211,7 +1211,8 @@ impl Game {
     /// 混乱していると、向きがときどきずれる。(実際の向き, ずれたか)
     fn confuse_dir(&mut self, d: Dir) -> (Dir, bool) {
         if self.status.has(Status::Confused) && self.rng.range(0, 2) == 0 {
-            (Dir::ALL[self.rng.range(0, Dir::ALL.len() as i32) as usize], true)
+            let nd = Dir::ALL[self.rng.range(0, Dir::ALL.len() as i32) as usize];
+            (nd, nd != d)
         } else {
             (d, false)
         }
@@ -1894,8 +1895,10 @@ impl Game {
         if xp > 0 {
             self.gain_xp(xp);
         }
-        // 歩いたり転移したりして着いた場所の罠を踏み、アイテムを拾う
-        if self.pos != pos_before && !self.dead {
+        // 歩いたり転移したりして着いた場所の罠を踏み、アイテムを拾う。
+        // 自動移動は1歩ごとに step_to で済ませているので、ここでもう一度発動させない
+        let auto = matches!(cmd, Command::Explore | Command::Travel(_));
+        if self.pos != pos_before && !self.dead && !auto {
             self.trigger_trap();
             if !self.dead {
                 self.pickup_here();
@@ -4344,18 +4347,50 @@ mod tests {
             }
         }
         assert_eq!(g.depth(), 1);
-        let _ = p;
+        assert_ne!(g.pos(), p, "既知の罠のマスに乗った");
+    }
+
+    #[test]
+    fn a_hidden_trap_stepped_on_while_exploring_fires_exactly_once() {
+        let mut fired = 0;
+        for seed in 0..40 {
+            let mut g = quiet(seed);
+            g.hp = 1000;
+            g.max_hp = 1000;
+            // 開始位置から少し離れた床に、毒矢の罠を隠す
+            let Some(p) = (1..W - 1)
+                .flat_map(|x| (1..H - 1).map(move |y| (x, y)))
+                .find(|&(x, y)| g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs().max((y - g.pos.1).abs()) == 4)
+            else {
+                continue;
+            };
+            g.traps.push(Trap { pos: p, kind: TrapKind::Dart, revealed: false });
+            let mut msgs = String::new();
+            for _ in 0..30 {
+                let o = g.run("explore");
+                msgs.push_str(&o.message);
+                if o.message.contains("探索し尽くした") || o.message.contains("もう探索") {
+                    break;
+                }
+            }
+            let n = msgs.matches("毒矢の罠だ").count();
+            assert!(n <= 1, "seed {seed}: {n}回発動した");
+            fired += n;
+        }
+        assert!(fired > 0, "どのseedでも罠を踏まなかった");
     }
 
     #[test]
     fn an_invisible_player_is_only_noticed_up_close() {
-        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        // 東に4マス歩ける床がある seed を探す
+        let (mut g, far) = (3..200)
+            .map(|seed| with_adjacent(seed, &crate::monster::GOBLIN))
+            .find_map(|g| {
+                let far = (g.pos.0 + 4, g.pos.1);
+                g.map.tile(far.0, far.1).walkable().then_some((g, far))
+            })
+            .expect("条件に合う seed がある");
         g.hp = 1000;
-        // 4 マス離れたゴブリン
-        let far = (g.pos.0 + 4, g.pos.1);
-        if !g.map.tile(far.0, far.1).walkable() {
-            return;
-        }
         g.monsters[0].pos = far;
         assert!(g.monster_aware(0));
         g.status.apply(Status::Invisible, 100);
