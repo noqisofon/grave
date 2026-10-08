@@ -41,7 +41,16 @@ impl Game {
                     }
                     Some(ZapTarget::Dir(d))
                 }
-                t => t,
+                Some(ZapTarget::Nearest) => {
+                    // 混乱していると、狙いが外れてでたらめな向きに飛ぶことがある
+                    if self.status.has(Status::Confused) && self.rng.range(0, 2) == 0 {
+                        let d = Dir::ALL[self.rng.range(0, Dir::ALL.len() as i32) as usize];
+                        self.events.push(format!("混乱して{}へ向けてしまった。", d.name()));
+                        Some(ZapTarget::Dir(d))
+                    } else {
+                        Some(ZapTarget::Nearest)
+                    }
+                }
             }
         } else {
             None

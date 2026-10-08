@@ -832,6 +832,10 @@ impl Game {
         if s == Status::Blind {
             self.refresh_fov();
         }
+        if s == Status::Hasted {
+            // 加速をもたらした行動そのものは、1ターンかかる(次の行動から2回に1回になる)
+            self.free_action = true;
+        }
         s.def().start.to_string()
     }
 
@@ -1183,11 +1187,12 @@ impl Game {
 
     /// 敵がこちらに気づく距離。
     fn notice_radius(&self) -> i32 {
-        let r = FOV_RADIUS - 3 * self.ring_fx().stealth;
+        // 隠密でも、2マス(隣接を含む)より近づかれたら必ず気づく。透明なら2マスまで縮む
+        let r = (FOV_RADIUS - 3 * self.ring_fx().stealth).max(2);
         if self.status.has(Status::Invisible) {
             r.min(2)
         } else {
-            r.max(2)
+            r
         }
     }
 
@@ -4836,15 +4841,17 @@ mod tests {
 
     #[test]
     fn an_enraged_monster_hunts_you_from_anywhere() {
-        let mut g = quiet(2);
-        let far = (g.pos.0 + 20, g.pos.1);
-        let slot = (0..W).map(|dx| (g.pos.0 + dx, g.pos.1)).rev().find(|p| g.map.tile(p.0, p.1).walkable());
-        let far = slot.unwrap_or(far);
+        let mut g = (0..60).map(quiet).find(|g| {
+            (1..W - 1).any(|x| (1..H - 1).any(|y| g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs() + (y - g.pos.1).abs() > 25))
+        }).expect("遠い床がある seed");
+        let far = (1..W - 1)
+            .flat_map(|x| (1..H - 1).map(move |y| (x, y)))
+            .find(|&(x, y)| g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs() + (y - g.pos.1).abs() > 25)
+            .unwrap();
         let id = g.add_monster(&crate::monster::SLIME, far);
-        let d0 = (far.0 - g.pos.0).abs() + (far.1 - g.pos.1).abs();
-        assert!(!g.monster_aware(id) || d0 <= 9);
-        g.monsters[id].pos = far;
+        assert!(!g.monster_aware(id), "遠い敵は怒っていなければ気づかない");
         g.inflict_monster(id, Status::Enraged, 100);
+        assert!(g.monster_aware(id));
         let mut moved = false;
         for _ in 0..5 {
             g.run("wait");
@@ -5148,20 +5155,48 @@ mod tests {
     }
 
     #[test]
-    fn confusion_can_send_a_bolt_the_wrong_way() {
-        let mut g = wand_vs_adjacent(ItemKind::WandMissile, &crate::monster::OGRE, 100000);
-        g.monsters[0].status.apply(Status::Paralyzed, 100000);
-        g.status.apply(Status::Confused, 100000);
-        let mut misses = 0;
-        for _ in 0..4 {
-            let hp = g.monsters[0].hp;
-            g.run("zap a east");
-            if g.monsters[0].hp == hp {
-                misses += 1;
+    fn confusion_can_send_a_bolt_the_wrong_way_even_with_nearest() {
+        for cmd in ["zap a east", "zap a nearest"] {
+            let mut g = wand_vs_adjacent(ItemKind::WandMissile, &crate::monster::OGRE, 100000);
+            g.monsters[0].status.apply(Status::Paralyzed, 100000);
+            g.status.apply(Status::Confused, 100000);
+            let (mut misses, mut hits) = (0, 0);
+            for _ in 0..40 {
+                let hp = g.monsters[0].hp;
+                g.run(cmd);
+                if g.monsters[0].hp == hp { misses += 1 } else { hits += 1 }
+                g.inventory[0].tool.as_mut().unwrap().val = 5;
             }
-            g.inventory[0].tool.as_mut().unwrap().val = 5;
+            assert!(misses > 5 && hits > 5, "{cmd}: {misses} {hits}");
         }
-        let _ = misses; // 乱数しだいなので、少なくとも落ちずに動くことだけ確かめる
+    }
+
+    #[test]
+    fn stealth_and_invisibility_never_make_adjacent_enemies_unaware() {
+        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        g.take(ring(ItemKind::RingStealth, 3));
+        g.run("equip a");
+        g.status.apply(Status::Invisible, 100);
+        assert!(g.monster_aware(0));
+        assert_eq!(g.notice_radius(), 2);
+        g.status.clear(Status::Invisible);
+        assert_eq!(g.notice_radius(), 2);
+        g.rings[1] = g.rings[0]; // 強すぎる隠密(+6相当)でも下限がある
+        assert!(g.notice_radius() >= 2);
+    }
+
+    #[test]
+    fn drinking_haste_costs_a_turn_and_then_actions_alternate() {
+        let mut g = quiet(1);
+        g.take(ItemKind::Haste);
+        let t = g.turn();
+        g.run("quaff a");
+        assert_eq!(g.turn() - t, 1);
+        let t = g.turn();
+        for _ in 0..4 {
+            g.run("wait");
+        }
+        assert_eq!(g.turn() - t, 2);
     }
 
     #[test]

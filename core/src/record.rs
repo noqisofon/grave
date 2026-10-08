@@ -13,7 +13,7 @@ use crate::status::{Change, Status, StatusEvent};
 /// 記録の `new_game` に入り、観戦側が「古いルールで録られた記録」を見分けるのに使う。
 /// 上げ忘れは `rules_version_matches_golden_run` が検出する。
 /// ソフトウェアのバージョン x.y.z の z（ルートの Cargo.toml の `workspace.package.version`）もこの版に合わせる。
-pub const RULES_VERSION: u32 = 14;
+pub const RULES_VERSION: u32 = 15;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -350,7 +350,7 @@ mod tests {
     /// 落ちたら、意図した変更なら RULES_VERSION を上げて GOLDEN_* を更新する。
     #[test]
     fn rules_version_matches_golden_run() {
-        const GOLDEN_RULES: u32 = 14;
+        const GOLDEN_RULES: u32 = 15;
         const GOLDEN_HASH: u64 = 4406232421427698382;
         let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
         let mut feed = |bytes: &[u8]| {
