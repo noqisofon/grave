@@ -439,7 +439,7 @@ fn render_scene(
     if lay.footer + 1 < rows {
         queue!(out, MoveTo(0, lay.footer + 1), Clear(ClearType::FromCursorDown))?;
     }
-    queue!(out, MoveTo(0, lay.footer), Print(clip(footer, cap)))?;
+    queue!(out, MoveTo(0, lay.footer), Print(clip_cols(footer, (cols as usize).saturating_sub(1))))?;
     if show_inventory {
         draw_inventory_overlay(out, game, cols)?;
     }
@@ -589,6 +589,12 @@ fn run_watch(path: &str) -> io::Result<()> {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
                         let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL)
                             && k.code == KeyCode::Char('c');
+                        // Esc は、持ち物を開いているときはそれを閉じるだけ
+                        if k.code == KeyCode::Esc && show_inv {
+                            show_inv = false;
+                            dirty = true;
+                            continue;
+                        }
                         if ctrl_c || matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
                             break;
                         }

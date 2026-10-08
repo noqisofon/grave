@@ -304,6 +304,12 @@ impl Game {
         }
     }
 
+    /// 持ち物に加えられるか（同じ種類のスタックがあるか、空き文字があるか）。
+    fn can_take(&self, kind: ItemKind) -> bool {
+        self.inventory.iter().any(|s| s.kind == kind)
+            || ('a'..='z').any(|c| !self.inventory.iter().any(|s| s.letter == c))
+    }
+
     /// 持ち物に加える。割り当てた文字を返す。
     fn take(&mut self, kind: ItemKind) -> Option<char> {
         if let Some(s) = self.inventory.iter_mut().find(|s| s.kind == kind) {
@@ -330,12 +336,15 @@ impl Game {
             self.floor_items.remove(j);
             let msg = format!("{}を拾った。({letter})", self.display_name(kind));
             self.note(&msg);
+        } else {
+            let msg = format!("持ち物がいっぱいで、{}を拾えない。", self.display_name(kind));
+            self.note(&msg);
         }
     }
 
-    /// 既知の場所にあるアイテム（explore が拾いに行く）。
+    /// 既知の場所にあるアイテム（explore が拾いに行く）。拾えないものは目指さない。
     fn wants_item_at(&self, p: (i32, i32)) -> bool {
-        self.map.is_seen(p.0, p.1) && self.item_at(p).is_some()
+        self.map.is_seen(p.0, p.1) && self.item_at(p).is_some_and(|k| self.can_take(k))
     }
 
     pub fn inventory_lines(&self) -> Vec<String> {
@@ -686,7 +695,7 @@ impl Game {
         if self.dead {
             return;
         }
-        if self.turn % REGEN_INTERVAL == 0
+        if self.turn.is_multiple_of(REGEN_INTERVAL)
             && self.hp < self.max_hp
             && self.poison == 0
             && self.food > 0
@@ -1042,7 +1051,7 @@ impl Game {
         if self.pos != pos_before && !self.dead {
             self.pickup_here();
         }
-        if spent {
+        if spent && !self.dead {
             self.pass_turn();
         }
         let slept = self.extra_turns > 0;
@@ -1073,10 +1082,8 @@ impl Game {
                 Some("力尽きた。".to_string())
             } else if std::mem::take(&mut self.hit) {
                 Some("攻撃を受けて中断した。".to_string())
-            } else if let Some(a) = self.alert.take() {
-                Some(a)
             } else {
-                None
+                self.alert.take()
             };
             if let Some(why) = why {
                 return (true, format!("{done}ターン留まったところで、{why}"));
@@ -2200,5 +2207,50 @@ mod tests {
         let o = g.run("look");
         assert!(o.message.contains("東に2"), "{}", o.message);
         assert!(g.observe_text(1).contains('?'));
+    }
+
+    #[test]
+    fn dying_from_a_poison_potion_does_not_advance_another_turn() {
+        let mut g = with_gear(&[ItemKind::Poison]);
+        g.hp = 3;
+        g.poison = 4;
+        let t = g.turn();
+        let o = g.run("use a");
+        assert!(g.is_dead());
+        assert_eq!(g.turn(), t, "{}", o.message);
+        assert_eq!(o.message.matches("ゲームオーバー").count(), 1, "{}", o.message);
+    }
+
+    #[test]
+    fn full_inventory_says_so_and_explore_does_not_chase_items() {
+        let mut g = quiet(3);
+        for (i, c) in ('a'..='z').enumerate() {
+            let kind = if i == 0 { ItemKind::Dagger } else { ItemKind::Bread };
+            g.inventory.push(Stack { letter: c, kind, count: 1 });
+        }
+        assert!(!g.can_take(ItemKind::Healing));
+        assert!(g.can_take(ItemKind::Bread));
+        g.map.reveal_all();
+        let far = |g: &Game, d: i32| {
+            *g.find_path(&|q| {
+                g.map.tile(q.0, q.1) == Tile::Floor
+                    && (q.0 - g.pos.0).abs() + (q.1 - g.pos.1).abs() > d
+            })
+            .unwrap()
+            .last()
+            .unwrap()
+        };
+        let (a, b) = (far(&g, 4), far(&g, 12));
+        g.floor_items.push((a, ItemKind::Healing));
+        g.floor_items.push((b, ItemKind::Healing));
+        let o = g.run("explore");
+        assert!(o.message.contains("もう探索する場所がない"), "{}", o.message);
+        assert_eq!(g.turn(), 0);
+        // 踏めば、拾えないと分かる
+        g.floor_items.clear();
+        g.floor_items.push((g.pos, ItemKind::Healing));
+        let o = g.run("stay");
+        assert!(o.message.contains("持ち物がいっぱい"), "{}", o.message);
+        assert_eq!(g.floor_items.len(), 1);
     }
 }
