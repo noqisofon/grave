@@ -210,6 +210,12 @@ impl Map {
         self.visible.iter_mut().for_each(|v| *v = false);
     }
 
+    /// マスを書き換える（テスト用）。
+    #[cfg(test)]
+    pub fn set_tile(&mut self, x: i32, y: i32, t: Tile) {
+        self.tiles[idx(x, y)] = t;
+    }
+
     /// 覚えている場所をすべて忘れる（テスト用）。
     #[cfg(test)]
     pub fn forget_all(&mut self) {

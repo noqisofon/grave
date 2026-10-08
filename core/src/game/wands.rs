@@ -99,7 +99,12 @@ impl Game {
                         (p.0 - self.pos.0).pow(2) + (p.1 - self.pos.1).pow(2)
                     })
                     .ok_or_else(|| "狙える敵が見えない。向きを指定しよう。".to_string())?;
-                Ok(Map::line(self.pos, self.monsters[nearest].pos))
+                // 狙った敵のさきまで、同じ向きに伸ばす(貫く雷や、照らす光が先まで届く)
+                let t = self.monsters[nearest].pos;
+                let (dx, dy) = (t.0 - self.pos.0, t.1 - self.pos.1);
+                let m = dx.abs().max(dy.abs()).max(1);
+                let long = Map::line(self.pos, (self.pos.0 + dx * ZAP_RANGE / m, self.pos.1 + dy * ZAP_RANGE / m));
+                Ok(if long.contains(&t) { long } else { Map::line(self.pos, t) })
             }
         }
     }

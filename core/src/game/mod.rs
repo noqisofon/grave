@@ -5015,25 +5015,60 @@ mod tests {
     }
 
     #[test]
+    fn nearest_lightning_keeps_going_past_the_target_and_always_hits_what_you_see() {
+        let mut g = quiet(3);
+        g.hp = 1000;
+        g.max_hp = 1000;
+        g.take(Tool::charged(ItemKind::WandLightning, 5));
+        let ps = [(g.pos.0 + 1, g.pos.1), (g.pos.0 + 2, g.pos.1), (g.pos.0 + 3, g.pos.1)];
+        assert!(ps.iter().all(|p| g.map.tile(p.0, p.1).walkable()));
+        for p in ps {
+            g.monsters.push(monster(&crate::monster::OGRE, p, 500));
+            let i = g.monsters.len() - 1;
+            g.inflict_monster(i, Status::Paralyzed, 100);
+        }
+        g.run("zap a nearest");
+        assert!(g.monsters.iter().all(|m| m.hp < 500), "{:?}", g.monsters.iter().map(|m| m.hp).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn nearest_hits_every_visible_enemy_in_open_rooms() {
+        // どの向きにいる見えている敵にも、nearest なら必ず当たる(充填だけ減ることがない)
+        let mut checked = 0;
+        for seed in 0..60u64 {
+            let mut g = quiet(seed);
+            g.hp = 1000;
+            g.max_hp = 1000;
+            g.take(Tool::charged(ItemKind::WandMissile, 5));
+            for (dx, dy) in [(3, 2), (-4, 1), (2, -3), (-2, -2), (5, 0), (0, 4), (4, 3)] {
+                let p = (g.pos.0 + dx, g.pos.1 + dy);
+                if !g.map.tile(p.0, p.1).walkable() || !g.map.is_visible(p.0, p.1) {
+                    continue;
+                }
+                g.monsters.clear();
+                g.monsters.push(monster(&crate::monster::OGRE, p, 500));
+                g.inflict_monster(0, Status::Paralyzed, 100);
+                g.inventory[0].tool.as_mut().unwrap().val = 5;
+                let o = g.run("zap a nearest");
+                assert!(g.monsters[0].hp < 500, "seed {seed} {dx},{dy}: {}", o.message);
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "{checked}");
+    }
+
+    #[test]
     fn bolts_do_not_pass_through_walls() {
         let mut g = quiet(3);
         g.take(Tool::charged(ItemKind::WandFire, 5));
-        // 壁の向こうに敵を置く
-        let mut dir = None;
-        for d in Dir::ALL {
-            let (dx, dy) = d.delta();
-            let w = (g.pos.0 + dx, g.pos.1 + dy);
-            let beyond = (g.pos.0 + 2 * dx, g.pos.1 + 2 * dy);
-            if !g.map.tile(w.0, w.1).walkable() && g.map.tile(beyond.0, beyond.1).walkable() {
-                dir = Some((d, beyond));
-                break;
-            }
-        }
-        if let Some((d, beyond)) = dir {
-            g.monsters.push(monster(&crate::monster::OGRE, beyond, 50));
-            g.run(&format!("zap a {}", d.name()));
-            assert_eq!(g.monsters[0].hp, 50);
-        }
+        // 東隣に壁を立て、その向こうに敵を置く
+        let (wall, beyond) = ((g.pos.0 + 1, g.pos.1), (g.pos.0 + 2, g.pos.1));
+        g.map.set_tile(wall.0, wall.1, Tile::Wall);
+        g.map.set_tile(beyond.0, beyond.1, Tile::Floor);
+        g.monsters.push(monster(&crate::monster::OGRE, beyond, 50));
+        let o = g.run("zap a east");
+        assert_eq!(g.monsters[0].hp, 50, "{}", o.message);
+        assert!(o.message.contains("何にも当たらなかった"), "{}", o.message);
     }
 
     #[test]
@@ -5419,11 +5454,11 @@ mod tests {
 
     #[test]
     fn stealth_shrinks_the_distance_enemies_notice_you() {
-        let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+        let mut g = (3..200)
+            .map(|seed| with_adjacent(seed, &crate::monster::GOBLIN))
+            .find(|g| g.map.tile(g.pos.0 + 5, g.pos.1).walkable() && g.map.los(g.pos, (g.pos.0 + 5, g.pos.1)))
+            .expect("東に5マス見通せる seed がある");
         let far = (g.pos.0 + 5, g.pos.1);
-        if !g.map.tile(far.0, far.1).walkable() {
-            return;
-        }
         g.monsters[0].pos = far;
         assert!(g.monster_aware(0));
         g.take(ring(ItemKind::RingStealth, 2));
@@ -5665,47 +5700,86 @@ mod tests {
         assert!(lines[1].contains("[燃料 700/1500]") && lines[2].contains("[燃料 300/1500]"), "{lines:?}");
     }
 
-    #[test]
-    fn random_play_with_every_item_never_panics_and_stays_consistent() {
+    /// 全種類のアイテムを持たせて乱暴に遊び、全メッセージを返す。途中で不変条件も確かめる。
+    fn fuzz_play(seed: u64, steps: usize) -> Vec<String> {
         let verbs = ["quaff", "read", "eat", "equip", "unequip", "drop", "zap", "refill"];
         let dirs = ["north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest", "nearest", ""];
-        for seed in 0..40u64 {
-            let mut g = Game::new(seed);
-            let mut r = Rng::new(seed ^ 0xABCDEF);
-            // 全種類を1つずつ持たせて、乱暴に使う
-            for k in ItemKind::ALL {
-                if g.has_free_letter() {
-                    g.take(Item::roll(&mut r, k, 10));
-                }
-            }
-            for step in 0..400 {
-                if g.is_dead() || g.is_won() {
-                    break;
-                }
-                let letter = (b'a' + r.range(0, 26) as u8) as char;
-                let cmd = match r.range(0, 12) {
-                    0 | 1 => format!("{} {letter}", verbs[r.range(0, verbs.len() as i32) as usize]),
-                    2 => format!("zap {letter} {}", dirs[r.range(0, dirs.len() as i32) as usize]),
-                    3 => "explore".to_string(),
-                    4 => "travel >; descend".to_string(),
-                    5 => "pickup".to_string(),
-                    6 => format!("read {letter} {}", (b'a' + r.range(0, 26) as u8) as char),
-                    7 => "stay 5".to_string(),
-                    8 => "inventory; look".to_string(),
-                    _ => format!("move {}", dirs[r.range(0, 8) as usize]),
-                };
-                for o in g.run_script(&cmd) {
-                    assert!(o.hp <= g.max_hp(), "seed {seed} step {step}: {} -> hp {}", o.command, o.hp);
-                }
-                let text = g.observe_text(5);
-                assert!(text.contains("光源:"), "{text}");
-                // 装備している物は、必ず持ち物にある
-                for l in [g.weapon, g.armor, g.rings[0], g.rings[1]].into_iter().flatten() {
-                    assert!(g.inventory.iter().any(|s| s.letter == l), "seed {seed}: 装備 {l} が持ち物にない");
-                }
-                assert!(g.rings[0].is_none() || g.rings[0] != g.rings[1]);
+        let mut out = Vec::new();
+        let mut g = Game::new(seed);
+        let mut r = Rng::new(seed ^ 0xABCDEF);
+        for k in ItemKind::ALL {
+            if g.has_free_letter() {
+                g.take(Item::roll(&mut r, k, 10));
             }
         }
+        for step in 0..steps {
+            if g.is_dead() || g.is_won() {
+                break;
+            }
+            let letter = (b'a' + r.range(0, 26) as u8) as char;
+            let cmd = match r.range(0, 12) {
+                0 | 1 => format!("{} {letter}", verbs[r.range(0, verbs.len() as i32) as usize]),
+                2 => format!("zap {letter} {}", dirs[r.range(0, dirs.len() as i32) as usize]),
+                3 => "explore".to_string(),
+                4 => "travel >; descend".to_string(),
+                5 => "pickup".to_string(),
+                6 => format!("read {letter} {}", (b'a' + r.range(0, 26) as u8) as char),
+                7 => "stay 5".to_string(),
+                8 => "inventory; look".to_string(),
+                _ => format!("move {}", dirs[r.range(0, 8) as usize]),
+            };
+            for o in g.run_script(&cmd) {
+                assert!(o.hp <= g.max_hp(), "seed {seed} step {step}: {} -> hp {}", o.command, o.hp);
+                out.push(format!("{} | {} | {} | {}", o.command, o.ok, o.message, o.turn));
+            }
+            let text = g.observe_text(5);
+            assert!(text.contains("光源:"), "{text}");
+            out.push(text);
+            // 装備している物は、必ず持ち物にある
+            for l in [g.weapon, g.armor, g.rings[0], g.rings[1]].into_iter().flatten() {
+                assert!(g.inventory.iter().any(|s| s.letter == l), "seed {seed}: 装備 {l} が持ち物にない");
+            }
+            assert!(g.rings[0].is_none() || g.rings[0] != g.rings[1]);
+        }
+        out
+    }
+
+    #[test]
+    fn random_play_with_every_item_never_panics_and_stays_consistent() {
+        for seed in 0..40u64 {
+            fuzz_play(seed, 400);
+        }
+    }
+
+    #[test]
+    fn the_same_seed_and_script_always_give_the_same_game() {
+        for seed in [1u64, 7, 23, 31] {
+            assert_eq!(fuzz_play(seed, 300), fuzz_play(seed, 300), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn teleportitis_during_auto_walk_stops_it_and_still_picks_up_what_you_land_on() {
+        let mut jumped = 0;
+        for seed in 0..40 {
+            let mut g = Game::new(seed);
+            g.monsters.clear();
+            g.traps.clear();
+            g.hp = 1000;
+            g.max_hp = 1000;
+            g.take(ring(ItemKind::RingTeleportitis, 1));
+            g.run("equip a");
+            for cmd in ["explore", "explore", "travel >", "explore"] {
+                g.food = MAX_FOOD;
+                let o = g.run(cmd);
+                if o.message.contains("飛ばされて中断") || o.message.contains("飛ばされた") {
+                    jumped += 1;
+                    // 着いた場所に物があれば、飛んだ時点で拾っている(足元に取り残さない)
+                    assert!(g.auto_pickable(g.pos).is_none() || !g.can_take(g.floor_items[g.auto_pickable(g.pos).unwrap()].item), "seed {seed}");
+                }
+            }
+        }
+        assert!(jumped > 0, "テレポート癖が一度も発動しなかった");
     }
 
     #[test]

@@ -239,6 +239,9 @@ impl Game {
             self.note("指輪が妖しく光り、突然どこかへ飛ばされた！");
             self.alert = Some("指輪のせいで飛ばされて中断した。".to_string());
             self.trigger_trap();
+            if !self.dead {
+                self.pickup_here();
+            }
         }
         // 光源の燃料
         if let Some(l) = self.light.as_mut() {
