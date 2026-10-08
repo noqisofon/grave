@@ -10,6 +10,10 @@ pub enum ItemKind {
     Poison,
     /// 眠って数ターン無防備になる
     Sleep,
+    /// 毒を消す
+    Antidote,
+    /// 経験値を得る
+    Experience,
     /// 未識別の持ち物を1つ識別する
     Identify,
     /// フロアの地図が分かる
@@ -32,11 +36,13 @@ pub enum ItemKind {
 }
 
 impl ItemKind {
-    pub const COUNT: usize = 17;
+    pub const COUNT: usize = 19;
     pub const ALL: [ItemKind; ItemKind::COUNT] = [
         ItemKind::Healing,
         ItemKind::Poison,
         ItemKind::Sleep,
+        ItemKind::Antidote,
+        ItemKind::Experience,
         ItemKind::Identify,
         ItemKind::MagicMap,
         ItemKind::Teleport,
@@ -58,7 +64,14 @@ impl ItemKind {
     }
 
     pub fn is_potion(self) -> bool {
-        matches!(self, ItemKind::Healing | ItemKind::Poison | ItemKind::Sleep)
+        matches!(
+            self,
+            ItemKind::Healing
+                | ItemKind::Poison
+                | ItemKind::Sleep
+                | ItemKind::Antidote
+                | ItemKind::Experience
+        )
     }
 
     pub fn true_name(self) -> &'static str {
@@ -66,6 +79,8 @@ impl ItemKind {
             ItemKind::Healing => "回復の薬",
             ItemKind::Poison => "毒の薬",
             ItemKind::Sleep => "眠りの薬",
+            ItemKind::Antidote => "解毒の薬",
+            ItemKind::Experience => "経験の薬",
             ItemKind::Identify => "識別の巻物",
             ItemKind::MagicMap => "地図の巻物",
             ItemKind::Teleport => "転移の巻物",
@@ -199,6 +214,8 @@ impl ItemKind {
             ItemKind::Healing => 3,
             ItemKind::Poison => 2,
             ItemKind::Sleep => 2,
+            ItemKind::Antidote => 3,
+            ItemKind::Experience => 2,
             ItemKind::Identify => 2,
             ItemKind::MagicMap => 2,
             ItemKind::Teleport => 1,
