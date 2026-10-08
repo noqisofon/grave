@@ -42,6 +42,20 @@ pub enum ItemKind {
     Aggravate,
     /// 読むと眠ってしまう巻物
     Slumber,
+    // ---- 杖（回数制）----
+    WandLight,
+    WandInvisibility,
+    WandLightning,
+    WandFire,
+    WandCold,
+    WandPolymorph,
+    WandMissile,
+    WandHaste,
+    WandSlow,
+    WandDrain,
+    WandCancel,
+    WandTeleportOther,
+    WandTeleportSelf,
     // ---- 装備品。見た目の偽装はなく、最初から名前が分かる ----
     Dagger,
     Sword,
@@ -66,6 +80,45 @@ pub enum Class {
     Armor,
     Food,
     Mushroom,
+    /// 杖。使用回数（充填数）がある
+    Wand,
+}
+
+/// 杖を振ったときの効果。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ZapFx {
+    /// 向きの先を照らして、地図に書き込む
+    Light,
+    /// ダメージ。`beam` なら線上の敵すべてに、そうでなければ最初の1体に。`drain` なら与えたぶん回復する
+    Damage {
+        lo: i32,
+        hi: i32,
+        beam: bool,
+        drain: bool,
+        then: Option<(Status, u32)>,
+        /// 「稲妻が走り」のような、飛ぶものの描写
+        text: &'static str,
+    },
+    /// 最初の敵に状態を付ける
+    Afflict(Status, u32),
+    /// 別の種類の敵に変える
+    Polymorph,
+    /// 敵の状態と特殊な力を消す
+    Cancel,
+    /// 最初の敵をどこかへ飛ばす
+    TeleportOther,
+    /// 自分がどこかへ飛ぶ
+    TeleportSelf,
+}
+
+/// 杖の仕様。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Zap {
+    /// 見つけたときの充填数の幅 (最小, 最大)
+    pub charges: (i32, i32),
+    /// 向きの指定が要るか（自分に効く杖は要らない）
+    pub aimed: bool,
+    pub fx: ZapFx,
 }
 
 /// 薬や巻物の効果の部品。`ItemDef::effects` に並べて書く。
@@ -114,6 +167,8 @@ pub struct ItemDef {
     pub effects: &'static [Effect],
     /// 使うと損をする側か
     pub bad: bool,
+    /// 杖の仕様（杖だけ）
+    pub zap: Option<Zap>,
 }
 
 /// 見えているすべての敵、という意味の半径。
@@ -128,7 +183,33 @@ const fn def(
     bad: bool,
     effects: &'static [Effect],
 ) -> ItemDef {
-    ItemDef { kind, name, class, weight, min_depth, effects, bad }
+    ItemDef { kind, name, class, weight, min_depth, effects, bad, zap: None }
+}
+
+const fn wand(
+    kind: ItemKind,
+    name: &'static str,
+    weight: u32,
+    min_depth: u32,
+    bad: bool,
+    charges: (i32, i32),
+    aimed: bool,
+    fx: ZapFx,
+) -> ItemDef {
+    ItemDef {
+        kind,
+        name,
+        class: Class::Wand,
+        weight,
+        min_depth,
+        effects: &[],
+        bad,
+        zap: Some(Zap { charges, aimed, fx }),
+    }
+}
+
+const fn bolt(lo: i32, hi: i32, text: &'static str) -> ZapFx {
+    ZapFx::Damage { lo, hi, beam: false, drain: false, then: None, text }
 }
 
 use Class::{Armor, Food, Mushroom, Potion, Scroll, Weapon};
@@ -192,6 +273,47 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
     def(ItemKind::CreateMonster, "モンスター生成の巻物", Scroll, 1, 2, true, &[E::CreateMonster]),
     def(ItemKind::Aggravate, "怒りの巻物", Scroll, 1, 2, true, &[E::Aggravate]),
     def(ItemKind::Slumber, "睡眠の巻物", Scroll, 1, 1, true, &[E::SelfStatus(Status::Asleep, 6)]),
+    // 杖
+    wand(ItemKind::WandLight, "光の杖", 2, 1, false, (6, 10), true, ZapFx::Light),
+    wand(ItemKind::WandInvisibility, "透明化の杖", 1, 2, true, (3, 6), true, ZapFx::Afflict(Status::Invisible, 400)),
+    wand(
+        ItemKind::WandLightning,
+        "雷の杖",
+        1,
+        3,
+        false,
+        (3, 5),
+        true,
+        ZapFx::Damage { lo: 6, hi: 10, beam: true, drain: false, then: None, text: "稲妻が走り" },
+    ),
+    wand(ItemKind::WandFire, "火の杖", 1, 3, false, (3, 5), true, bolt(7, 12, "炎が噴き出し")),
+    wand(
+        ItemKind::WandCold,
+        "冷気の杖",
+        1,
+        2,
+        false,
+        (3, 5),
+        true,
+        ZapFx::Damage { lo: 4, hi: 7, beam: false, drain: false, then: Some((Status::Slowed, 10)), text: "凍てつく冷気が走り" },
+    ),
+    wand(ItemKind::WandPolymorph, "変身の杖", 1, 2, true, (3, 5), true, ZapFx::Polymorph),
+    wand(ItemKind::WandMissile, "魔法の矢の杖", 3, 1, false, (6, 10), true, bolt(2, 6, "魔法の矢が飛び")),
+    wand(ItemKind::WandHaste, "敵加速の杖", 1, 2, true, (3, 6), true, ZapFx::Afflict(Status::Hasted, 30)),
+    wand(ItemKind::WandSlow, "敵減速の杖", 2, 1, false, (4, 7), true, ZapFx::Afflict(Status::Slowed, 30)),
+    wand(
+        ItemKind::WandDrain,
+        "生命吸収の杖",
+        1,
+        2,
+        false,
+        (4, 6),
+        true,
+        ZapFx::Damage { lo: 3, hi: 6, beam: false, drain: true, then: None, text: "黒い光が走り" },
+    ),
+    wand(ItemKind::WandCancel, "消去の杖", 1, 3, false, (3, 5), true, ZapFx::Cancel),
+    wand(ItemKind::WandTeleportOther, "敵テレポートの杖", 2, 1, false, (4, 7), true, ZapFx::TeleportOther),
+    wand(ItemKind::WandTeleportSelf, "自分テレポートの杖", 1, 1, false, (3, 5), false, ZapFx::TeleportSelf),
     // 装備品
     def(ItemKind::Dagger, "短剣", Weapon, 4, 1, false, &[]),
     def(ItemKind::Sword, "剣", Weapon, 3, 2, false, &[]),
@@ -208,7 +330,7 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
 ];
 
 impl ItemKind {
-    pub const COUNT: usize = 40;
+    pub const COUNT: usize = 53;
     pub const ALL: [ItemKind; ItemKind::COUNT] = [
         ItemKind::Healing,
         ItemKind::ExtraHealing,
@@ -239,6 +361,19 @@ impl ItemKind {
         ItemKind::CreateMonster,
         ItemKind::Aggravate,
         ItemKind::Slumber,
+        ItemKind::WandLight,
+        ItemKind::WandInvisibility,
+        ItemKind::WandLightning,
+        ItemKind::WandFire,
+        ItemKind::WandCold,
+        ItemKind::WandPolymorph,
+        ItemKind::WandMissile,
+        ItemKind::WandHaste,
+        ItemKind::WandSlow,
+        ItemKind::WandDrain,
+        ItemKind::WandCancel,
+        ItemKind::WandTeleportOther,
+        ItemKind::WandTeleportSelf,
         ItemKind::Dagger,
         ItemKind::Sword,
         ItemKind::Axe,
@@ -283,6 +418,20 @@ impl ItemKind {
             ItemKind::Plate => "Plate Armor",
             _ => self.true_name(),
         }
+    }
+
+    pub fn is_wand(self) -> bool {
+        self.class() == Class::Wand
+    }
+
+    /// 個体ごとに数値（充填数など）を持つ道具か。重ならず、1個ずつ別の文字に入る。
+    pub fn is_tool(self) -> bool {
+        self.is_wand()
+    }
+
+    /// 杖の仕様。
+    pub fn zap(self) -> Option<&'static Zap> {
+        self.def().zap.as_ref()
     }
 
     pub fn is_scroll(self) -> bool {
@@ -372,6 +521,7 @@ impl ItemKind {
             Class::Weapon => ')',
             Class::Armor => '[',
             Class::Food | Class::Mushroom => '%',
+            Class::Wand => '/',
         }
     }
 
@@ -685,11 +835,34 @@ impl Gear {
     }
 }
 
+/// 数値を持つ道具の1個体（杖の充填数など）。重ならない。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Tool {
+    pub kind: ItemKind,
+    /// 杖なら、残りの使用回数（充填数）
+    pub val: i32,
+}
+
+impl Tool {
+    /// 見つかったときの充填数を抽選する。
+    pub fn roll(rng: &mut Rng, kind: ItemKind) -> Tool {
+        let (lo, hi) = kind.zap().map_or((0, 0), |z| z.charges);
+        Tool { kind, val: rng.range(lo, hi + 1) }
+    }
+
+    /// 乱数を使わずに作る（テストや初期装備用）。杖は充填数の最小。
+    pub fn plain(kind: ItemKind) -> Tool {
+        Tool { kind, val: kind.zap().map_or(0, |z| z.charges.0) }
+    }
+}
+
 impl Item {
-    /// 床に置くために、種類から品物を作る。装備なら個体を抽選する。
+    /// 床に置くために、種類から品物を作る。装備や道具なら個体を抽選する。
     pub fn roll(rng: &mut Rng, kind: ItemKind, depth: u32) -> Item {
         if kind.is_equipment() {
             Item::Gear(Gear::roll(rng, kind, depth))
+        } else if kind.is_tool() {
+            Item::Tool(Tool::roll(rng, kind))
         } else {
             Item::Plain(kind)
         }
@@ -701,6 +874,7 @@ impl Item {
 pub enum Item {
     Plain(ItemKind),
     Gear(Gear),
+    Tool(Tool),
 }
 
 impl Item {
@@ -708,7 +882,14 @@ impl Item {
         match self {
             Item::Plain(k) => *k,
             Item::Gear(g) => g.kind,
+            Item::Tool(t) => t.kind,
         }
+    }
+}
+
+impl From<Tool> for Item {
+    fn from(t: Tool) -> Item {
+        Item::Tool(t)
     }
 }
 
@@ -716,6 +897,8 @@ impl From<ItemKind> for Item {
     fn from(kind: ItemKind) -> Item {
         if kind.is_equipment() {
             Item::Gear(Gear::plain(kind))
+        } else if kind.is_tool() {
+            Item::Tool(Tool::plain(kind))
         } else {
             Item::Plain(kind)
         }
@@ -748,6 +931,26 @@ pub const POTION_LOOKS: [&str; 20] = [
 
 /// キノコの見た目の候補。
 pub const MUSHROOM_LOOKS: [&str; 4] = ["赤いキノコ", "白いキノコ", "茶色いキノコ", "斑点のキノコ"];
+
+/// 杖の見た目の候補。
+pub const WAND_LOOKS: [&str; 16] = [
+    "樫の杖",
+    "鉄の杖",
+    "銅の杖",
+    "銀の杖",
+    "金の杖",
+    "象牙の杖",
+    "骨の杖",
+    "黒檀の杖",
+    "水晶の杖",
+    "ガラスの杖",
+    "真鍮の杖",
+    "錫の杖",
+    "鉛の杖",
+    "亜鉛の杖",
+    "琥珀の杖",
+    "翡翠の杖",
+];
 
 /// 巻物の見た目の候補。
 pub const SCROLL_LOOKS: [&str; 20] = [
@@ -784,6 +987,7 @@ mod tests {
         }
         // 最後のバリアント (VigorShroom) の番号が COUNT-1 なら、数え間違いはない
         assert_eq!(ItemKind::VigorShroom.index(), ItemKind::COUNT - 1);
+        assert!(ItemKind::ALL.iter().filter(|k| k.is_wand()).count() <= WAND_LOOKS.len());
     }
 
     #[test]
@@ -793,6 +997,10 @@ mod tests {
             assert_eq!(ItemKind::ALL[i], d.kind);
             // 薬と巻物には効果があり、それ以外には（game 側で扱う食べ物を除いて）ない
             assert_eq!(!d.effects.is_empty(), matches!(d.class, Class::Potion | Class::Scroll), "{:?}", d.kind);
+            assert_eq!(d.zap.is_some(), d.class == Class::Wand, "{:?}", d.kind);
+            if let Some(z) = d.zap {
+                assert!(z.charges.0 >= 1 && z.charges.0 <= z.charges.1, "{:?}", d.kind);
+            }
         }
         for k in ItemKind::ALL {
             assert_eq!(k.weapon_dmg().is_some(), k.is_weapon(), "{k:?}");

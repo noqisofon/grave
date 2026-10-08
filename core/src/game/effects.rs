@@ -26,6 +26,7 @@ impl Game {
                 Class::Scroll => ("巻物", "read"),
                 Class::Weapon | Class::Armor => ("装備品", "equip"),
                 Class::Food | Class::Mushroom => ("食べ物", "eat"),
+                Class::Wand => ("杖", "zap"),
             };
             return (
                 false,

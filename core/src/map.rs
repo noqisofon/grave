@@ -164,6 +164,30 @@ impl Map {
         }
     }
 
+    /// `a` から `b` へ向かう直線上のマス（`a` は含まない、`b` は含む）。壁も区別せず並べる。
+    pub fn line(a: (i32, i32), b: (i32, i32)) -> Vec<(i32, i32)> {
+        let (mut x, mut y) = a;
+        let dx = (b.0 - a.0).abs();
+        let dy = -(b.1 - a.1).abs();
+        let sx = if a.0 < b.0 { 1 } else { -1 };
+        let sy = if a.1 < b.1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        let mut cells = Vec::new();
+        while (x, y) != b {
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+            cells.push((x, y));
+        }
+        cells
+    }
+
     /// 歩ける場所と、それに接する壁を既知にする（地図の巻物）。
     pub fn reveal_all(&mut self) {
         for y in 0..H {
@@ -183,6 +207,13 @@ impl Map {
 
     /// 何も見えない（盲目）。記憶している場所はそのまま。
     pub fn clear_visible(&mut self) {
+        self.visible.iter_mut().for_each(|v| *v = false);
+    }
+
+    /// 覚えている場所をすべて忘れる（テスト用）。
+    #[cfg(test)]
+    pub fn forget_all(&mut self) {
+        self.seen.iter_mut().for_each(|v| *v = false);
         self.visible.iter_mut().for_each(|v| *v = false);
     }
 

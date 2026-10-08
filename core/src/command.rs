@@ -71,6 +71,15 @@ pub enum TravelTarget {
     Stairs,
 }
 
+/// 杖を向ける先。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ZapTarget {
+    /// 8方向のどれか
+    Dir(Dir),
+    /// いちばん近い、見えている敵
+    Nearest,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     Move(Dir),
@@ -84,6 +93,8 @@ pub enum Command {
     Eat(char),
     /// 巻物を読む。（識別の巻物のための）任意の対象つき
     Read(char, Option<char>),
+    /// 杖を振る。向きか、いちばん近い敵。自分に効く杖は向きが要らない
+    Zap(char, Option<ZapTarget>),
     Inventory,
     /// 持ち物の文字の武器・防具を身につける
     Equip(char),
@@ -112,6 +123,9 @@ impl fmt::Display for Command {
             Command::Eat(c) => write!(f, "eat {c}"),
             Command::Read(c, None) => write!(f, "read {c}"),
             Command::Read(c, Some(t)) => write!(f, "read {c} {t}"),
+            Command::Zap(c, None) => write!(f, "zap {c}"),
+            Command::Zap(c, Some(ZapTarget::Dir(d))) => write!(f, "zap {c} {}", d.name()),
+            Command::Zap(c, Some(ZapTarget::Nearest)) => write!(f, "zap {c} nearest"),
             Command::Inventory => write!(f, "inventory"),
             Command::Equip(c) => write!(f, "equip {c}"),
             Command::Unequip(c) => write!(f, "unequip {c}"),
@@ -137,6 +151,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "quaff",
     "eat",
     "read",
+    "zap",
     "inventory",
     "equip",
     "unequip",
@@ -157,6 +172,7 @@ descend        足元の階段で下の階へ降りる (地下30階が最深部�
 ascend         アミュレットを持っているとき、足元の階段で上の階へ登る (地下1階で登ると地上へ脱出してクリア)
 quaff <文字>   薬を飲む (薬以外には使えない。未識別の薬は使うと正体が分かる。悪い薬もある)
 eat <文字>     食べ物・キノコを食べる (食べ物以外には使えない)
+zap <文字> [向き|nearest]  杖を振る (1ターン。向きは move と同じ 8 方向。nearest は一番近い見えている敵。自分に効く杖は向き不要)。使用回数があり、0 になると使えない。残りの回数は inventory とステータスに出る
 read <文字> [対象]  巻物を読む (巻物以外には使えない。盲目だと読めない)。識別の巻物は対象の文字を指定できる
 inventory      持ち物の一覧 (ターン消費なし。装備中のものには (装備中) と付く)
 equip <文字>   武器や防具を身につける (武器・防具はそれぞれ1つずつ。付け替えもこれ)
@@ -176,7 +192,7 @@ look           階段や見えている敵の位置を調べる (ターン消費
 床には隠れた罠がある(落とし穴・毒矢・眠りガス)。踏むか、近くに立っていると見つかり、^ で表示される。見つけた罠は travel / explore が避ける。浮遊中は発動しない。
 アイテムの上を歩くと自動で拾う。薬と巻物は最初は未識別で、使うと正体が分かる (ゲームごとに見た目と効果の対応が変わる)
 クリア条件: 地下30階の魔除けのアミュレット(,)を手に入れ、階段を登って地上まで持ち帰る。アミュレットを持つと階段は登り階段(<)になる。
-凡例: @ 自分  ^ 見つけた罠  > 階段(アミュレットを持つと <)  , アミュレット  ! 薬  ? 巻物  ) 武器  [ 防具  % 食べ物・キノコ  s スライム  b コウモリ  g ゴブリン  O オーガ  S 毒グモ  a アクアター(殴られると鎧が錆びる)";
+凡例: @ 自分  ^ 見つけた罠  > 階段(アミュレットを持つと <)  , アミュレット  ! 薬  ? 巻物  / 杖  ) 武器  [ 防具  % 食べ物・キノコ  s スライム  b コウモリ  g ゴブリン  O オーガ  S 毒グモ  a アクアター(殴られると鎧が錆びる)";
 
 /// 持ち物の文字（小文字1つ）。
 fn letter_arg(s: &str) -> Option<char> {
@@ -240,6 +256,15 @@ fn parse_body(line: &str) -> Result<Command, String> {
                 None => None,
             };
             Ok(Command::Read(letter, target))
+        }
+        "zap" | "aim" => {
+            let letter = item_letter(head, &args)?;
+            let target = match args.get(1).copied() {
+                None => None,
+                Some("nearest" | "near" | "target") => Some(ZapTarget::Nearest),
+                Some(a) => Some(ZapTarget::Dir(Dir::parse(a).ok_or_else(|| format!("不明な向き: {a} (8方向か nearest)"))?)),
+            };
+            Ok(Command::Zap(letter, target))
         }
         "use" | "u" => Err(
             "use はない。薬は quaff、食べ物は eat、巻物は read、装備は equip を使う".to_string(),
@@ -323,6 +348,16 @@ mod tests {
     }
 
     #[test]
+    fn zap_parses_directions_and_nearest() {
+        assert_eq!(parse("zap c east"), Ok(Command::Zap('c', Some(ZapTarget::Dir(Dir::E)))));
+        assert_eq!(parse("zap c n"), Ok(Command::Zap('c', Some(ZapTarget::Dir(Dir::N)))));
+        assert_eq!(parse("zap c nearest"), Ok(Command::Zap('c', Some(ZapTarget::Nearest))));
+        assert_eq!(parse("aim c"), Ok(Command::Zap('c', None)));
+        assert!(parse("zap").is_err());
+        assert!(parse("zap c sideways").is_err());
+    }
+
+    #[test]
     fn drop_and_pickup_parse() {
         assert_eq!(parse("drop a"), Ok(Command::Drop('a', 1)));
         assert_eq!(parse("drop b 3"), Ok(Command::Drop('b', 3)));
@@ -371,6 +406,9 @@ mod tests {
             Command::Eat('b'),
             Command::Read('c', None),
             Command::Read('c', Some('a')),
+            Command::Zap('b', None),
+            Command::Zap('b', Some(ZapTarget::Dir(Dir::SE))),
+            Command::Zap('b', Some(ZapTarget::Nearest)),
             Command::Inventory,
             Command::Equip('c'),
             Command::Unequip('c'),

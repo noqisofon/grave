@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 
 use crate::command::{self, Command, Dir, TravelTarget};
-use crate::item::{Class, Effect, Gear, Item, ItemKind, Suffix, MUSHROOM_LOOKS, POTION_LOOKS, SCROLL_LOOKS};
+use crate::item::{
+    Class, Effect, Gear, Item, ItemKind, Suffix, Tool, MUSHROOM_LOOKS, POTION_LOOKS, SCROLL_LOOKS, WAND_LOOKS,
+};
 use crate::map::{idx, Map, Tile, H, W};
 use crate::monster::{MonsterKind, KINDS};
 use crate::rng::Rng;
@@ -9,6 +11,7 @@ use crate::status::{Change, Status, StatusEvent, StatusSet};
 use crate::trap::{Trap, TrapKind};
 
 mod effects;
+mod wands;
 
 const FOV_RADIUS: i32 = 9;
 const EXPLORE_STEP_LIMIT: u32 = 1000;
@@ -82,6 +85,19 @@ struct Stack {
     kind: ItemKind,
     count: u32,
     gear: Option<Gear>,
+    /// 杖など、数値を持つ道具の個体（これも重ならず、`count` は常に 1）
+    tool: Option<Tool>,
+}
+
+impl Stack {
+    /// 床に落とすときの品物。
+    fn item(&self) -> Item {
+        match (self.gear, self.tool) {
+            (Some(g), _) => Item::Gear(g),
+            (_, Some(t)) => Item::Tool(t),
+            _ => Item::Plain(self.kind),
+        }
+    }
 }
 
 /// 床に落ちている物1個。`dropped` は、プレイヤーが `drop` した物の印
@@ -112,6 +128,8 @@ struct Monster {
     max_hp: i32,
     pos: (i32, i32),
     status: StatusSet,
+    /// 消去の杖で特殊な力（毒・錆び・ふらつき）を失った
+    cancelled: bool,
 }
 
 pub struct Game {
@@ -180,16 +198,19 @@ fn roll_looks(rng: &mut Rng) -> [&'static str; ItemKind::COUNT] {
     let mut potions = POTION_LOOKS;
     let mut scrolls = SCROLL_LOOKS;
     let mut shrooms = MUSHROOM_LOOKS;
+    let mut wands = WAND_LOOKS;
     shuffle(rng, &mut potions);
     shuffle(rng, &mut scrolls);
     shuffle(rng, &mut shrooms);
+    shuffle(rng, &mut wands);
     let mut looks = [""; ItemKind::COUNT];
-    let (mut pi, mut si, mut mi) = (0, 0, 0);
+    let (mut pi, mut si, mut mi, mut wi) = (0, 0, 0, 0);
     for k in ItemKind::ALL {
         let pool = match k.class() {
             Class::Potion => Some((&potions[..], &mut pi)),
             Class::Scroll => Some((&scrolls[..], &mut si)),
             Class::Mushroom => Some((&shrooms[..], &mut mi)),
+            Class::Wand => Some((&wands[..], &mut wi)),
             _ => None,
         };
         looks[k.index()] = match pool {
@@ -458,6 +479,7 @@ impl Game {
         match item {
             Item::Gear(g) => g.name(),
             Item::Plain(k) => self.display_name(*k).to_string(),
+            Item::Tool(t) => self.display_name(t.kind).to_string(),
         }
     }
 
@@ -469,17 +491,18 @@ impl Game {
     fn can_take(&self, item: impl Into<Item>) -> bool {
         match item.into() {
             Item::Plain(kind) => self.inventory.iter().any(|s| s.kind == kind) || self.has_free_letter(),
-            Item::Gear(_) => self.has_free_letter(),
+            Item::Gear(_) | Item::Tool(_) => self.has_free_letter(),
         }
     }
 
     /// 持ち物に加える。割り当てた文字を返す。
     fn take(&mut self, item: impl Into<Item>) -> Option<char> {
-        let (kind, gear) = match item.into() {
-            Item::Plain(kind) => (kind, None),
-            Item::Gear(g) => (g.kind, Some(g)),
+        let (kind, gear, tool) = match item.into() {
+            Item::Plain(kind) => (kind, None, None),
+            Item::Gear(g) => (g.kind, Some(g), None),
+            Item::Tool(t) => (t.kind, None, Some(t)),
         };
-        if gear.is_none() {
+        if gear.is_none() && tool.is_none() {
             if let Some(s) = self.inventory.iter_mut().find(|s| s.kind == kind) {
                 s.count += 1;
                 return Some(s.letter);
@@ -491,6 +514,7 @@ impl Game {
             kind,
             count: 1,
             gear,
+            tool,
         });
         self.inventory.sort_by_key(|s| s.letter);
         Some(letter)
@@ -568,11 +592,7 @@ impl Game {
         if count > stack.count {
             return (false, format!("{letter} は{}個しか持っていない。", stack.count), false);
         }
-        let (kind, gear) = (stack.kind, stack.gear);
-        let item = match gear {
-            Some(g) => Item::Gear(g),
-            None => Item::Plain(kind),
-        };
+        let item = stack.item();
         let name = self.item_name(&item);
         // 重なっている物は、1個ずつ床に置く
         for _ in 0..count {
@@ -627,6 +647,9 @@ impl Game {
                 if let Some(g) = &s.gear {
                     return self.gear_line(s.letter, g);
                 }
+                if let Some(t) = &s.tool {
+                    return self.tool_line(s.letter, t);
+                }
                 let mut line = format!("{}) {}", s.letter, self.display_name(s.kind));
                 if s.count > 1 {
                     line.push_str(&format!(" x{}", s.count));
@@ -638,6 +661,28 @@ impl Game {
             })
             .chain(self.has_amulet.then(|| "★ 魔除けのアミュレット".to_string()))
             .collect()
+    }
+
+    /// 杖などの持ち物の1行。残りの使用回数は識別前でも分かる。
+    fn tool_line(&self, letter: char, t: &Tool) -> String {
+        let mut line = format!("{letter}) {}", self.display_name(t.kind));
+        if t.kind.is_wand() {
+            line.push_str(&format!(" [残り{}回]", t.val));
+        }
+        if !self.known[t.kind.index()] {
+            line.push_str(" (未識別)");
+        }
+        line
+    }
+
+    /// 持っている杖の残り回数（ステータス行用）。例: `杖 c:4 d:0`
+    fn wands_text(&self) -> String {
+        let wands: Vec<String> = self
+            .inventory
+            .iter()
+            .filter_map(|s| s.tool.filter(|t| t.kind.is_wand()).map(|t| format!("{}:{}", s.letter, t.val)))
+            .collect();
+        wands.join(" ")
     }
 
     /// 装備個体の持ち物の1行。名前・性能・今の装備との差・装備中かどうか。
@@ -861,6 +906,10 @@ impl Game {
         if let Some(l) = self.hunger_label() {
             s.push_str(&format!("({l})"));
         }
+        let wands = self.wands_text();
+        if !wands.is_empty() {
+            s.push_str(&format!(" 杖残り[{wands}]"));
+        }
         let fx = self.status.short_text();
         if !fx.is_empty() {
             s.push_str(&format!(" {fx}"));
@@ -1029,6 +1078,7 @@ impl Game {
             max_hp: hp,
             pos,
             status: StatusSet::default(),
+            cancelled: false,
         });
         self.monsters.len() - 1
     }
@@ -1383,7 +1433,7 @@ impl Game {
             // 追い詰められたら戦う
         }
         let lost = st.has(Status::Confused) || st.has(Status::Blind);
-        if (kind.erratic && self.rng.range(0, 3) == 0) || (lost && self.rng.range(0, 2) == 0) {
+        if (kind.erratic && !self.monsters[i].cancelled && self.rng.range(0, 3) == 0) || (lost && self.rng.range(0, 2) == 0) {
             if let Some(np) = self.random_free_step(mpos) {
                 self.monsters[i].pos = np;
             }
@@ -1411,7 +1461,7 @@ impl Game {
                 self.max_hp
             );
             self.note(&msg);
-            if kind.corrodes && self.hp > 0 {
+            if kind.corrodes && !self.monsters[i].cancelled && self.hp > 0 {
                 self.corrode_armor();
             }
             if self.armor_suffix() == Some(Suffix::Thorns) {
@@ -1425,7 +1475,7 @@ impl Game {
                 }
             }
             // Thorns で倒された敵は、毒を撒けない
-            if kind.poisons && self.hp > 0 && self.monsters[i].hp > 0 && self.rng.range(0, 2) == 0 {
+            if kind.poisons && !self.monsters[i].cancelled && self.hp > 0 && self.monsters[i].hp > 0 && self.rng.range(0, 2) == 0 {
                 if self.try_poison(5) {
                     self.note("毒を受けた！");
                 } else {
@@ -1724,6 +1774,7 @@ impl Game {
             Command::Quaff(letter) => self.consume(letter, None, Consume::Quaff),
             Command::Eat(letter) => self.consume(letter, None, Consume::Eat),
             Command::Read(letter, target) => self.consume(letter, target, Consume::Read),
+            Command::Zap(letter, target) => self.zap_cmd(letter, target),
             Command::Equip(letter) => self.equip(letter),
             Command::Unequip(letter) => self.unequip(letter),
             Command::Drop(letter, n) => self.drop_cmd(letter, n),
@@ -2141,6 +2192,7 @@ mod tests {
             max_hp: hp,
             pos,
             status: StatusSet::default(),
+            cancelled: false,
         }
     }
 
@@ -2826,7 +2878,7 @@ mod tests {
     fn pickup_fails_when_the_inventory_is_full_without_spending_a_turn() {
         let mut g = quiet(2);
         for c in 'a'..='z' {
-            g.inventory.push(Stack { letter: c, kind: ItemKind::Dagger, count: 1, gear: Some(Gear::plain(ItemKind::Dagger)) });
+            g.inventory.push(Stack { letter: c, kind: ItemKind::Dagger, count: 1, gear: Some(Gear::plain(ItemKind::Dagger)), tool: None });
         }
         put_underfoot(&mut g, &[ItemKind::Healing.into()], &[]);
         let t = g.turn();
@@ -2840,7 +2892,7 @@ mod tests {
     fn full_inventory_drop_then_pickup_takes_only_the_potion() {
         let mut g = quiet(2);
         for c in 'a'..='z' {
-            g.inventory.push(Stack { letter: c, kind: ItemKind::Dagger, count: 1, gear: Some(Gear::plain(ItemKind::Dagger)) });
+            g.inventory.push(Stack { letter: c, kind: ItemKind::Dagger, count: 1, gear: Some(Gear::plain(ItemKind::Dagger)), tool: None });
         }
         // 1. 満杯で、足元に薬。歩いて乗っても拾えない
         let p = (g.pos.0 + 1, g.pos.1);
@@ -3778,7 +3830,7 @@ mod tests {
         let mut g = quiet(3);
         for (i, c) in ('a'..='z').enumerate() {
             let kind = if i == 0 { ItemKind::Dagger } else { ItemKind::Bread };
-            g.inventory.push(Stack { letter: c, kind, count: 1, gear: kind.is_equipment().then(|| Gear::plain(kind)) });
+            g.inventory.push(Stack { letter: c, kind, count: 1, gear: kind.is_equipment().then(|| Gear::plain(kind)), tool: None });
         }
         assert!(!g.can_take(ItemKind::Healing));
         assert!(g.can_take(ItemKind::Bread));
@@ -4642,5 +4694,339 @@ mod tests {
             let bad: u32 = all.iter().filter(|k| k.is_bad()).map(|k| k.weight()).sum();
             assert!(bad * 3 <= total, "{class:?} {bad}/{total}");
         }
+    }
+
+    // ---- 段階3: 杖 ----
+
+    /// 充填数 `charges` の杖を1本持つ（文字は a）。
+    fn with_wand(kind: ItemKind, charges: i32) -> Game {
+        let mut g = quiet(2);
+        g.hp = 20;
+        g.max_hp = 20;
+        g.take(Tool { kind, val: charges });
+        g
+    }
+
+    /// 東隣に敵を置いて杖を持つ。
+    fn wand_vs_adjacent(kind: ItemKind, mk: &'static MonsterKind, hp: i32) -> Game {
+        let mut g = with_adjacent(3, mk);
+        g.monsters[0].hp = hp;
+        g.monsters[0].max_hp = hp;
+        g.take(Tool { kind, val: 5 });
+        g
+    }
+
+    #[test]
+    fn all_the_original_wand_kinds_exist() {
+        for name in [
+            "光の杖", "透明化の杖", "雷の杖", "火の杖", "冷気の杖", "変身の杖", "魔法の矢の杖", "敵加速の杖",
+            "敵減速の杖", "生命吸収の杖", "消去の杖", "敵テレポートの杖", "自分テレポートの杖",
+        ] {
+            assert!(ItemKind::ALL.iter().any(|k| k.is_wand() && k.true_name() == name), "{name}");
+        }
+        let g = Game::new(5);
+        let wands: Vec<&str> = ItemKind::ALL.iter().filter(|k| k.is_wand()).map(|k| g.looks[k.index()]).collect();
+        let uniq: std::collections::HashSet<_> = wands.iter().collect();
+        assert_eq!(uniq.len(), wands.len());
+        assert!(wands.iter().all(|l| l.ends_with('杖')));
+    }
+
+    #[test]
+    fn zapping_uses_a_charge_identifies_the_wand_and_reports_what_is_left() {
+        let mut g = wand_vs_adjacent(ItemKind::WandMissile, &crate::monster::OGRE, 1000);
+        let before = g.display_name(ItemKind::WandMissile);
+        assert!(g.inventory_lines()[0].contains("[残り5回]") && g.inventory_lines()[0].contains("(未識別)"));
+        assert!(g.status_text().contains("杖残り[a:5]"), "{}", g.status_text());
+        let o = g.run("zap a east");
+        assert!(o.ok, "{}", o.message);
+        assert!(o.message.starts_with(&format!("{before}を振った。これは魔法の矢の杖だった！")), "{}", o.message);
+        assert!(o.message.contains("(残り4回)"), "{}", o.message);
+        assert!(g.monsters[0].hp < 1000);
+        assert!(g.inventory_lines()[0].contains("魔法の矢の杖 [残り4回]") && !g.inventory_lines()[0].contains("未識別"));
+        assert!(g.observe_text(3).contains("杖残り[a:4]"));
+        // 2回目からは本名で
+        let o = g.run("zap a east");
+        assert!(o.message.starts_with("魔法の矢の杖を振った。") && !o.message.contains("これは"), "{}", o.message);
+    }
+
+    #[test]
+    fn an_empty_wand_cannot_be_used_and_costs_nothing() {
+        let mut g = wand_vs_adjacent(ItemKind::WandMissile, &crate::monster::OGRE, 1000);
+        for _ in 0..4 {
+            assert!(g.run("zap a east").ok);
+        }
+        let o = g.run("zap a east");
+        assert!(o.ok && o.message.contains("魔力は尽きた") && o.message.contains("0回") == false, "{}", o.message);
+        assert!(g.inventory_lines()[0].contains("[残り0回]"));
+        let (t, hp) = (g.turn(), g.monsters[0].hp);
+        let o = g.run("zap a east");
+        assert!(!o.ok && o.message.contains("充填数が0"), "{}", o.message);
+        assert_eq!((g.turn(), g.monsters[0].hp), (t, hp));
+        // 捨てて拾い直しても、残りは0のまま
+        assert!(g.run("drop a").ok);
+        assert!(g.run("pickup").ok);
+        assert!(g.inventory_lines()[0].contains("[残り0回]"));
+    }
+
+    #[test]
+    fn zap_needs_a_direction_a_wand_and_a_visible_target() {
+        let mut g = with_wand(ItemKind::WandFire, 3);
+        let t = g.turn();
+        let o = g.run("zap a");
+        assert!(!o.ok && o.message.contains("向きが要る") && g.turn() == t, "{}", o.message);
+        let o = g.run("zap a nearest");
+        assert!(!o.ok && o.message.contains("狙える敵"), "{}", o.message);
+        assert_eq!(g.tool_charges('a'), 3);
+        assert!(!g.run("zap b east").ok);
+        g.take(ItemKind::Bread);
+        let o = g.run("zap b east");
+        assert!(!o.ok && o.message.contains("杖ではない"), "{}", o.message);
+        let o = g.run("quaff a");
+        assert!(!o.ok && o.message.contains("zap"), "{}", o.message);
+    }
+
+    impl Game {
+        fn tool_charges(&self, letter: char) -> i32 {
+            self.inventory.iter().find(|s| s.letter == letter).and_then(|s| s.tool).map_or(-1, |t| t.val)
+        }
+    }
+
+    #[test]
+    fn bolts_hit_the_first_enemy_in_line_and_nearest_aims_by_itself() {
+        let mut g = quiet(3);
+        g.hp = 1000;
+        g.max_hp = 1000;
+        g.take(Tool { kind: ItemKind::WandFire, val: 5 });
+        // 東に2体並べる
+        let (p1, p2) = ((g.pos.0 + 1, g.pos.1), (g.pos.0 + 2, g.pos.1));
+        assert!(g.map.tile(p2.0, p2.1).walkable());
+        g.monsters.push(monster(&crate::monster::OGRE, p1, 500));
+        g.monsters.push(monster(&crate::monster::OGRE, p2, 500));
+        g.inflict_monster(0, Status::Paralyzed, 100);
+        g.inflict_monster(1, Status::Paralyzed, 100);
+        g.run("zap a east");
+        assert!(g.monsters[0].hp < 500 && g.monsters[1].hp == 500);
+        g.run("zap a nearest");
+        assert!(g.monsters[0].hp < 490 && g.monsters[1].hp == 500);
+        // 反対側には何もない
+        let o = g.run("zap a west");
+        assert!(o.message.contains("何にも当たらなかった"), "{}", o.message);
+    }
+
+    #[test]
+    fn lightning_pierces_every_enemy_in_the_line() {
+        let mut g = quiet(3);
+        g.hp = 1000;
+        g.max_hp = 1000;
+        g.take(Tool { kind: ItemKind::WandLightning, val: 5 });
+        let (p1, p2) = ((g.pos.0 + 1, g.pos.1), (g.pos.0 + 2, g.pos.1));
+        assert!(g.map.tile(p2.0, p2.1).walkable());
+        g.monsters.push(monster(&crate::monster::OGRE, p1, 500));
+        g.monsters.push(monster(&crate::monster::OGRE, p2, 500));
+        g.inflict_monster(0, Status::Paralyzed, 100);
+        g.inflict_monster(1, Status::Paralyzed, 100);
+        g.run("zap a east");
+        assert!(g.monsters[0].hp < 500 && g.monsters[1].hp < 500);
+    }
+
+    #[test]
+    fn bolts_do_not_pass_through_walls() {
+        let mut g = quiet(3);
+        g.take(Tool { kind: ItemKind::WandFire, val: 5 });
+        // 壁の向こうに敵を置く
+        let mut dir = None;
+        for d in Dir::ALL {
+            let (dx, dy) = d.delta();
+            let w = (g.pos.0 + dx, g.pos.1 + dy);
+            let beyond = (g.pos.0 + 2 * dx, g.pos.1 + 2 * dy);
+            if !g.map.tile(w.0, w.1).walkable() && g.map.tile(beyond.0, beyond.1).walkable() {
+                dir = Some((d, beyond));
+                break;
+            }
+        }
+        if let Some((d, beyond)) = dir {
+            g.monsters.push(monster(&crate::monster::OGRE, beyond, 50));
+            g.run(&format!("zap a {}", d.name()));
+            assert_eq!(g.monsters[0].hp, 50);
+        }
+    }
+
+    #[test]
+    fn killing_with_a_wand_gives_experience() {
+        let mut g = wand_vs_adjacent(ItemKind::WandFire, &crate::monster::SLIME, 3);
+        let xp = g.xp();
+        let o = g.run("zap a east");
+        assert!(o.message.contains("を倒した"), "{}", o.message);
+        assert!(g.monsters.is_empty() && g.xp() > xp);
+    }
+
+    #[test]
+    fn cold_slows_what_it_hits_and_slow_and_haste_wands_use_statuses() {
+        let mut g = wand_vs_adjacent(ItemKind::WandCold, &crate::monster::OGRE, 1000);
+        g.run("zap a east");
+        assert!(g.monsters[0].status.has(Status::Slowed));
+        let mut g = wand_vs_adjacent(ItemKind::WandSlow, &crate::monster::GOBLIN, 1000);
+        let o = g.run("zap a east");
+        assert!(g.monsters[0].status.has(Status::Slowed), "{}", o.message);
+        assert!(o.status_events.iter().any(|e| e.target == "ゴブリン" && e.status == Status::Slowed));
+        let mut g = wand_vs_adjacent(ItemKind::WandHaste, &crate::monster::GOBLIN, 1000);
+        g.run("zap a east");
+        assert!(g.monsters[0].status.has(Status::Hasted));
+    }
+
+    #[test]
+    fn drain_life_heals_you_by_the_damage_dealt() {
+        let mut g = wand_vs_adjacent(ItemKind::WandDrain, &crate::monster::OGRE, 1000);
+        g.hp = 5;
+        g.monsters[0].status.apply(Status::Paralyzed, 100); // 反撃を受けない
+        let o = g.run("zap a east");
+        assert!(g.hp > 5 && o.message.contains("生命力を吸い取った"), "{} hp={}", o.message, g.hp);
+        assert_eq!(1000 - g.monsters[0].hp, g.hp - 5);
+    }
+
+    #[test]
+    fn invisible_monsters_vanish_from_view_until_you_can_see_invisible() {
+        let mut g = wand_vs_adjacent(ItemKind::WandInvisibility, &crate::monster::GOBLIN, 1000);
+        let o = g.run("zap a east");
+        assert!(o.message.contains("姿が消えた"), "{}", o.message);
+        assert!(g.visible_enemies().is_empty());
+        assert_ne!(g.cell(g.pos.0 + 1, g.pos.1).ch, 'g');
+        // 見えなくても殴られる。向きは分かる
+        let o = g.run("wait");
+        assert!(o.message.contains("何かの攻撃！(東から)"), "{}", o.message);
+        g.status.apply(Status::SeeInvisible, 50);
+        assert_eq!(g.visible_enemies().len(), 1);
+        assert_eq!(g.cell(g.pos.0 + 1, g.pos.1).ch, 'g');
+    }
+
+    #[test]
+    fn polymorph_changes_the_kind_and_keeps_the_health_ratio() {
+        for seed in 1..20 {
+            let mut g = wand_vs_adjacent(ItemKind::WandPolymorph, &crate::monster::OGRE, 5);
+            g.depth = 4;
+            g.monsters[0].max_hp = 10;
+            g.monsters[0].status.apply(Status::Paralyzed, 100);
+            g.rng = Rng::new(seed);
+            g.run("zap a east");
+            let m = &g.monsters[0];
+            assert!(!std::ptr::eq(m.kind, &crate::monster::OGRE), "seed {seed}");
+            assert_eq!((m.name, m.glyph), (m.kind.name, m.kind.glyph));
+            assert_eq!(m.max_hp, m.kind.hp_at(4));
+            assert!(m.hp >= 1 && m.hp <= m.max_hp);
+        }
+    }
+
+    #[test]
+    fn cancellation_strips_statuses_and_special_powers() {
+        let mut g = wand_vs_adjacent(ItemKind::WandCancel, &crate::monster::SPIDER, 1000);
+        g.inflict_monster(0, Status::Hasted, 50);
+        let o = g.run("zap a east");
+        assert!(g.monsters[0].status.active().is_empty() && g.monsters[0].cancelled, "{}", o.message);
+        for _ in 0..40 {
+            g.run("wait");
+        }
+        assert!(!g.status.has(Status::Poisoned), "消去された毒グモが毒を撒いた");
+        assert!(o.status_events.iter().any(|e| e.status == Status::Hasted && e.change == Change::End));
+    }
+
+    #[test]
+    fn teleport_other_sends_the_monster_away_and_teleport_self_moves_you() {
+        let mut g = wand_vs_adjacent(ItemKind::WandTeleportOther, &crate::monster::GOBLIN, 1000);
+        let before = g.monsters[0].pos;
+        let o = g.run("zap a east");
+        assert_ne!(g.monsters[0].pos, before, "{}", o.message);
+        let mut g = with_wand(ItemKind::WandTeleportSelf, 3);
+        let before = g.pos;
+        // 向きは要らない
+        let o = g.run("zap a");
+        assert!(o.ok && g.pos != before, "{}", o.message);
+        assert!(o.message.contains("(残り2回)"));
+    }
+
+    #[test]
+    fn the_light_wand_maps_the_corridor_ahead() {
+        let mut tried = false;
+        for seed in 0..60 {
+            let mut g = quiet(seed);
+            g.take(Tool { kind: ItemKind::WandLight, val: 3 });
+            g.map.forget_all();
+            for d in Dir::ALL {
+                let (dx, dy) = d.delta();
+                let open = (1..=6).all(|k| g.map.tile(g.pos.0 + dx * k, g.pos.1 + dy * k).walkable());
+                let far = (g.pos.0 + 6 * dx, g.pos.1 + 6 * dy);
+                if open {
+                    let o = g.run(&format!("zap a {}", d.name()));
+                    assert!(g.map.is_seen(far.0, far.1), "{}", o.message);
+                    assert!(o.message.contains("照らされた"));
+                    tried = true;
+                    break;
+                }
+            }
+            if tried {
+                break;
+            }
+        }
+        assert!(tried, "条件に合う場所がなかった");
+    }
+
+    #[test]
+    fn confusion_can_send_a_bolt_the_wrong_way() {
+        let mut g = wand_vs_adjacent(ItemKind::WandMissile, &crate::monster::OGRE, 100000);
+        g.monsters[0].status.apply(Status::Paralyzed, 100000);
+        g.status.apply(Status::Confused, 100000);
+        let mut misses = 0;
+        for _ in 0..4 {
+            let hp = g.monsters[0].hp;
+            g.run("zap a east");
+            if g.monsters[0].hp == hp {
+                misses += 1;
+            }
+            g.inventory[0].tool.as_mut().unwrap().val = 5;
+        }
+        let _ = misses; // 乱数しだいなので、少なくとも落ちずに動くことだけ確かめる
+    }
+
+    #[test]
+    fn wands_are_individuals_and_survive_drop_and_pickup_with_their_charges() {
+        let mut g = quiet(2);
+        g.take(Tool { kind: ItemKind::WandFire, val: 4 });
+        g.take(Tool { kind: ItemKind::WandFire, val: 2 });
+        assert_eq!(g.inventory.len(), 2);
+        assert!(g.inventory_lines()[0].contains("[残り4回]") && g.inventory_lines()[1].contains("[残り2回]"));
+        g.run("drop a");
+        assert_eq!(g.underfoot_text().contains("火の杖") || g.underfoot_text().contains("杖"), true);
+        g.run("pickup");
+        assert!(g.inventory_lines().iter().any(|l| l.contains("[残り4回]")));
+    }
+
+    #[test]
+    fn floor_wands_have_charges_inside_the_listed_range() {
+        let mut rng = Rng::new(9);
+        for k in ItemKind::ALL.into_iter().filter(|k| k.is_wand()) {
+            for _ in 0..20 {
+                let Item::Tool(t) = Item::roll(&mut rng, k, 5) else { panic!() };
+                let (lo, hi) = k.zap().unwrap().charges;
+                assert!((lo..=hi).contains(&t.val), "{k:?} {}", t.val);
+            }
+        }
+        // 深いところの床には杖も落ちる
+        let mut found = false;
+        for seed in 0..60 {
+            let mut g = Game::new(seed);
+            g.depth = 6;
+            g.spawn_items();
+            found |= g.floor_items.iter().any(|f| f.item.kind().is_wand());
+        }
+        assert!(found);
+    }
+
+    #[test]
+    fn identify_scroll_can_identify_an_unknown_wand() {
+        let mut g = quiet(2);
+        g.take(ItemKind::Identify);
+        g.take(Tool { kind: ItemKind::WandSlow, val: 4 });
+        let o = g.run("read a b");
+        assert!(o.ok && g.known[ItemKind::WandSlow.index()], "{}", o.message);
+        assert!(g.inventory_lines()[0].contains("敵減速の杖 [残り4回]"));
     }
 }

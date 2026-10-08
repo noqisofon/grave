@@ -23,6 +23,8 @@ impl Keymap {
             ('q', "quaff "),
             ('E', "eat "),
             ('R', "read "),
+            ('a', "zap "),
+            ('Z', "zap "),
             ('e', "equip "),
             ('r', "unequip "),
             ('d', "drop "),
