@@ -1343,8 +1343,9 @@ impl Game {
         let mut msg = format!("{}の解除に失敗した。(成功率{percent}%)", kind.name());
         // 失敗すると3回に1回は作動する。足元の罠以外の落とし穴は、落ちずに済む
         if self.rng.range(0, 3) == 0 {
-            if self.status.has(Status::Levitating) {
-                msg.push_str(" 手元が狂ったが、浮いているので罠は作動しなかった。");
+            // 触っている仕掛けが動くので、毒矢と眠りガスは浮いていても作動する。落とし穴は浮いていれば落ちない
+            if kind == TrapKind::Trapdoor && self.status.has(Status::Levitating) {
+                msg.push_str(" 手元が狂ったが、浮いているので落ちなかった。");
             } else if kind == TrapKind::Trapdoor && target != self.pos {
                 msg.push_str(" 床板がきしんだが、落ちずに済んだ。");
             } else {
@@ -5966,33 +5967,33 @@ mod tests {
     }
 
     #[test]
-    fn levitation_keeps_every_kind_of_trap_from_firing_even_when_a_disarm_slips() {
-        for kind in TrapKind::ALL {
-            for foot in [true, false] {
-                let mut slipped = false;
-                for seed in 0..120 {
-                    let mut g = quiet(3);
-                    g.hp = 1000;
-                    g.max_hp = 1000;
-                    g.rng = Rng::new(seed);
-                    let p = put_trap(&mut g, kind);
-                    g.traps[0].revealed = true;
-                    if foot {
-                        g.pos = p;
-                    }
-                    g.status.apply(Status::Levitating, 1000);
-                    let o = g.run(if foot { "disarm" } else { "disarm east" });
-                    assert!(!o.message.contains("作動した！"), "{kind:?}: {}", o.message);
-                    assert_eq!(
-                        (g.hp, g.depth(), g.status.has(Status::Poisoned), g.status.has(Status::Asleep)),
-                        (1000, 1, false, false),
-                        "{kind:?}"
-                    );
-                    slipped |= o.message.contains("浮いているので罠は作動しなかった") || o.message.contains("落ちずに済んだ");
-                }
-                assert!(slipped, "{kind:?} foot={foot}");
-            }
+    fn a_slipped_disarm_fires_darts_and_gas_even_while_floating_but_never_drops_a_floating_player() {
+        // 毒矢と眠りガスは、浮いていても足元でも隣でも作動する
+        for (kind, foot) in [(TrapKind::Dart, true), (TrapKind::Dart, false), (TrapKind::SleepGas, true), (TrapKind::SleepGas, false)] {
+            let (g, o) = disarm_failure_that_fires(kind, foot, |g| {
+                g.status.apply(Status::Levitating, 1000);
+            })
+            .unwrap_or_else(|| panic!("{kind:?} foot={foot}: 作動する seed がない"));
+            let effect = match kind {
+                TrapKind::Dart => g.hp < 1000 && g.status.has(Status::Poisoned),
+                _ => o.message.contains("眠りガス"),
+            };
+            assert!(effect, "{kind:?} foot={foot}: {}", o.message);
         }
+        // 落とし穴は、浮いていれば足元でも落ちない
+        let mut slipped = false;
+        for seed in 0..120 {
+            let mut g = quiet(3);
+            g.rng = Rng::new(seed);
+            let p = put_trap(&mut g, TrapKind::Trapdoor);
+            g.traps[0].revealed = true;
+            g.pos = p;
+            g.status.apply(Status::Levitating, 1000);
+            let o = g.run("disarm");
+            assert_eq!(g.depth(), 1, "{}", o.message);
+            slipped |= o.message.contains("浮いているので落ちなかった");
+        }
+        assert!(slipped);
     }
 
     #[test]
