@@ -1075,7 +1075,9 @@ impl Game {
                     self.note(&format!("トゲが{name}に1ダメージを返した。"));
                 }
             }
-            if kind.poisons && self.hp > 0 && self.rng.range(0, 2) == 0 {
+            // Thorns で倒された敵は、毒を撒けない
+            // Thorns で倒された敵は、毒を撒けない
+            if kind.poisons && self.hp > 0 && self.monsters[i].hp > 0 && self.rng.range(0, 2) == 0 {
                 if self.try_poison(5) {
                     self.note("毒を受けた！");
                 } else {
@@ -2162,6 +2164,22 @@ mod tests {
         // 見出しは品質補正を含む値 (板金 3 + 補正 2)
         assert!(o.contains("防御 5"), "{o}");
         assert!(o.contains("a) Sanctified Plate Armor (?) [防御 3 +(2〜3)?] (装備中)"), "{o}");
+    }
+
+    #[test]
+    fn spider_killed_by_thorns_does_not_poison() {
+        let mut g = with_adjacent(3, &crate::monster::SPIDER);
+        let a = give(&mut g, suffix_gear(ItemKind::Leather, Suffix::Thorns));
+        g.run(&format!("equip {a}"));
+        for _ in 0..40 {
+            g.monsters.clear();
+            let p = (g.pos.0 + 1, g.pos.1);
+            g.monsters.push(monster(&crate::monster::SPIDER, p, 1));
+            g.poison = 0;
+            g.run("wait");
+            assert_eq!(g.poison, 0, "倒された毒グモが毒を撒いた");
+            assert!(g.monsters.is_empty());
+        }
     }
 
     #[test]
