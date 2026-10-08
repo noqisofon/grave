@@ -374,6 +374,8 @@ pub struct Gear {
     pub suffix: Option<Suffix>,
     /// 接尾辞と正確な補正値を知っているか。Common は隠すものがないので最初から true
     pub identified: bool,
+    /// 装備して過ごしたターン数（一定に達すると識別される）
+    pub worn: u32,
 }
 
 impl Gear {
@@ -387,6 +389,7 @@ impl Gear {
             bonus: 0,
             suffix: None,
             identified: true,
+            worn: 0,
         }
     }
 
@@ -418,6 +421,7 @@ impl Gear {
             bonus,
             suffix,
             identified: quality == Quality::Common,
+            worn: 0,
         }
     }
 
@@ -437,11 +441,20 @@ impl Gear {
 
     pub fn name(&self) -> String {
         let mut n = format!("{} {}", self.word, self.kind.base_name());
-        if let Some(s) = self.suffix {
+        if !self.identified {
+            // 接尾辞があるのか、補正値がいくつなのかは、識別するまで分からない
+            n.push_str(" (?)");
+        } else if let Some(s) = self.suffix {
             n.push(' ');
             n.push_str(s.name());
         }
         n
+    }
+
+    /// 識別したときに分かる中身の説明（接尾辞の効果と、補正値）。
+    pub fn reveal_text(&self) -> String {
+        let fx = self.suffix.map_or("特殊効果はない".to_string(), |s| s.describe().to_string());
+        format!("{}。品質補正 +{}", fx, self.bonus)
     }
 
     /// 武器の攻撃範囲 (最小, 最大)。武器でなければ None。

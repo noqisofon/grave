@@ -19,6 +19,8 @@ const WEAK_AT: i32 = 30;
 const DANGER_HP: i32 = 5;
 const MAX_POISON: u32 = 15;
 const MAX_MONSTERS: usize = 6;
+/// 装備して、このターン数が過ぎると、その装備の正体（接尾辞と補正値）が分かる
+const IDENTIFY_AFTER_WORN: u32 = 50;
 /// レベルアップで増える最大HP
 const HP_PER_LEVEL: i32 = 4;
 /// この階の床に魔除けのアミュレットがある。ここが最深部。
@@ -603,7 +605,7 @@ impl Game {
                         return (false, "その巻物自身は対象にできない。".to_string(), false)
                     }
                     Some(t) => match self.inventory.iter().position(|s| s.letter == t) {
-                        Some(i) if self.known[self.inventory[i].kind.index()] => {
+                        Some(i) if !self.needs_identify(&self.inventory[i]) => {
                             return (false, format!("{t} はすでに識別済みだ。"), false)
                         }
                         Some(i) => Some(i),
@@ -612,9 +614,14 @@ impl Game {
                     None => self
                         .inventory
                         .iter()
-                        .position(|s| s.letter != letter && !self.known[s.kind.index()]),
+                        .position(|s| s.letter != letter && self.needs_identify(s)),
                 };
                 match ti {
+                    Some(i) if self.inventory[i].gear.is_some() => {
+                        let letter = self.inventory[i].letter;
+                        let (old, text) = self.identify_gear(letter);
+                        format!("{old}の正体が分かった。{text}")
+                    }
                     Some(i) => {
                         let tk = self.inventory[i].kind;
                         let old = self.looks[tk.index()];
@@ -635,6 +642,49 @@ impl Game {
             self.inventory.remove(si);
         }
         (true, format!("{prefix} {body}"), true)
+    }
+
+    /// 識別の対象になるか。薬・巻物・キノコは種類が未知のもの、装備は正体が未識別のもの。
+    fn needs_identify(&self, s: &Stack) -> bool {
+        match &s.gear {
+            Some(g) => !g.identified,
+            None => !self.known[s.kind.index()],
+        }
+    }
+
+    /// 装備個体を識別する。(識別前の名前, 識別後の名前と中身の説明)
+    fn identify_gear(&mut self, letter: char) -> (String, String) {
+        let g = self
+            .inventory
+            .iter_mut()
+            .find(|s| s.letter == letter)
+            .and_then(|s| s.gear.as_mut())
+            .expect("識別する装備がある");
+        let old = g.name();
+        g.identified = true;
+        (old, format!("{} ({})", g.name(), g.reveal_text()))
+    }
+
+    /// 装備している未識別の装備は、身につけた時間が積もる。十分に経つと正体が分かる。
+    fn tick_worn(&mut self) {
+        for letter in [self.weapon, self.armor].into_iter().flatten() {
+            let Some(g) = self
+                .inventory
+                .iter_mut()
+                .find(|s| s.letter == letter)
+                .and_then(|s| s.gear.as_mut())
+            else {
+                continue;
+            };
+            if g.identified {
+                continue;
+            }
+            g.worn += 1;
+            if g.worn >= IDENTIFY_AFTER_WORN {
+                let (old, text) = self.identify_gear(letter);
+                self.note(&format!("身につけているうちに、{old}の正体が分かった。{text}"));
+            }
+        }
     }
 
     /// 防具の接尾辞。
@@ -879,6 +929,7 @@ impl Game {
     /// 1ターン進める。敵が動き、HPが自然回復する。
     fn pass_turn(&mut self) {
         self.turn += 1;
+        self.tick_worn();
         self.tick_body();
         if self.dead {
             return;
@@ -1764,7 +1815,7 @@ mod tests {
     }
 
     fn quality_gear(kind: ItemKind, quality: crate::item::Quality, bonus: i32) -> Gear {
-        Gear { kind, quality, word: quality.words()[0], bonus, suffix: None, identified: true }
+        Gear { kind, quality, word: quality.words()[0], bonus, suffix: None, identified: true, worn: 0 }
     }
 
     #[test]
@@ -1860,6 +1911,7 @@ mod tests {
             bonus: 2,
             suffix: Some(suffix),
             identified: false,
+            worn: 0,
         }
     }
 
@@ -1982,6 +2034,77 @@ mod tests {
         assert_eq!(g.weapon, Some(c));
         // 呪いの攻撃+3 は効いている
         assert_eq!(g.attack_range(), (5 + 2 + 3, 9 + 2 + 3));
+    }
+
+    #[test]
+    fn unidentified_gear_shows_prefix_but_hides_suffix() {
+        let mut g = quiet(2);
+        let w = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Vampire));
+        let line = g.inventory_lines().remove(0);
+        assert!(line.contains("Sanctified Sword (?)"), "{line}");
+        assert!(!line.contains("Vampire"), "{line}");
+        // 床の上でも同じ見え方
+        let p = (g.pos.0 + 1, g.pos.1);
+        g.floor_items.push((p, Item::Gear(suffix_gear(ItemKind::Axe, Suffix::Thorns))));
+        g.map.update_fov(g.pos, FOV_RADIUS);
+        let look = g.run("look").message;
+        assert!(look.contains("Sanctified Axe (?)") && !look.contains("Thorns"), "{look}");
+        // 普通の品は隠すものがないので (?) が付かない
+        g.take(ItemKind::Dagger);
+        assert!(g.inventory_lines().iter().any(|l| l.contains("Basic Dagger [") && !l.contains("(?)")));
+        let _ = w;
+    }
+
+    #[test]
+    fn identify_scroll_works_on_gear_by_target_and_automatically() {
+        let mut g = quiet(2);
+        g.known[ItemKind::Identify.index()] = true;
+        let w = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Vampire));
+        let s1 = g.take(ItemKind::Identify).unwrap();
+        let o = g.run(&format!("read {s1} {w}"));
+        assert!(o.ok && o.message.contains("of the Vampire"), "{}", o.message);
+        assert!(g.inventory_lines()[0].contains("Sanctified Sword of the Vampire"));
+        assert!(!g.inventory_lines()[0].contains("(?)"));
+        // 識別済みの装備は対象にできず、巻物も減らない
+        let s2 = g.take(ItemKind::Identify).unwrap();
+        let o = g.run(&format!("read {s2} {w}"));
+        assert!(!o.ok && o.message.contains("すでに識別済み"), "{}", o.message);
+        // 対象を省くと、未識別の装備が自動で選ばれる
+        let a = give(&mut g, suffix_gear(ItemKind::Plate, Suffix::Warding));
+        let o = g.run(&format!("read {s2}"));
+        assert!(o.ok && o.message.contains("of Warding"), "{}", o.message);
+        assert!(g.inventory.iter().find(|s| s.letter == a).unwrap().gear.unwrap().identified);
+    }
+
+    #[test]
+    fn cursed_gear_is_identified_by_scroll_before_wearing() {
+        let mut g = quiet(2);
+        g.known[ItemKind::Identify.index()] = true;
+        let c = give(&mut g, suffix_gear(ItemKind::Axe, Suffix::Cataclysm));
+        let s = g.take(ItemKind::Identify).unwrap();
+        let o = g.run(&format!("read {s} {c}"));
+        assert!(o.message.contains("呪われていて"), "{}", o.message);
+    }
+
+    #[test]
+    fn worn_gear_is_identified_after_enough_turns() {
+        let mut g = quiet(2);
+        let w = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Might));
+        let spare = give(&mut g, suffix_gear(ItemKind::Axe, Suffix::Might));
+        g.run(&format!("equip {w}"));
+        for _ in 0..(IDENTIFY_AFTER_WORN - 2) {
+            g.run("wait");
+        }
+        assert!(g.inventory_lines()[0].contains("(?)"));
+        let mut told = false;
+        for _ in 0..4 {
+            told |= g.run("wait").message.contains("正体が分かった");
+        }
+        assert!(told);
+        assert!(g.inventory_lines()[0].contains("of Might") && !g.inventory_lines()[0].contains("(?)"));
+        // 装備していないものは、時間が経っても分からない
+        assert!(g.inventory_lines()[1].contains("(?)"));
+        let _ = spare;
     }
 
     #[test]
