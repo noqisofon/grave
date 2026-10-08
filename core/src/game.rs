@@ -1186,7 +1186,9 @@ impl Game {
         if dx.abs() <= 1 && dy.abs() <= 1 {
             let bonus = (self.depth as i32 - 1) / 3;
             let raw = self.rng.range(kind.dmg.0, kind.dmg.1 + 1 + bonus);
-            let dmg = (raw - self.defense()).max(1);
+            // 防御で減らして「最低1」にしたあとに足す。重い鎧でも呪いの代償は必ず受ける
+            let curse = self.weapon_gear().and_then(|g| g.suffix).map_or(0, Suffix::damage_taken_bonus);
+            let dmg = (raw - self.defense()).max(1) + curse;
             self.hp -= dmg;
             self.hit = true;
             let msg = format!(
@@ -2558,6 +2560,34 @@ mod tests {
         for seed in 0..6 {
             assert_eq!(play(seed), play(seed), "seed {seed}");
         }
+    }
+
+    #[test]
+    fn cataclysm_adds_one_to_every_hit_taken_even_through_armor() {
+        let run = |cursed: bool| {
+            let mut g = with_adjacent(3, &crate::monster::BAT);
+            let a = give(&mut g, quality_gear(ItemKind::Plate, crate::item::Quality::Ancient, 5));
+            g.run(&format!("equip {a}"));
+            if cursed {
+                let w = give(&mut g, suffix_gear(ItemKind::Axe, Suffix::Cataclysm));
+                g.run(&format!("equip {w}"));
+            }
+            let mut hits = Vec::new();
+            for _ in 0..30 {
+                let before = g.hp;
+                g.run("wait");
+                if g.hp < before {
+                    hits.push(before - g.hp);
+                }
+            }
+            hits
+        };
+        let plain = run(false);
+        let cursed = run(true);
+        // 防御8 の鎧ならコウモリの攻撃は最低の 1 まで減る。呪いがあるとその最低が 2 になる
+        assert!(!plain.is_empty() && !cursed.is_empty());
+        assert_eq!(*plain.iter().min().unwrap(), 1);
+        assert_eq!(*cursed.iter().min().unwrap(), 2);
     }
 
     #[test]

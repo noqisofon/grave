@@ -280,7 +280,7 @@ pub enum Suffix {
     Might,
     /// 敵を倒すとHPが2回復する
     Vigor,
-    /// 呪い: 攻撃が+3されるが、装備すると外せなくなる
+    /// 呪い: 攻撃が+3されるが、受けるダメージが+1され、装備すると外せなくなる
     Cataclysm,
     // 防具
     /// 近接で殴ってきた敵に1ダメージを返す
@@ -318,7 +318,7 @@ impl Suffix {
             Suffix::Vampire => "命中するたびにHP+1",
             Suffix::Might => "攻撃+1",
             Suffix::Vigor => "敵を倒すとHP+2",
-            Suffix::Cataclysm => "攻撃+3。呪われていて、装備すると外せない",
+            Suffix::Cataclysm => "攻撃+3。受けるダメージ+1。呪われていて、装備すると外せない",
             Suffix::Thorns => "殴ってきた敵に1ダメージを返す",
             Suffix::Warding => "毒を受けない",
             Suffix::Famine => "防御+2。呪われていて、満腹度が余計に減る",
@@ -335,6 +335,14 @@ impl Suffix {
         match self {
             Suffix::Might => 1,
             Suffix::Cataclysm => 3,
+            _ => 0,
+        }
+    }
+
+    /// 敵から受けるダメージ1回ごとへの加算（呪いの欠点）。
+    pub fn damage_taken_bonus(self) -> i32 {
+        match self {
+            Suffix::Cataclysm => 1,
             _ => 0,
         }
     }
