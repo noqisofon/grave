@@ -196,7 +196,7 @@ impl App {
                 let n = self.count.take().unwrap_or(1);
                 if let Some(cmd) = self.keymap.get(c).map(str::to_string) {
                     if cmd.ends_with(' ') {
-                        // 例: q → ":use " を開いて、文字を打ってもらう
+                        // 例: q → ":quaff " を開いて、文字を打ってもらう
                         self.mode = Mode::Command;
                         self.cmdline = cmd;
                         self.hist_pos = None;
@@ -793,11 +793,11 @@ mod tests {
     }
 
     #[test]
-    fn q_opens_the_command_line_with_use() {
+    fn q_opens_the_command_line_with_quaff() {
         let mut app = App::new(1);
         press(&mut app, "q");
         assert!(app.mode == Mode::Command);
-        assert_eq!(app.cmdline, "use ");
+        assert_eq!(app.cmdline, "quaff ");
         press(&mut app, "a");
         app.on_key_command(KeyCode::Enter);
         // 持ち物がないので失敗するが、コマンドとして実行される
