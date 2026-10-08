@@ -70,6 +70,26 @@ struct Stack {
     gear: Option<Gear>,
 }
 
+/// 床に落ちている物1個。`dropped` は、プレイヤーが `drop` した物の印
+/// （印の付いた物は、歩いても `stay` しても自動では拾われない）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FloorItem {
+    pos: (i32, i32),
+    item: Item,
+    dropped: bool,
+}
+
+impl FloorItem {
+    /// 生成された物（印なし）。
+    fn new(pos: (i32, i32), item: impl Into<Item>) -> FloorItem {
+        FloorItem {
+            pos,
+            item: item.into(),
+            dropped: false,
+        }
+    }
+}
+
 struct Monster {
     kind: &'static MonsterKind,
     name: &'static str,
@@ -96,7 +116,7 @@ pub struct Game {
     stairs: (i32, i32),
     map: Map,
     monsters: Vec<Monster>,
-    floor_items: Vec<((i32, i32), Item)>,
+    floor_items: Vec<FloorItem>,
     inventory: Vec<Stack>,
     /// 床にあるアミュレット（最深部だけ）
     amulet: Option<(i32, i32)>,
@@ -337,7 +357,8 @@ impl Game {
                 }
                 roll -= k.weight();
             }
-            self.floor_items.push(((x, y), Item::roll(&mut self.rng, kind, self.depth)));
+            let item = Item::roll(&mut self.rng, kind, self.depth);
+            self.floor_items.push(FloorItem::new((x, y), item));
         }
         // 飢え死にしないよう、どの階にも食べ物を1つは置く
         let food = if self.depth >= 2 && self.rng.range(0, 4) == 0 {
@@ -353,14 +374,27 @@ impl Game {
                 && self.item_at((x, y)).is_none()
                 && self.monster_at((x, y)).is_none()
             {
-                self.floor_items.push(((x, y), Item::from(food)));
+                self.floor_items.push(FloorItem::new((x, y), food));
                 break;
             }
         }
     }
 
+    /// マス `p` の物の `floor_items` 内の番号。「一番上」から順に、印のない物が先、捨てた物があと。
+    fn floor_order(&self, p: (i32, i32)) -> Vec<usize> {
+        let at = |dropped: bool| {
+            self.floor_items
+                .iter()
+                .enumerate()
+                .filter(move |(_, f)| f.pos == p && f.dropped == dropped)
+                .map(|(i, _)| i)
+        };
+        at(false).chain(at(true)).collect()
+    }
+
+    /// マス `p` の一番上の物（マップの記号になる）。
     fn item_at(&self, p: (i32, i32)) -> Option<Item> {
-        self.floor_items.iter().find(|(q, _)| *q == p).map(|(_, k)| *k)
+        self.floor_order(p).first().map(|&i| self.floor_items[i].item)
     }
 
     /// 持ち物や床では、正体を知っていれば本当の名前、知らなければ見た目の名前。
@@ -423,10 +457,10 @@ impl Game {
             self.note("魔除けのアミュレットを手に入れた！ 階段は登り階段になった。地上まで持ち帰ろう。");
             self.alert = Some("アミュレットを手に入れて中断した。".to_string());
         }
-        let Some(j) = self.floor_items.iter().position(|(p, _)| *p == self.pos) else {
+        let Some(j) = self.floor_order(self.pos).first().copied() else {
             return;
         };
-        let item = self.floor_items[j].1;
+        let item = self.floor_items[j].item;
         if let Some(letter) = self.take(item) {
             self.floor_items.remove(j);
             let msg = format!("{}を拾った。({letter})", self.item_name(&item));
@@ -1539,13 +1573,13 @@ impl Game {
         if let Some(p) = self.amulet.filter(|p| self.map.is_seen(p.0, p.1)) {
             parts.push(format!(", 魔除けのアミュレットが{}にある。", rel_text(self.pos, p)));
         }
-        for (p, k) in &self.floor_items {
-            if self.map.is_seen(p.0, p.1) {
+        for f in &self.floor_items {
+            if self.map.is_seen(f.pos.0, f.pos.1) {
                 parts.push(format!(
                     "{} {}が{}にある。",
-                    k.kind().glyph(),
-                    self.item_name(k),
-                    rel_text(self.pos, *p)
+                    f.item.kind().glyph(),
+                    self.item_name(&f.item),
+                    rel_text(self.pos, f.pos)
                 ));
             }
         }
@@ -1818,7 +1852,8 @@ mod tests {
             for depth in [1u32, 5] {
                 g.depth = depth;
                 g.spawn_items();
-                for (_, k) in &g.floor_items {
+                for f in &g.floor_items {
+                    let k = &f.item;
                     assert!(k.kind().min_depth() <= depth, "{k:?} at {depth}");
                     seen.insert(k.kind());
                 }
@@ -1829,7 +1864,7 @@ mod tests {
         assert!(seen.iter().any(|k| k.is_armor()));
         let mut g = quiet(4);
         let p = (g.pos.0 + 1, g.pos.1);
-        g.floor_items.push((p, ItemKind::Sword.into()));
+        g.floor_items.push(FloorItem::new(p, ItemKind::Sword));
         let o = g.run("move east");
         assert!(o.message.contains("Swordを拾った"), "{}", o.message);
     }
@@ -2070,7 +2105,7 @@ mod tests {
         assert!(!line.contains("Vampire"), "{line}");
         // 床の上でも同じ見え方
         let p = (g.pos.0 + 1, g.pos.1);
-        g.floor_items.push((p, Item::Gear(suffix_gear(ItemKind::Axe, Suffix::Thorns))));
+        g.floor_items.push(FloorItem::new(p, Item::Gear(suffix_gear(ItemKind::Axe, Suffix::Thorns))));
         g.map.update_fov(g.pos, FOV_RADIUS);
         let look = g.run("look").message;
         assert!(look.contains("Sanctified Axe (?)") && !look.contains("Thorns"), "{look}");
@@ -2272,7 +2307,7 @@ mod tests {
     fn stay_picks_up_the_item_underfoot_but_wait_does_not() {
         let mut g = quiet(1);
         let here = g.pos;
-        g.floor_items.push((here, ItemKind::Healing.into()));
+        g.floor_items.push(FloorItem::new(here, ItemKind::Healing));
         let o = g.run("wait");
         assert!(o.ok && g.inventory.is_empty() && g.floor_items.len() == 1, "{}", o.message);
         let t = g.turn();
@@ -2470,7 +2505,7 @@ mod tests {
                 g.depth = depth;
                 g.spawn_items();
                 assert!(
-                    g.floor_items.iter().any(|(_, k)| k.kind().is_food()),
+                    g.floor_items.iter().any(|f| f.item.kind().is_food()),
                     "seed {seed} depth {depth}"
                 );
             }
@@ -2779,7 +2814,8 @@ mod tests {
         for seed in 0..20 {
             let g = Game::new(seed);
             assert!(!g.floor_items.is_empty());
-            for (p, _) in &g.floor_items {
+            for f in &g.floor_items {
+                let p = &f.pos;
                 assert_eq!(g.map.tile(p.0, p.1), Tile::Floor);
                 assert_ne!(*p, g.pos);
             }
@@ -2790,7 +2826,7 @@ mod tests {
     fn walking_onto_an_item_picks_it_up() {
         let mut g = quiet(1);
         let p = (g.pos.0 + 1, g.pos.1);
-        g.floor_items.push((p, ItemKind::Healing.into()));
+        g.floor_items.push(FloorItem::new(p, ItemKind::Healing));
         let o = g.run("move east");
         assert!(o.ok && o.message.contains("拾った"), "{}", o.message);
         assert!(g.floor_items.is_empty());
@@ -2978,7 +3014,7 @@ mod tests {
     fn look_mentions_known_floor_items() {
         let mut g = quiet(1);
         let p = (g.pos.0 + 2, g.pos.1);
-        g.floor_items.push((p, ItemKind::Teleport.into()));
+        g.floor_items.push(FloorItem::new(p, ItemKind::Teleport));
         g.map.update_fov(g.pos, FOV_RADIUS);
         let o = g.run("look");
         assert!(o.message.contains("東に2"), "{}", o.message);
@@ -3017,14 +3053,14 @@ mod tests {
             .unwrap()
         };
         let (a, b) = (far(&g, 4), far(&g, 12));
-        g.floor_items.push((a, ItemKind::Healing.into()));
-        g.floor_items.push((b, ItemKind::Healing.into()));
+        g.floor_items.push(FloorItem::new(a, ItemKind::Healing));
+        g.floor_items.push(FloorItem::new(b, ItemKind::Healing));
         let o = g.run("explore");
         assert!(o.message.contains("もう探索する場所がない"), "{}", o.message);
         assert_eq!(g.turn(), 0);
         // 踏めば、拾えないと分かる
         g.floor_items.clear();
-        g.floor_items.push((g.pos, ItemKind::Healing.into()));
+        g.floor_items.push(FloorItem::new(g.pos, ItemKind::Healing));
         let o = g.run("stay");
         assert!(o.message.contains("持ち物がいっぱい"), "{}", o.message);
         assert_eq!(g.floor_items.len(), 1);
