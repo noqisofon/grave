@@ -19,6 +19,8 @@ const WEAK_AT: i32 = 30;
 const DANGER_HP: i32 = 5;
 const MAX_POISON: u32 = 15;
 const MAX_MONSTERS: usize = 6;
+/// レベルアップで増える最大HP
+const HP_PER_LEVEL: i32 = 4;
 /// この階の床に魔除けのアミュレットがある。ここが最深部。
 pub const AMULET_DEPTH: u32 = 30;
 
@@ -81,6 +83,11 @@ pub struct Game {
     pos: (i32, i32),
     hp: i32,
     max_hp: i32,
+    /// プレイヤーのレベルと、これまでに得た経験値の合計
+    level: u32,
+    xp: u32,
+    /// 倒した敵の経験値。メッセージを記録したあとに加算する（ログの順番のため）
+    pending_xp: u32,
     dead: bool,
     stairs: (i32, i32),
     map: Map,
@@ -173,6 +180,9 @@ impl Game {
             pos: g.start,
             hp: PLAYER_MAX_HP,
             max_hp: PLAYER_MAX_HP,
+            level: 1,
+            xp: 0,
+            pending_xp: 0,
             dead: false,
             stairs: g.stairs,
             map: g.map,
@@ -218,6 +228,16 @@ impl Game {
     }
     pub fn max_hp(&self) -> i32 {
         self.max_hp
+    }
+    pub fn level(&self) -> u32 {
+        self.level
+    }
+    pub fn xp(&self) -> u32 {
+        self.xp
+    }
+    /// 次のレベルに必要な経験値の合計（レベル2 は 10、3 は 30、4 は 60 …）
+    pub fn xp_for_next(&self) -> u32 {
+        5 * self.level * (self.level + 1)
     }
     pub fn is_dead(&self) -> bool {
         self.dead
@@ -589,9 +609,32 @@ impl Game {
         s
     }
 
-    /// 武器の攻撃範囲（含む）。装備がなければ素手。
+    /// レベルによる攻撃力の上乗せ（2レベルごとに +1）。
+    fn level_bonus(&self) -> i32 {
+        (self.level as i32 - 1) / 2
+    }
+
+    /// 武器の攻撃範囲（含む）。装備がなければ素手。レベルの上乗せを含む。
     fn attack_range(&self) -> (i32, i32) {
-        self.weapon.and_then(|w| w.weapon_dmg()).unwrap_or((2, 4))
+        let (lo, hi) = self.weapon.and_then(|w| w.weapon_dmg()).unwrap_or((2, 4));
+        let b = self.level_bonus();
+        (lo + b, hi + b)
+    }
+
+    /// 経験値を得て、足りればレベルが上がる。
+    fn gain_xp(&mut self, n: u32) {
+        self.xp += n;
+        while self.xp >= self.xp_for_next() {
+            self.level += 1;
+            self.max_hp += HP_PER_LEVEL;
+            self.hp += HP_PER_LEVEL;
+            let msg = format!(
+                "レベルが上がった！ Lv{} 最大HP {} (HP {}/{})",
+                self.level, self.max_hp, self.hp, self.max_hp
+            );
+            self.note(&msg);
+            self.alert = Some("レベルが上がって中断した。".to_string());
+        }
     }
 
     fn defense(&self) -> i32 {
@@ -910,8 +953,10 @@ impl Game {
             (m.name, m.hp, m.max_hp)
         };
         if hp <= 0 {
-            self.monsters.remove(i);
-            format!("{name}に{dmg}のダメージ。{name}を倒した！")
+            let m = self.monsters.remove(i);
+            let xp = m.kind.xp + self.depth - 1;
+            self.pending_xp += xp;
+            format!("{name}に{dmg}のダメージ。{name}を倒した！ (経験値 +{xp})")
         } else {
             format!("{name}に{dmg}のダメージを与えた。(HP {hp}/{max_hp})")
         }
@@ -1110,6 +1155,10 @@ impl Game {
             }
         };
         self.push_log(&message);
+        let xp = std::mem::take(&mut self.pending_xp);
+        if xp > 0 {
+            self.gain_xp(xp);
+        }
         // 歩いたり転移したりして着いた場所のアイテムを拾う
         if self.pos != pos_before && !self.dead {
             self.pickup_here();
@@ -1335,8 +1384,11 @@ impl Game {
     pub fn observe_text(&self, log_lines: usize) -> String {
         let (atk_lo, atk_hi) = self.attack_range();
         let mut s = format!(
-            "== 地下{}階 / ターン{} / HP {}/{} / 攻撃 {}〜{} / 防御 {} / {} / 位置({},{}) ==\n",
+            "== 地下{}階 / Lv{} (経験値 {}/{}) / ターン{} / HP {}/{} / 攻撃 {}〜{} / 防御 {} / {} / 位置({},{}) ==\n",
             self.depth,
+            self.level,
+            self.xp,
+            self.xp_for_next(),
             self.turn,
             self.hp,
             self.max_hp,
@@ -2405,5 +2457,42 @@ mod tests {
         let o = g.run("explore");
         assert!(g.has_amulet, "{}", o.message);
         assert!(o.message.contains("アミュレット"), "{}", o.message);
+    }
+
+    #[test]
+    fn killing_gives_xp_and_levels_up_with_more_hp_and_attack() {
+        let mut g = with_adjacent_slime(3, 1);
+        g.floor_items.clear();
+        g.hp = 10;
+        assert_eq!((g.level(), g.xp_for_next()), (1, 10));
+        // スライム(基本3)を3体倒すと 9、4体目で 12 ≥ 10 → レベル2
+        let mut text = String::new();
+        for n in 0..4 {
+            g.monsters.clear();
+            g.monsters.push(slime((g.pos.0 + 1, g.pos.1), 1));
+            let o = g.run("attack east");
+            text.push_str(&o.message);
+            assert_eq!(g.level(), if n < 3 { 1 } else { 2 }, "{n} {}", o.message);
+        }
+        assert!(text.contains("経験値 +3") && text.contains("レベルが上がった！ Lv2"), "{text}");
+        assert_eq!(g.max_hp(), PLAYER_MAX_HP + HP_PER_LEVEL);
+        assert!(g.hp() >= 10 + HP_PER_LEVEL - 4, "{}", g.hp());
+        assert!(g.observe_text(3).contains("Lv2"));
+    }
+
+    #[test]
+    fn attack_grows_every_two_levels_and_level_up_stops_auto_walk() {
+        let mut g = quiet(2);
+        assert_eq!(g.attack_range(), (2, 4));
+        g.level = 3;
+        assert_eq!(g.attack_range(), (3, 5));
+        g.level = 1;
+        g.xp = g.xp_for_next() - 1;
+        g.gain_xp(1);
+        assert_eq!(g.level(), 2);
+        assert!(g.alert.is_some());
+        // 一気に複数レベル上がることもある
+        g.gain_xp(1000);
+        assert!(g.level() > 4 && g.xp() < g.xp_for_next());
     }
 }
