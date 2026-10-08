@@ -24,6 +24,11 @@ const MARKERS: &[&str] = &[
     "空腹",
     "アミュレット",
     "レベルが上がった",
+    "呪われていた",
+    "燃え尽きた",
+    "落とし穴に落ちた",
+    "状態になった",
+    "目の前が真っ暗",
     "クリア！",
 ];
 
@@ -227,6 +232,8 @@ mod tests {
             depth,
             turn,
             hp: Some(hp),
+            status_events: vec![],
+            statuses: vec![],
         }
     }
 

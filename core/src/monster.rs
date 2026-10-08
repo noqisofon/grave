@@ -16,6 +16,8 @@ pub struct MonsterKind {
     pub erratic: bool,
     /// 当たると毒を受けることがある
     pub poisons: bool,
+    /// 当たると鎧が錆びる（防具保護の巻物で防げる）
+    pub corrodes: bool,
     /// この深さから現れる
     pub min_depth: u32,
     /// 出やすさ（相対的な重み）
@@ -35,6 +37,7 @@ pub static SLIME: MonsterKind = MonsterKind {
     slow: false,
     erratic: false,
     poisons: false,
+    corrodes: false,
     min_depth: 1,
     weight: 5,
     xp: 3,
@@ -51,6 +54,7 @@ pub static BAT: MonsterKind = MonsterKind {
     slow: false,
     erratic: true,
     poisons: false,
+    corrodes: false,
     min_depth: 1,
     weight: 3,
     xp: 2,
@@ -67,6 +71,7 @@ pub static GOBLIN: MonsterKind = MonsterKind {
     slow: false,
     erratic: false,
     poisons: false,
+    corrodes: false,
     min_depth: 2,
     weight: 3,
     xp: 6,
@@ -83,6 +88,7 @@ pub static OGRE: MonsterKind = MonsterKind {
     slow: true,
     erratic: false,
     poisons: false,
+    corrodes: false,
     min_depth: 4,
     weight: 1,
     xp: 12,
@@ -99,12 +105,30 @@ pub static SPIDER: MonsterKind = MonsterKind {
     slow: false,
     erratic: false,
     poisons: true,
+    corrodes: false,
     min_depth: 3,
     weight: 2,
     xp: 5,
 };
 
-pub static KINDS: [&MonsterKind; 5] = [&SLIME, &BAT, &GOBLIN, &OGRE, &SPIDER];
+/// 弱いが、殴られると鎧が錆びる。
+pub static AQUATOR: MonsterKind = MonsterKind {
+    name: "アクアター",
+    glyph: 'a',
+    base_hp: 7,
+    hp_per_depth: 2,
+    dmg: (1, 1),
+    actions_per_turn: 1,
+    slow: false,
+    erratic: false,
+    poisons: false,
+    corrodes: true,
+    min_depth: 3,
+    weight: 2,
+    xp: 7,
+};
+
+pub static KINDS: [&MonsterKind; 6] = [&SLIME, &BAT, &GOBLIN, &OGRE, &SPIDER, &AQUATOR];
 
 impl MonsterKind {
     pub fn hp_at(&self, depth: u32) -> i32 {
