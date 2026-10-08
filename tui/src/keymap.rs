@@ -20,7 +20,9 @@ impl Keymap {
             ('>', "descend"),
             ('<', "ascend"),
             // 末尾が空白のものは、コマンド行をその文字列で開く（続きを打つ）
-            ('q', "use "),
+            ('q', "quaff "),
+            ('E', "eat "),
+            ('R', "read "),
             ('e', "equip "),
             ('r', "unequip "),
             ('i', "inventory"),

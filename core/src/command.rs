@@ -78,8 +78,12 @@ pub enum Command {
     Descend,
     /// アミュレットを持っているとき、足元の階段で上の階へ登る（地下1階なら地上へ脱出）
     Ascend,
-    /// 持ち物の文字と、（識別の巻物のための）任意の対象
-    Use(char, Option<char>),
+    /// 薬を飲む
+    Quaff(char),
+    /// 食べ物・キノコを食べる
+    Eat(char),
+    /// 巻物を読む。（識別の巻物のための）任意の対象つき
+    Read(char, Option<char>),
     Inventory,
     /// 持ち物の文字の武器・防具を身につける
     Equip(char),
@@ -100,8 +104,10 @@ impl fmt::Display for Command {
             Command::Attack(d) => write!(f, "attack {}", d.name()),
             Command::Descend => write!(f, "descend"),
             Command::Ascend => write!(f, "ascend"),
-            Command::Use(c, None) => write!(f, "use {c}"),
-            Command::Use(c, Some(t)) => write!(f, "use {c} {t}"),
+            Command::Quaff(c) => write!(f, "quaff {c}"),
+            Command::Eat(c) => write!(f, "eat {c}"),
+            Command::Read(c, None) => write!(f, "read {c}"),
+            Command::Read(c, Some(t)) => write!(f, "read {c} {t}"),
             Command::Inventory => write!(f, "inventory"),
             Command::Equip(c) => write!(f, "equip {c}"),
             Command::Unequip(c) => write!(f, "unequip {c}"),
@@ -120,7 +126,9 @@ pub const COMMAND_NAMES: &[&str] = &[
     "attack",
     "descend",
     "ascend",
-    "use",
+    "quaff",
+    "eat",
+    "read",
     "inventory",
     "equip",
     "unequip",
@@ -137,7 +145,9 @@ move <dir>     1歩移動 (north/south/east/west/northeast/northwest/southeast/s
 attack <dir>   その方向の敵を攻撃する (敵がいなければ失敗、ターン消費なし)
 descend        足元の階段で下の階へ降りる (地下30階が最深部。アミュレットを持っていると降りられない)
 ascend         アミュレットを持っているとき、足元の階段で上の階へ登る (地下1階で登ると地上へ脱出してクリア)
-use <文字> [対象]  持ち物を使う (薬は飲む、巻物は読む、食べ物は食べる。eat でも可)。識別の巻物は対象の文字を指定できる
+quaff <文字>   薬を飲む (薬以外には使えない)
+eat <文字>     食べ物・キノコを食べる (食べ物以外には使えない)
+read <文字> [対象]  巻物を読む (巻物以外には使えない)。識別の巻物は対象の文字を指定できる
 inventory      持ち物の一覧 (ターン消費なし。装備中のものには (装備中) と付く)
 equip <文字>   武器や防具を身につける (武器・防具はそれぞれ1つずつ。付け替えもこれ)
 unequip <文字> 装備をはずす
@@ -160,6 +170,13 @@ fn letter_arg(s: &str) -> Option<char> {
         (Some(ch), None) if ch.is_ascii_lowercase() => Some(ch),
         _ => None,
     }
+}
+
+/// 持ち物を扱うコマンドの第1引数（持ち物の文字）。
+fn item_letter(head: &str, args: &[&str]) -> Result<char, String> {
+    args.first()
+        .and_then(|a| letter_arg(a))
+        .ok_or_else(|| format!("{head} には持ち物の文字が必要です (例: {head} a)"))
 }
 
 /// `stay` で一度に留まれるターン数の上限。
@@ -199,17 +216,19 @@ fn parse_body(line: &str) -> Result<Command, String> {
         "descend" | "d" => Ok(Command::Descend),
         "ascend" | "up" => Ok(Command::Ascend),
         "inventory" | "i" => Ok(Command::Inventory),
-        "use" | "u" | "drink" | "read" | "eat" => {
-            let letter = args
-                .first()
-                .and_then(|a| letter_arg(a))
-                .ok_or("use には持ち物の文字が必要です (例: use a)")?;
+        "quaff" | "drink" => Ok(Command::Quaff(item_letter(head, &args)?)),
+        "eat" => Ok(Command::Eat(item_letter(head, &args)?)),
+        "read" => {
+            let letter = item_letter(head, &args)?;
             let target = match args.get(1) {
                 Some(a) => Some(letter_arg(a).ok_or_else(|| format!("不正な対象: {a}"))?),
                 None => None,
             };
-            Ok(Command::Use(letter, target))
+            Ok(Command::Read(letter, target))
         }
+        "use" | "u" => Err(
+            "use はない。薬は quaff、食べ物は eat、巻物は read、装備は equip を使う".to_string(),
+        ),
         "equip" | "e" | "wield" | "wear" | "unequip" | "r" | "remove" => {
             let equip = matches!(head, "equip" | "e" | "wield" | "wear");
             let letter = args
@@ -257,6 +276,17 @@ mod tests {
     }
 
     #[test]
+    fn item_commands_are_separate_and_use_is_gone() {
+        assert_eq!(parse("quaff b"), Ok(Command::Quaff('b')));
+        assert_eq!(parse("eat c"), Ok(Command::Eat('c')));
+        assert_eq!(parse("read d"), Ok(Command::Read('d', None)));
+        assert_eq!(parse("read d a"), Ok(Command::Read('d', Some('a'))));
+        assert!(parse("quaff").is_err());
+        assert!(parse("use a").unwrap_err().contains("quaff"));
+        assert!(parse("u a").is_err());
+    }
+
+    #[test]
     fn stay_takes_an_optional_turn_count() {
         assert_eq!(parse("stay"), Ok(Command::Stay(1)));
         assert_eq!(parse("stay 4"), Ok(Command::Stay(4)));
@@ -286,8 +316,10 @@ mod tests {
         for c in [
             Command::Descend,
             Command::Ascend,
-            Command::Use('a', None),
-            Command::Use('b', Some('a')),
+            Command::Quaff('a'),
+            Command::Eat('b'),
+            Command::Read('c', None),
+            Command::Read('c', Some('a')),
             Command::Inventory,
             Command::Equip('c'),
             Command::Unequip('c'),

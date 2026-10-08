@@ -167,6 +167,24 @@ fn rel_text(from: (i32, i32), to: (i32, i32)) -> String {
     parts.join("、")
 }
 
+/// 持ち物を消費する行動の種類（`quaff` / `eat` / `read`）。
+#[derive(Clone, Copy)]
+enum Consume {
+    Quaff,
+    Eat,
+    Read,
+}
+
+impl Consume {
+    fn noun(self) -> &'static str {
+        match self {
+            Consume::Quaff => "薬を飲む",
+            Consume::Eat => "食べる",
+            Consume::Read => "巻物を読む",
+        }
+    }
+}
+
 impl Game {
     pub fn new(seed: u64) -> Game {
         let mut rng = Rng::new(seed);
@@ -423,14 +441,33 @@ impl Game {
             .collect()
     }
 
-    /// 持ち物を使う。(成功か, メッセージ, 1ターン消費するか)
-    fn use_item(&mut self, letter: char, target: Option<char>) -> (bool, String, bool) {
+    /// 薬を飲む・食べる・巻物を読む。種類が合わないものは失敗（ターン消費なし）。
+    /// (成功か, メッセージ, 1ターン消費するか)
+    fn consume(&mut self, letter: char, target: Option<char>, how: Consume) -> (bool, String, bool) {
         let Some(si) = self.inventory.iter().position(|s| s.letter == letter) else {
             return (false, format!("持ち物 {letter} はない。"), false);
         };
         let kind = self.inventory[si].kind;
-        if kind.is_equipment() {
-            return self.equip(letter);
+        let fits = match how {
+            Consume::Quaff => kind.is_potion(),
+            Consume::Eat => kind.is_food() || kind.is_mushroom(),
+            Consume::Read => kind.is_scroll(),
+        };
+        if !fits {
+            let (is, instead) = if kind.is_potion() {
+                ("薬", "quaff")
+            } else if kind.is_scroll() {
+                ("巻物", "read")
+            } else if kind.is_equipment() {
+                ("装備品", "equip")
+            } else {
+                ("食べ物", "eat")
+            };
+            return (
+                false,
+                format!("{letter} は{is}だ。{}ではなく {instead} を使う。", how.noun()),
+                false,
+            );
         }
         let k = kind.index();
         let was_known = self.known[k];
@@ -532,7 +569,7 @@ impl Game {
             | ItemKind::Axe
             | ItemKind::Leather
             | ItemKind::Chain
-            | ItemKind::Plate => return self.equip(letter),
+            | ItemKind::Plate => return (false, format!("{letter} は装備品だ。"), false),
             ItemKind::Identify => {
                 let ti = match target {
                     Some(t) if t == letter => {
@@ -1132,7 +1169,9 @@ impl Game {
                 let (ok, msg) = self.stay(n);
                 (ok, msg, false)
             }
-            Command::Use(letter, target) => self.use_item(letter, target),
+            Command::Quaff(letter) => self.consume(letter, None, Consume::Quaff),
+            Command::Eat(letter) => self.consume(letter, None, Consume::Eat),
+            Command::Read(letter, target) => self.consume(letter, target, Consume::Read),
             Command::Equip(letter) => self.equip(letter),
             Command::Unequip(letter) => self.unequip(letter),
             Command::Inventory => {
@@ -1533,13 +1572,31 @@ mod tests {
     }
 
     #[test]
-    fn use_on_gear_equips_and_non_gear_cannot_be_equipped() {
+    fn equip_only_takes_gear_and_consumables_need_the_matching_verb() {
         let mut g = with_gear(&[ItemKind::Plate, ItemKind::Healing]);
-        assert!(g.run("use a").message.contains("板金鎧を装備した"));
+        assert!(g.run("equip a").message.contains("板金鎧を装備した"));
         let o = g.run("equip b");
         assert!(!o.ok);
         assert!(!g.run("unequip b").ok);
         assert!(!g.run("equip z").ok);
+
+        // 種類の合わない動詞は、ターンを使わず失敗する
+        let mut g = with_gear(&[ItemKind::Plate, ItemKind::Healing, ItemKind::Bread, ItemKind::Teleport]);
+        let turn = g.turn();
+        for (cmd, hint) in [
+            ("quaff a", "equip"),
+            ("eat b", "quaff"),
+            ("read b", "quaff"),
+            ("quaff c", "eat"),
+            ("read c", "eat"),
+            ("eat d", "read"),
+            ("quaff d", "read"),
+            ("eat a", "equip"),
+        ] {
+            let o = g.run(cmd);
+            assert!(!o.ok && o.message.contains(hint), "{cmd}: {}", o.message);
+        }
+        assert_eq!(g.turn(), turn);
     }
 
     #[test]
@@ -1739,7 +1796,7 @@ mod tests {
 
         let mut g = with_gear(&[ItemKind::Healing]);
         g.poison = 9;
-        let o = g.run("use a");
+        let o = g.run("quaff a");
         assert!(o.message.contains("毒が抜けた"), "{}", o.message);
         assert_eq!(g.poison, 0);
     }
@@ -1761,7 +1818,7 @@ mod tests {
             let mut g = with_gear(&[ItemKind::Bread]);
             g.rng = Rng::new(seed);
             g.food = 100;
-            let o = g.run("use a");
+            let o = g.run("eat a");
             assert!(o.ok);
             if o.message.contains("腐っていた") {
                 rotten += 1;
@@ -1778,7 +1835,7 @@ mod tests {
     fn eating_is_capped_at_full() {
         let mut g = with_gear(&[ItemKind::Jerky]);
         g.food = MAX_FOOD - 10;
-        let o = g.run("use a");
+        let o = g.run("eat a");
         assert!(o.message.contains("満腹度が10回復"), "{}", o.message);
         assert!(g.food <= MAX_FOOD);
     }
@@ -1790,12 +1847,12 @@ mod tests {
         assert!(lines.iter().all(|l| l.contains("キノコ") && l.contains("未識別")), "{lines:?}");
         assert!(lines.iter().all(|l| !l.contains("毒キノコ") && !l.contains("元気")));
         let mut g = with_gear(&[ItemKind::PoisonShroom]);
-        let o = g.run("use a");
+        let o = g.run("eat a");
         assert!(o.message.contains("これは毒キノコだった"), "{}", o.message);
         assert!(g.poison >= 7, "{}", g.poison);
         let mut g = with_gear(&[ItemKind::VigorShroom]);
         g.hp = 5;
-        let o = g.run("use a");
+        let o = g.run("eat a");
         assert!(o.message.contains("これは元気キノコだった") && g.hp() >= 12, "{}", o.message);
         assert!(g.known[ItemKind::VigorShroom.index()]);
     }
@@ -2162,8 +2219,8 @@ mod tests {
         // a を使い切っても b の文字は変わらない
         g.known[ItemKind::Poison.index()] = true;
         g.hp = 20;
-        g.run("use a");
-        g.run("use a");
+        g.run("quaff a");
+        g.run("quaff a");
         assert_eq!(g.inventory.len(), 1);
         assert_eq!(g.inventory[0].letter, 'b');
     }
@@ -2174,31 +2231,31 @@ mod tests {
         g.take(ItemKind::Healing);
         g.take(ItemKind::Healing);
         g.hp = 5;
-        let o = g.run("use a");
+        let o = g.run("quaff a");
         assert!(o.ok);
         assert_eq!(g.hp(), 15);
         assert!(g.known[ItemKind::Healing.index()]);
         assert!(o.message.contains("回復の薬だった"), "{}", o.message);
-        let o = g.run("use a");
+        let o = g.run("quaff a");
         assert!(o.ok);
         assert!(!o.message.contains("だった！"));
         assert_eq!(g.hp(), 20);
         assert!(g.inventory.is_empty());
-        assert!(!g.run("use a").ok);
+        assert!(!g.run("quaff a").ok);
     }
 
     #[test]
     fn poison_hurts_and_can_kill() {
         let mut g = quiet(1);
         g.take(ItemKind::Poison);
-        let o = g.run("use a");
+        let o = g.run("quaff a");
         assert!(o.ok);
         assert_eq!(g.hp(), 15);
 
         let mut g = quiet(1);
         g.take(ItemKind::Poison);
         g.hp = 5;
-        let o = g.run("use a");
+        let o = g.run("quaff a");
         assert!(g.is_dead());
         assert!(o.message.contains("ゲームオーバー"));
     }
@@ -2209,7 +2266,7 @@ mod tests {
         g.floor_items.clear();
         g.take(ItemKind::Sleep);
         let t = g.turn();
-        let o = g.run("use a");
+        let o = g.run("quaff a");
         assert!(o.ok);
         assert_eq!(g.turn(), t + 5);
         assert!(g.hp() < g.max_hp());
@@ -2221,7 +2278,7 @@ mod tests {
         let mut g = quiet(1);
         g.take(ItemKind::Healing); // a
         g.take(ItemKind::Identify); // b
-        let o = g.run("use b");
+        let o = g.run("read b");
         assert!(o.ok, "{}", o.message);
         assert!(g.known[ItemKind::Healing.index()]);
         assert!(g.known[ItemKind::Identify.index()]);
@@ -2236,13 +2293,13 @@ mod tests {
         g.take(ItemKind::Healing); // a
         g.take(ItemKind::Poison); // b
         g.take(ItemKind::Identify); // c
-        let o = g.run("use c b");
+        let o = g.run("read c b");
         assert!(o.ok, "{}", o.message);
         assert!(g.known[ItemKind::Poison.index()]);
         assert!(!g.known[ItemKind::Healing.index()]);
         // すでに識別済みの対象は選べない
         g.take(ItemKind::Identify);
-        let o = g.run("use c b");
+        let o = g.run("read c b");
         assert!(!o.ok);
     }
 
@@ -2251,7 +2308,7 @@ mod tests {
         // 正体を知らない巻物は、読むと消費して正体だけ分かる
         let mut g = quiet(1);
         g.take(ItemKind::Identify);
-        let o = g.run("use a");
+        let o = g.run("read a");
         assert!(o.ok);
         assert!(o.message.contains("何も起こらなかった"));
         assert!(g.inventory.is_empty());
@@ -2260,7 +2317,7 @@ mod tests {
         g.take(ItemKind::Identify);
         g.known[ItemKind::Identify.index()] = true;
         let t = g.turn();
-        let o = g.run("use a");
+        let o = g.run("read a");
         assert!(!o.ok);
         assert_eq!(g.inventory.len(), 1);
         assert_eq!(g.turn(), t);
@@ -2271,7 +2328,7 @@ mod tests {
         let mut g = quiet(1);
         g.take(ItemKind::Teleport);
         let old = g.pos;
-        assert!(g.run("use a").ok);
+        assert!(g.run("read a").ok);
         assert_ne!(g.pos, old);
         assert!(g.map.tile(g.pos.0, g.pos.1).walkable());
     }
@@ -2285,7 +2342,7 @@ mod tests {
                 continue;
             }
             g.take(ItemKind::MagicMap);
-            assert!(g.run("use a").ok);
+            assert!(g.run("read a").ok);
             assert!(g.map.is_seen(g.stairs.0, g.stairs.1));
             let o = g.run("travel >");
             assert!(o.ok, "seed {seed}: {}", o.message);
@@ -2344,7 +2401,7 @@ mod tests {
         g.hp = 3;
         g.poison = 4;
         let t = g.turn();
-        let o = g.run("use a");
+        let o = g.run("quaff a");
         assert!(g.is_dead());
         assert_eq!(g.turn(), t, "{}", o.message);
         assert_eq!(o.message.matches("ゲームオーバー").count(), 1, "{}", o.message);
