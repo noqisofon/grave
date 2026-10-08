@@ -1678,6 +1678,64 @@ mod tests {
 
     }
 
+    /// `stay` の結果メッセージ（「Nターン留まった…」）から N を取り出す。
+    fn reported_stay_turns(message: &str) -> u32 {
+        let head = message.split("ターン留まった").next().unwrap();
+        head.chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>()
+            .parse()
+            .unwrap_or_else(|_| panic!("ターン数が読めない: {message}"))
+    }
+
+    #[test]
+    fn stay_advances_exactly_the_reported_number_of_turns() {
+        // 敵のいる本物のゲームで何度も stay する。中断されても、されなくても、
+        // 進んだターン数は報告された数と一致し、指定数を超えない
+        for seed in 0..40 {
+            let mut g = Game::new(seed);
+            for _ in 0..8 {
+                if g.is_dead() {
+                    break;
+                }
+                let t = g.turn();
+                let o = g.run("stay 4");
+                assert!(o.ok, "seed {seed}: {}", o.message);
+                let n = reported_stay_turns(&o.message);
+                assert!((1..=4).contains(&n), "seed {seed}: {}", o.message);
+                assert_eq!(g.turn() - t, n, "seed {seed}: {}", o.message);
+            }
+        }
+    }
+
+    #[test]
+    fn interrupted_stay_counts_the_interrupting_turn_once() {
+        // 攻撃を受けた回のターンは「留まったターン」に1回だけ数える
+        for limit in [1, 2, 5, 10] {
+            let mut g = with_adjacent(3, &crate::monster::GOBLIN);
+            let t = g.turn();
+            let o = g.run(&format!("stay {limit}"));
+            let n = reported_stay_turns(&o.message);
+            assert!(o.message.contains("攻撃を受けて中断した"), "{}", o.message);
+            assert_eq!(g.turn() - t, n, "limit {limit}: {}", o.message);
+            assert!(n <= limit);
+        }
+    }
+
+    #[test]
+    fn failed_stay_spends_no_turn() {
+        let mut g = quiet(1);
+        let t = g.turn();
+        for bad in ["stay 0", "stay -1", "stay many", "stay 1001"] {
+            assert!(!g.run(bad).ok, "{bad}");
+        }
+        assert_eq!(g.turn(), t);
+    }
+
     #[test]
     fn stay_picks_up_the_item_underfoot_but_wait_does_not() {
         let mut g = quiet(1);
