@@ -93,9 +93,7 @@ fn keep_thought(id: usize, total: usize) -> bool {
     if total <= MAX_THOUGHTS {
         return true;
     }
-    id == 0
-        || id == total - 1
-        || (id * MAX_THOUGHTS) / total != ((id + 1) * MAX_THOUGHTS) / total
+    id == 0 || id == total - 1 || (id * MAX_THOUGHTS) / total != ((id + 1) * MAX_THOUGHTS) / total
 }
 
 /// 冒険の素材をマークダウンでまとめる。
@@ -169,7 +167,10 @@ pub fn digest(events: &[Event]) -> String {
     let mut out = String::from("# 冒険の記録\n\n");
     let status = match death {
         Some((d, t)) => format!("力尽きた (地下{d}階, ターン{t})"),
-        None if cleared.is_some() => format!("クリア (アミュレットを持って地上へ脱出, ターン{})", cleared.unwrap()),
+        None if cleared.is_some() => format!(
+            "クリア (アミュレットを持って地上へ脱出, ターン{})",
+            cleared.unwrap()
+        ),
         None => match last.2 {
             Some(h) => format!("生存中 (HP {h})"),
             None => "生存中".to_string(),
@@ -223,7 +224,14 @@ mod tests {
     use super::*;
     use crate::game::Game;
 
-    fn cmd(command: &str, message: &str, thought: Option<&str>, depth: u32, turn: u32, hp: i32) -> Event {
+    fn cmd(
+        command: &str,
+        message: &str,
+        thought: Option<&str>,
+        depth: u32,
+        turn: u32,
+        hp: i32,
+    ) -> Event {
         Event::Command {
             command: command.into(),
             thought: thought.map(str::to_string),
@@ -267,7 +275,17 @@ mod tests {
 
     #[test]
     fn digest_only_covers_the_latest_game() {
-        let mut evs = vec![Event::new_game(1), cmd("explore", "古いゲームの出来事。スライムを倒した！", None, 1, 5, 20)];
+        let mut evs = vec![
+            Event::new_game(1),
+            cmd(
+                "explore",
+                "古いゲームの出来事。スライムを倒した！",
+                None,
+                1,
+                5,
+                20,
+            ),
+        ];
         evs.extend(sample());
         let d = digest(&evs);
         assert!(!d.contains("古いゲーム"));
@@ -278,7 +296,14 @@ mod tests {
     fn thoughts_are_thinned_but_keep_both_ends() {
         let mut evs = vec![Event::new_game(1)];
         for i in 0..200u32 {
-            evs.push(cmd("wait", "1ターン待った。", Some(&format!("考え{i}")), 1, i + 1, 20));
+            evs.push(cmd(
+                "wait",
+                "1ターン待った。",
+                Some(&format!("考え{i}")),
+                1,
+                i + 1,
+                20,
+            ));
         }
         let d = digest(&evs);
         let n = d.matches("- [").count();
@@ -293,7 +318,14 @@ mod tests {
         evs.push(cmd("explore", "3歩探索した。", Some("探索する"), 1, 3, 20));
         // ターンが進まないまま、同じ思考で同じコマンドを繰り返す
         for _ in 0..50 {
-            evs.push(cmd("explore", "もう探索する場所がない。", Some("探索する"), 1, 3, 20));
+            evs.push(cmd(
+                "explore",
+                "もう探索する場所がない。",
+                Some("探索する"),
+                1,
+                3,
+                20,
+            ));
         }
         evs.push(cmd("wait", "1ターン待った。", Some("待つ"), 1, 4, 20));
         evs.push(cmd("wait", "1ターン待った。", Some("探索する"), 1, 5, 20));
@@ -306,9 +338,13 @@ mod tests {
     fn journals_belong_to_the_latest_game() {
         let evs = vec![
             Event::new_game(1),
-            Event::Journal { text: "古い日誌".into() },
+            Event::Journal {
+                text: "古い日誌".into(),
+            },
             Event::new_game(2),
-            Event::Journal { text: "新しい日誌".into() },
+            Event::Journal {
+                text: "新しい日誌".into(),
+            },
         ];
         assert_eq!(journal_texts(&evs), vec!["新しい日誌"]);
     }

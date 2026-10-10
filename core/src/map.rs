@@ -119,7 +119,12 @@ impl Map {
         }
 
         if rooms.is_empty() {
-            let r = Rect { x: 5, y: 5, w: 10, h: 5 };
+            let r = Rect {
+                x: 5,
+                y: 5,
+                w: 10,
+                h: 5,
+            };
             for yy in r.y..r.y + r.h {
                 for xx in r.x..r.x + r.w {
                     tiles[idx(xx, yy)] = Tile::Floor;

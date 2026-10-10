@@ -141,8 +141,12 @@ impl RingEffect {
         match self {
             RingEffect::Protection => format!("防御{n:+}"),
             RingEffect::Strength => format!("腕力{n:+}"),
-            RingEffect::Dexterity if n >= 0 => format!("敵の攻撃を{}%の確率でかわす", (10 * n).min(50)),
-            RingEffect::Dexterity => format!("こちらの攻撃が{}%の確率で空振りする", (-10 * n).min(30)),
+            RingEffect::Dexterity if n >= 0 => {
+                format!("敵の攻撃を{}%の確率でかわす", (10 * n).min(50))
+            }
+            RingEffect::Dexterity => {
+                format!("こちらの攻撃が{}%の確率で空振りする", (-10 * n).min(30))
+            }
             RingEffect::Damage => format!("攻撃{n:+}"),
             RingEffect::Regeneration => "HPの自然回復が速くなる(敵がいても回復する)".to_string(),
             RingEffect::SlowDigestion => format!("満腹度の減りが{}分の1になる", n + 1),
@@ -159,7 +163,10 @@ impl RingEffect {
     pub fn has_magnitude(self) -> bool {
         !matches!(
             self,
-            RingEffect::Trinket | RingEffect::Aggravate | RingEffect::Teleportitis | RingEffect::SeeInvisible
+            RingEffect::Trinket
+                | RingEffect::Aggravate
+                | RingEffect::Teleportitis
+                | RingEffect::SeeInvisible
         )
     }
 }
@@ -229,7 +236,10 @@ pub struct Zap {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Effect {
     /// HPを回復する。回復しきって余ったら最大HPが `max_up` 増える
-    Heal { amount: i32, max_up: i32 },
+    Heal {
+        amount: i32,
+        max_up: i32,
+    },
     /// ダメージを受ける（毒の薬）
     Damage(i32),
     /// 腕力を下げる（最低3）
@@ -244,7 +254,11 @@ pub enum Effect {
     /// 自分に状態を付ける（ターン数）
     SelfStatus(Status, u32),
     /// 見えている敵（`radius` マス以内）に状態を付ける
-    MonstersStatus { status: Status, turns: u32, radius: i32 },
+    MonstersStatus {
+        status: Status,
+        turns: u32,
+        radius: i32,
+    },
     DetectMonsters,
     DetectItems,
     MagicMap,
@@ -291,7 +305,18 @@ const fn def(
     bad: bool,
     effects: &'static [Effect],
 ) -> ItemDef {
-    ItemDef { kind, name, class, weight, min_depth, effects, bad, zap: None, ring: None, light: None }
+    ItemDef {
+        kind,
+        name,
+        class,
+        weight,
+        min_depth,
+        effects,
+        bad,
+        zap: None,
+        ring: None,
+        light: None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -319,7 +344,14 @@ const fn wand(
     }
 }
 
-const fn ring(kind: ItemKind, name: &'static str, weight: u32, effect: RingEffect, cursable: bool, always_cursed: bool) -> ItemDef {
+const fn ring(
+    kind: ItemKind,
+    name: &'static str,
+    weight: u32,
+    effect: RingEffect,
+    cursable: bool,
+    always_cursed: bool,
+) -> ItemDef {
     ItemDef {
         kind,
         name,
@@ -329,12 +361,23 @@ const fn ring(kind: ItemKind, name: &'static str, weight: u32, effect: RingEffec
         effects: &[],
         bad: always_cursed,
         zap: None,
-        ring: Some(RingDef { effect, cursable, always_cursed }),
+        ring: Some(RingDef {
+            effect,
+            cursable,
+            always_cursed,
+        }),
         light: None,
     }
 }
 
-const fn light(kind: ItemKind, name: &'static str, weight: u32, min_depth: u32, max_fuel: i32, refillable: bool) -> ItemDef {
+const fn light(
+    kind: ItemKind,
+    name: &'static str,
+    weight: u32,
+    min_depth: u32,
+    max_fuel: i32,
+    refillable: bool,
+) -> ItemDef {
     ItemDef {
         kind,
         name,
@@ -345,12 +388,22 @@ const fn light(kind: ItemKind, name: &'static str, weight: u32, min_depth: u32, 
         bad: false,
         zap: None,
         ring: None,
-        light: Some(LightDef { max_fuel, refillable }),
+        light: Some(LightDef {
+            max_fuel,
+            refillable,
+        }),
     }
 }
 
 const fn bolt(lo: i32, hi: i32, text: &'static str) -> ZapFx {
-    ZapFx::Damage { lo, hi, beam: false, drain: false, then: None, text }
+    ZapFx::Damage {
+        lo,
+        hi,
+        beam: false,
+        drain: false,
+        then: None,
+        text,
+    }
 }
 
 use Class::{Armor, Food, Mushroom, Potion, Scroll, Weapon};
@@ -359,31 +412,227 @@ use Effect as E;
 /// 全アイテムの表。`ItemKind` の並びと同じ順で書く（テストが確かめる）。
 pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
     // 薬（良い）
-    def(ItemKind::Healing, "回復の薬", Potion, 5, 1, false, &[E::Heal { amount: 10, max_up: 0 }, E::Cure(Status::Poisoned)]),
-    def(ItemKind::ExtraHealing, "大回復の薬", Potion, 2, 3, false, &[E::Heal { amount: 30, max_up: 2 }, E::Cure(Status::Poisoned)]),
-    def(ItemKind::Strength, "力の薬", Potion, 2, 2, false, &[E::GainStrength(1)]),
-    def(ItemKind::Experience, "レベルアップの薬", Potion, 1, 2, false, &[E::LevelUp]),
-    def(ItemKind::RestoreStrength, "力回復の薬", Potion, 2, 1, false, &[E::RestoreStrength]),
-    def(ItemKind::Haste, "加速の薬", Potion, 2, 2, false, &[E::SelfStatus(Status::Hasted, 25)]),
-    def(ItemKind::DetectMonsters, "モンスター探知の薬", Potion, 3, 1, false, &[E::DetectMonsters]),
-    def(ItemKind::DetectItems, "アイテム探知の薬", Potion, 3, 1, false, &[E::DetectItems]),
-    def(ItemKind::SeeInvisible, "透明視認の薬", Potion, 2, 1, false, &[E::SelfStatus(Status::SeeInvisible, 150)]),
-    def(ItemKind::Levitation, "浮遊の薬", Potion, 2, 1, false, &[E::SelfStatus(Status::Levitating, 30)]),
-    def(ItemKind::Antidote, "解毒の薬", Potion, 3, 1, false, &[E::Cure(Status::Poisoned)]),
+    def(
+        ItemKind::Healing,
+        "回復の薬",
+        Potion,
+        5,
+        1,
+        false,
+        &[
+            E::Heal {
+                amount: 10,
+                max_up: 0,
+            },
+            E::Cure(Status::Poisoned),
+        ],
+    ),
+    def(
+        ItemKind::ExtraHealing,
+        "大回復の薬",
+        Potion,
+        2,
+        3,
+        false,
+        &[
+            E::Heal {
+                amount: 30,
+                max_up: 2,
+            },
+            E::Cure(Status::Poisoned),
+        ],
+    ),
+    def(
+        ItemKind::Strength,
+        "力の薬",
+        Potion,
+        2,
+        2,
+        false,
+        &[E::GainStrength(1)],
+    ),
+    def(
+        ItemKind::Experience,
+        "レベルアップの薬",
+        Potion,
+        1,
+        2,
+        false,
+        &[E::LevelUp],
+    ),
+    def(
+        ItemKind::RestoreStrength,
+        "力回復の薬",
+        Potion,
+        2,
+        1,
+        false,
+        &[E::RestoreStrength],
+    ),
+    def(
+        ItemKind::Haste,
+        "加速の薬",
+        Potion,
+        2,
+        2,
+        false,
+        &[E::SelfStatus(Status::Hasted, 25)],
+    ),
+    def(
+        ItemKind::DetectMonsters,
+        "モンスター探知の薬",
+        Potion,
+        3,
+        1,
+        false,
+        &[E::DetectMonsters],
+    ),
+    def(
+        ItemKind::DetectItems,
+        "アイテム探知の薬",
+        Potion,
+        3,
+        1,
+        false,
+        &[E::DetectItems],
+    ),
+    def(
+        ItemKind::SeeInvisible,
+        "透明視認の薬",
+        Potion,
+        2,
+        1,
+        false,
+        &[E::SelfStatus(Status::SeeInvisible, 150)],
+    ),
+    def(
+        ItemKind::Levitation,
+        "浮遊の薬",
+        Potion,
+        2,
+        1,
+        false,
+        &[E::SelfStatus(Status::Levitating, 30)],
+    ),
+    def(
+        ItemKind::Antidote,
+        "解毒の薬",
+        Potion,
+        3,
+        1,
+        false,
+        &[E::Cure(Status::Poisoned)],
+    ),
     // 薬（悪い）
-    def(ItemKind::Confusion, "混乱の薬", Potion, 2, 1, true, &[E::SelfStatus(Status::Confused, 12)]),
-    def(ItemKind::Hallucination, "幻覚の薬", Potion, 2, 1, true, &[E::SelfStatus(Status::Hallucinating, 60)]),
-    def(ItemKind::Poison, "毒の薬", Potion, 2, 1, true, &[E::Damage(5), E::LoseStrength(2)]),
-    def(ItemKind::Blindness, "盲目の薬", Potion, 2, 1, true, &[E::SelfStatus(Status::Blind, 25)]),
-    def(ItemKind::Sleep, "眠りの薬", Potion, 2, 1, true, &[E::SelfStatus(Status::Asleep, 5)]),
+    def(
+        ItemKind::Confusion,
+        "混乱の薬",
+        Potion,
+        2,
+        1,
+        true,
+        &[E::SelfStatus(Status::Confused, 12)],
+    ),
+    def(
+        ItemKind::Hallucination,
+        "幻覚の薬",
+        Potion,
+        2,
+        1,
+        true,
+        &[E::SelfStatus(Status::Hallucinating, 60)],
+    ),
+    def(
+        ItemKind::Poison,
+        "毒の薬",
+        Potion,
+        2,
+        1,
+        true,
+        &[E::Damage(5), E::LoseStrength(2)],
+    ),
+    def(
+        ItemKind::Blindness,
+        "盲目の薬",
+        Potion,
+        2,
+        1,
+        true,
+        &[E::SelfStatus(Status::Blind, 25)],
+    ),
+    def(
+        ItemKind::Sleep,
+        "眠りの薬",
+        Potion,
+        2,
+        1,
+        true,
+        &[E::SelfStatus(Status::Asleep, 5)],
+    ),
     // 巻物
-    def(ItemKind::Identify, "識別の巻物", Scroll, 5, 1, false, &[E::Identify]),
-    def(ItemKind::MagicMap, "地図の巻物", Scroll, 3, 1, false, &[E::MagicMap]),
-    def(ItemKind::Teleport, "転移の巻物", Scroll, 2, 1, false, &[E::Teleport]),
-    def(ItemKind::EnchantWeapon, "武器強化の巻物", Scroll, 3, 1, false, &[E::EnchantWeapon]),
-    def(ItemKind::EnchantArmor, "防具強化の巻物", Scroll, 3, 1, false, &[E::EnchantArmor]),
-    def(ItemKind::RemoveCurse, "呪い解除の巻物", Scroll, 2, 1, false, &[E::RemoveCurse]),
-    def(ItemKind::ProtectArmor, "防具保護の巻物", Scroll, 1, 2, false, &[E::ProtectArmor]),
+    def(
+        ItemKind::Identify,
+        "識別の巻物",
+        Scroll,
+        5,
+        1,
+        false,
+        &[E::Identify],
+    ),
+    def(
+        ItemKind::MagicMap,
+        "地図の巻物",
+        Scroll,
+        3,
+        1,
+        false,
+        &[E::MagicMap],
+    ),
+    def(
+        ItemKind::Teleport,
+        "転移の巻物",
+        Scroll,
+        2,
+        1,
+        false,
+        &[E::Teleport],
+    ),
+    def(
+        ItemKind::EnchantWeapon,
+        "武器強化の巻物",
+        Scroll,
+        3,
+        1,
+        false,
+        &[E::EnchantWeapon],
+    ),
+    def(
+        ItemKind::EnchantArmor,
+        "防具強化の巻物",
+        Scroll,
+        3,
+        1,
+        false,
+        &[E::EnchantArmor],
+    ),
+    def(
+        ItemKind::RemoveCurse,
+        "呪い解除の巻物",
+        Scroll,
+        2,
+        1,
+        false,
+        &[E::RemoveCurse],
+    ),
+    def(
+        ItemKind::ProtectArmor,
+        "防具保護の巻物",
+        Scroll,
+        1,
+        2,
+        false,
+        &[E::ProtectArmor],
+    ),
     def(
         ItemKind::ConfuseMonster,
         "モンスター混乱の巻物",
@@ -391,7 +640,11 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
         2,
         1,
         false,
-        &[E::MonstersStatus { status: Status::Confused, turns: 15, radius: ALL_IN_SIGHT }],
+        &[E::MonstersStatus {
+            status: Status::Confused,
+            turns: 15,
+            radius: ALL_IN_SIGHT,
+        }],
     ),
     def(
         ItemKind::HoldMonster,
@@ -400,7 +653,11 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
         2,
         2,
         false,
-        &[E::MonstersStatus { status: Status::Paralyzed, turns: 8, radius: 2 }],
+        &[E::MonstersStatus {
+            status: Status::Paralyzed,
+            turns: 8,
+            radius: 2,
+        }],
     ),
     def(
         ItemKind::ScareMonster,
@@ -409,14 +666,60 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
         2,
         1,
         false,
-        &[E::MonstersStatus { status: Status::Scared, turns: 20, radius: ALL_IN_SIGHT }],
+        &[E::MonstersStatus {
+            status: Status::Scared,
+            turns: 20,
+            radius: ALL_IN_SIGHT,
+        }],
     ),
-    def(ItemKind::CreateMonster, "モンスター生成の巻物", Scroll, 1, 2, true, &[E::CreateMonster]),
-    def(ItemKind::Aggravate, "怒りの巻物", Scroll, 1, 2, true, &[E::Aggravate]),
-    def(ItemKind::Slumber, "睡眠の巻物", Scroll, 1, 1, true, &[E::SelfStatus(Status::Asleep, 6)]),
+    def(
+        ItemKind::CreateMonster,
+        "モンスター生成の巻物",
+        Scroll,
+        1,
+        2,
+        true,
+        &[E::CreateMonster],
+    ),
+    def(
+        ItemKind::Aggravate,
+        "怒りの巻物",
+        Scroll,
+        1,
+        2,
+        true,
+        &[E::Aggravate],
+    ),
+    def(
+        ItemKind::Slumber,
+        "睡眠の巻物",
+        Scroll,
+        1,
+        1,
+        true,
+        &[E::SelfStatus(Status::Asleep, 6)],
+    ),
     // 杖
-    wand(ItemKind::WandLight, "光の杖", 2, 1, false, (6, 10), true, ZapFx::Light),
-    wand(ItemKind::WandInvisibility, "透明化の杖", 1, 2, true, (3, 6), true, ZapFx::Afflict(Status::Invisible, 400)),
+    wand(
+        ItemKind::WandLight,
+        "光の杖",
+        2,
+        1,
+        false,
+        (6, 10),
+        true,
+        ZapFx::Light,
+    ),
+    wand(
+        ItemKind::WandInvisibility,
+        "透明化の杖",
+        1,
+        2,
+        true,
+        (3, 6),
+        true,
+        ZapFx::Afflict(Status::Invisible, 400),
+    ),
     wand(
         ItemKind::WandLightning,
         "雷の杖",
@@ -425,9 +728,25 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
         false,
         (3, 5),
         true,
-        ZapFx::Damage { lo: 6, hi: 10, beam: true, drain: false, then: None, text: "稲妻が走り" },
+        ZapFx::Damage {
+            lo: 6,
+            hi: 10,
+            beam: true,
+            drain: false,
+            then: None,
+            text: "稲妻が走り",
+        },
     ),
-    wand(ItemKind::WandFire, "火の杖", 1, 3, false, (3, 5), true, bolt(7, 12, "炎が噴き出し")),
+    wand(
+        ItemKind::WandFire,
+        "火の杖",
+        1,
+        3,
+        false,
+        (3, 5),
+        true,
+        bolt(7, 12, "炎が噴き出し"),
+    ),
     wand(
         ItemKind::WandCold,
         "冷気の杖",
@@ -436,12 +755,55 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
         false,
         (3, 5),
         true,
-        ZapFx::Damage { lo: 4, hi: 7, beam: false, drain: false, then: Some((Status::Slowed, 10)), text: "凍てつく冷気が走り" },
+        ZapFx::Damage {
+            lo: 4,
+            hi: 7,
+            beam: false,
+            drain: false,
+            then: Some((Status::Slowed, 10)),
+            text: "凍てつく冷気が走り",
+        },
     ),
-    wand(ItemKind::WandPolymorph, "変身の杖", 1, 2, true, (3, 5), true, ZapFx::Polymorph),
-    wand(ItemKind::WandMissile, "魔法の矢の杖", 3, 1, false, (6, 10), true, bolt(2, 6, "魔法の矢が飛び")),
-    wand(ItemKind::WandHaste, "敵加速の杖", 1, 2, true, (3, 6), true, ZapFx::Afflict(Status::Hasted, 30)),
-    wand(ItemKind::WandSlow, "敵減速の杖", 2, 1, false, (4, 7), true, ZapFx::Afflict(Status::Slowed, 30)),
+    wand(
+        ItemKind::WandPolymorph,
+        "変身の杖",
+        1,
+        2,
+        true,
+        (3, 5),
+        true,
+        ZapFx::Polymorph,
+    ),
+    wand(
+        ItemKind::WandMissile,
+        "魔法の矢の杖",
+        3,
+        1,
+        false,
+        (6, 10),
+        true,
+        bolt(2, 6, "魔法の矢が飛び"),
+    ),
+    wand(
+        ItemKind::WandHaste,
+        "敵加速の杖",
+        1,
+        2,
+        true,
+        (3, 6),
+        true,
+        ZapFx::Afflict(Status::Hasted, 30),
+    ),
+    wand(
+        ItemKind::WandSlow,
+        "敵減速の杖",
+        2,
+        1,
+        false,
+        (4, 7),
+        true,
+        ZapFx::Afflict(Status::Slowed, 30),
+    ),
     wand(
         ItemKind::WandDrain,
         "生命吸収の杖",
@@ -450,24 +812,142 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
         false,
         (4, 6),
         true,
-        ZapFx::Damage { lo: 3, hi: 6, beam: false, drain: true, then: None, text: "黒い光が走り" },
+        ZapFx::Damage {
+            lo: 3,
+            hi: 6,
+            beam: false,
+            drain: true,
+            then: None,
+            text: "黒い光が走り",
+        },
     ),
-    wand(ItemKind::WandCancel, "消去の杖", 1, 3, false, (3, 5), true, ZapFx::Cancel),
-    wand(ItemKind::WandTeleportOther, "敵テレポートの杖", 2, 1, false, (4, 7), true, ZapFx::TeleportOther),
-    wand(ItemKind::WandTeleportSelf, "自分テレポートの杖", 1, 1, false, (3, 5), false, ZapFx::TeleportSelf),
+    wand(
+        ItemKind::WandCancel,
+        "消去の杖",
+        1,
+        3,
+        false,
+        (3, 5),
+        true,
+        ZapFx::Cancel,
+    ),
+    wand(
+        ItemKind::WandTeleportOther,
+        "敵テレポートの杖",
+        2,
+        1,
+        false,
+        (4, 7),
+        true,
+        ZapFx::TeleportOther,
+    ),
+    wand(
+        ItemKind::WandTeleportSelf,
+        "自分テレポートの杖",
+        1,
+        1,
+        false,
+        (3, 5),
+        false,
+        ZapFx::TeleportSelf,
+    ),
     // 指輪
-    ring(ItemKind::RingProtection, "防御の指輪", 1, RingEffect::Protection, true, false),
-    ring(ItemKind::RingStrength, "腕力の指輪", 1, RingEffect::Strength, true, false),
-    ring(ItemKind::RingDexterity, "器用さの指輪", 1, RingEffect::Dexterity, true, false),
-    ring(ItemKind::RingDamage, "ダメージ増加の指輪", 1, RingEffect::Damage, true, false),
-    ring(ItemKind::RingRegeneration, "再生の指輪", 1, RingEffect::Regeneration, false, false),
-    ring(ItemKind::RingSlowDigestion, "消化遅延の指輪", 1, RingEffect::SlowDigestion, false, false),
-    ring(ItemKind::RingStealth, "隠密の指輪", 1, RingEffect::Stealth, false, false),
-    ring(ItemKind::RingSearching, "探索の指輪", 1, RingEffect::Searching, false, false),
-    ring(ItemKind::RingSeeInvisible, "透明視認の指輪", 1, RingEffect::SeeInvisible, false, false),
-    ring(ItemKind::RingTrinket, "装飾の指輪", 1, RingEffect::Trinket, false, false),
-    ring(ItemKind::RingAggravate, "怒らせる指輪", 1, RingEffect::Aggravate, false, true),
-    ring(ItemKind::RingTeleportitis, "テレポート癖の指輪", 1, RingEffect::Teleportitis, false, true),
+    ring(
+        ItemKind::RingProtection,
+        "防御の指輪",
+        1,
+        RingEffect::Protection,
+        true,
+        false,
+    ),
+    ring(
+        ItemKind::RingStrength,
+        "腕力の指輪",
+        1,
+        RingEffect::Strength,
+        true,
+        false,
+    ),
+    ring(
+        ItemKind::RingDexterity,
+        "器用さの指輪",
+        1,
+        RingEffect::Dexterity,
+        true,
+        false,
+    ),
+    ring(
+        ItemKind::RingDamage,
+        "ダメージ増加の指輪",
+        1,
+        RingEffect::Damage,
+        true,
+        false,
+    ),
+    ring(
+        ItemKind::RingRegeneration,
+        "再生の指輪",
+        1,
+        RingEffect::Regeneration,
+        false,
+        false,
+    ),
+    ring(
+        ItemKind::RingSlowDigestion,
+        "消化遅延の指輪",
+        1,
+        RingEffect::SlowDigestion,
+        false,
+        false,
+    ),
+    ring(
+        ItemKind::RingStealth,
+        "隠密の指輪",
+        1,
+        RingEffect::Stealth,
+        false,
+        false,
+    ),
+    ring(
+        ItemKind::RingSearching,
+        "探索の指輪",
+        1,
+        RingEffect::Searching,
+        false,
+        false,
+    ),
+    ring(
+        ItemKind::RingSeeInvisible,
+        "透明視認の指輪",
+        1,
+        RingEffect::SeeInvisible,
+        false,
+        false,
+    ),
+    ring(
+        ItemKind::RingTrinket,
+        "装飾の指輪",
+        1,
+        RingEffect::Trinket,
+        false,
+        false,
+    ),
+    ring(
+        ItemKind::RingAggravate,
+        "怒らせる指輪",
+        1,
+        RingEffect::Aggravate,
+        false,
+        true,
+    ),
+    ring(
+        ItemKind::RingTeleportitis,
+        "テレポート癖の指輪",
+        1,
+        RingEffect::Teleportitis,
+        false,
+        true,
+    ),
     // 光源と燃料
     light(ItemKind::Torch, "松明", 3, 1, 1500, false),
     light(ItemKind::Lantern, "ランタン", 1, 3, 4000, true),
@@ -482,9 +962,33 @@ pub static ITEMS: [ItemDef; ItemKind::COUNT] = [
     // 食べ物（効果は game 側。満腹度は nutrition()）
     def(ItemKind::Bread, "パン", Food, 5, 1, false, &[]),
     def(ItemKind::Jerky, "干し肉", Food, 2, 2, false, &[]),
-    def(ItemKind::EdibleShroom, "食用キノコ", Mushroom, 2, 1, false, &[]),
-    def(ItemKind::PoisonShroom, "毒キノコ", Mushroom, 1, 1, true, &[]),
-    def(ItemKind::VigorShroom, "元気キノコ", Mushroom, 1, 2, false, &[]),
+    def(
+        ItemKind::EdibleShroom,
+        "食用キノコ",
+        Mushroom,
+        2,
+        1,
+        false,
+        &[],
+    ),
+    def(
+        ItemKind::PoisonShroom,
+        "毒キノコ",
+        Mushroom,
+        1,
+        1,
+        true,
+        &[],
+    ),
+    def(
+        ItemKind::VigorShroom,
+        "元気キノコ",
+        Mushroom,
+        1,
+        2,
+        false,
+        &[],
+    ),
 ];
 
 impl ItemKind {
@@ -737,7 +1241,12 @@ pub enum Quality {
 }
 
 impl Quality {
-    pub const ALL: [Quality; 4] = [Quality::Common, Quality::Uncommon, Quality::Rare, Quality::Ancient];
+    pub const ALL: [Quality; 4] = [
+        Quality::Common,
+        Quality::Uncommon,
+        Quality::Rare,
+        Quality::Ancient,
+    ];
 
     /// このランクを表す接頭辞の候補。
     pub fn words(self) -> &'static [&'static str] {
@@ -808,7 +1317,11 @@ impl Suffix {
         (Suffix::Vigor, 2),
         (Suffix::Cataclysm, 1),
     ];
-    pub const ARMOR: [(Suffix, i32); 3] = [(Suffix::Thorns, 2), (Suffix::Warding, 2), (Suffix::Famine, 1)];
+    pub const ARMOR: [(Suffix, i32); 3] = [
+        (Suffix::Thorns, 2),
+        (Suffix::Warding, 2),
+        (Suffix::Famine, 1),
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -866,7 +1379,11 @@ impl Suffix {
     }
 
     fn roll(rng: &mut Rng, weapon: bool) -> Suffix {
-        let pool: &[(Suffix, i32)] = if weapon { &Suffix::WEAPON } else { &Suffix::ARMOR };
+        let pool: &[(Suffix, i32)] = if weapon {
+            &Suffix::WEAPON
+        } else {
+            &Suffix::ARMOR
+        };
         let total: i32 = pool.iter().map(|(_, w)| w).sum();
         let mut r = rng.range(0, total);
         for (s, w) in pool {
@@ -936,7 +1453,8 @@ impl Gear {
         let word = words[rng.range(0, words.len() as i32) as usize];
         let (lo, hi) = quality.bonus_range();
         let bonus = rng.range(lo, hi + 1);
-        let suffix = if quality.suffix_percent() > 0 && rng.range(0, 100) < quality.suffix_percent() {
+        let suffix = if quality.suffix_percent() > 0 && rng.range(0, 100) < quality.suffix_percent()
+        {
             Some(Suffix::roll(rng, kind.is_weapon()))
         } else {
             None
@@ -989,7 +1507,9 @@ impl Gear {
 
     /// 識別したときに分かる中身の説明（接尾辞の効果と、補正値）。
     pub fn reveal_text(&self) -> String {
-        let fx = self.suffix.map_or("特殊効果はない".to_string(), |s| s.describe().to_string());
+        let fx = self.suffix.map_or("特殊効果はない".to_string(), |s| {
+            s.describe().to_string()
+        });
         format!("{}。品質補正 +{}", fx, self.bonus)
     }
 
@@ -1012,9 +1532,17 @@ impl Gear {
     /// 未識別の個体の、見える範囲での性能の説明。基本値に、品質ランクの補正の幅を添える。
     pub fn guess_text(&self) -> String {
         let (lo, hi) = self.quality.bonus_range();
-        let range = if lo == hi { format!("+{lo}") } else { format!("+({lo}〜{hi})") };
+        let range = if lo == hi {
+            format!("+{lo}")
+        } else {
+            format!("+({lo}〜{hi})")
+        };
         // 強化は自分で見ているので分かる
-        let ench = if self.enchant != 0 { format!(" 強化{:+}", self.enchant) } else { String::new() };
+        let ench = if self.enchant != 0 {
+            format!(" 強化{:+}", self.enchant)
+        } else {
+            String::new()
+        };
         match self.kind.weapon_dmg() {
             Some((a, b)) => format!("攻撃 {a}〜{b} {range}?{ench}"),
             None => format!("防御 {} {range}?{ench}", self.kind.armor()),
@@ -1050,7 +1578,14 @@ pub struct Tool {
 impl Tool {
     /// 値を直接指定して作る。杖や光源はこれで足りる。
     pub fn charged(kind: ItemKind, val: i32) -> Tool {
-        Tool { kind, val, cursed: false, freed: false, identified: !kind.is_ring(), worn: 0 }
+        Tool {
+            kind,
+            val,
+            cursed: false,
+            freed: false,
+            identified: !kind.is_ring(),
+            worn: 0,
+        }
     }
 
     /// 見つかったときの個体を抽選する。杖は充填数、指輪は強さと呪い、光源は燃料。
@@ -1092,7 +1627,17 @@ impl Tool {
         } else if let Some(l) = kind.light_def() {
             Tool::charged(kind, l.max_fuel)
         } else if kind.is_ring() {
-            let mut t = Tool::charged(kind, if kind.ring_def().is_some_and(|r| r.effect == RingEffect::Trinket) { 0 } else { 1 });
+            let mut t = Tool::charged(
+                kind,
+                if kind
+                    .ring_def()
+                    .is_some_and(|r| r.effect == RingEffect::Trinket)
+                {
+                    0
+                } else {
+                    1
+                },
+            );
             t.cursed = kind.ring_def().is_some_and(|r| r.always_cursed);
             t
         } else {
@@ -1265,12 +1810,21 @@ mod tests {
             assert_eq!(d.kind.index(), i, "{:?} は表の{i}番目にない", d.kind);
             assert_eq!(ItemKind::ALL[i], d.kind);
             // 薬と巻物には効果があり、それ以外には（game 側で扱う食べ物を除いて）ない
-            assert_eq!(!d.effects.is_empty(), matches!(d.class, Class::Potion | Class::Scroll), "{:?}", d.kind);
+            assert_eq!(
+                !d.effects.is_empty(),
+                matches!(d.class, Class::Potion | Class::Scroll),
+                "{:?}",
+                d.kind
+            );
             assert_eq!(d.zap.is_some(), d.class == Class::Wand, "{:?}", d.kind);
             assert_eq!(d.ring.is_some(), d.class == Class::Ring, "{:?}", d.kind);
             assert_eq!(d.light.is_some(), d.class == Class::Light, "{:?}", d.kind);
             if let Some(z) = d.zap {
-                assert!(z.charges.0 >= 1 && z.charges.0 <= z.charges.1, "{:?}", d.kind);
+                assert!(
+                    z.charges.0 >= 1 && z.charges.0 <= z.charges.1,
+                    "{:?}",
+                    d.kind
+                );
             }
         }
         for k in ItemKind::ALL {

@@ -9,13 +9,21 @@ const ZAP_RANGE: i32 = 12;
 
 impl Game {
     /// 杖を振る。(成功か, メッセージ, 1ターン消費するか)
-    pub(super) fn zap_cmd(&mut self, letter: char, target: Option<ZapTarget>) -> (bool, String, bool) {
+    pub(super) fn zap_cmd(
+        &mut self,
+        letter: char,
+        target: Option<ZapTarget>,
+    ) -> (bool, String, bool) {
         let Some(si) = self.inventory.iter().position(|s| s.letter == letter) else {
             return (false, format!("持ち物 {letter} はない。"), false);
         };
         let kind = self.inventory[si].kind;
         let Some(zap) = kind.zap() else {
-            return (false, format!("{letter} は杖ではない。zap は杖に使う。"), false);
+            return (
+                false,
+                format!("{letter} は杖ではない。zap は杖に使う。"),
+                false,
+            );
         };
         let charges = self.inventory[si].tool.map_or(0, |t| t.val);
         if charges <= 0 {
@@ -30,14 +38,18 @@ impl Game {
                 None => {
                     return (
                         false,
-                        format!("{}には向きが要る。(例: zap {letter} east / zap {letter} nearest)", self.display_name(kind)),
+                        format!(
+                            "{}には向きが要る。(例: zap {letter} east / zap {letter} nearest)",
+                            self.display_name(kind)
+                        ),
                         false,
                     )
                 }
                 Some(ZapTarget::Dir(d)) => {
                     let (d, reeled) = self.confuse_dir(d);
                     if reeled {
-                        self.events.push(format!("混乱して{}へ向けてしまった。", d.name()));
+                        self.events
+                            .push(format!("混乱して{}へ向けてしまった。", d.name()));
                     }
                     Some(ZapTarget::Dir(d))
                 }
@@ -45,7 +57,8 @@ impl Game {
                     // 混乱していると、狙いが外れてでたらめな向きに飛ぶことがある
                     if self.status.has(Status::Confused) && self.rng.range(0, 2) == 0 {
                         let d = Dir::ALL[self.rng.range(0, Dir::ALL.len() as i32) as usize];
-                        self.events.push(format!("混乱して{}へ向けてしまった。", d.name()));
+                        self.events
+                            .push(format!("混乱して{}へ向けてしまった。", d.name()));
                         Some(ZapTarget::Dir(d))
                     } else {
                         Some(ZapTarget::Nearest)
@@ -68,18 +81,29 @@ impl Game {
         let prefix = if was_known {
             format!("{}を振った。", kind.true_name())
         } else {
-            format!("{}を振った。これは{}だった！", self.looks[k], kind.true_name())
+            format!(
+                "{}を振った。これは{}だった！",
+                self.looks[k],
+                kind.true_name()
+            )
         };
         // 充填数を1つ使う
         let left = {
-            let t = self.inventory[si].tool.as_mut().expect("杖は個体の情報を持つ");
+            let t = self.inventory[si]
+                .tool
+                .as_mut()
+                .expect("杖は個体の情報を持つ");
             t.val -= 1;
             t.val
         };
         self.known[k] = true;
         let body = self.zap_effect(zap.fx, &cells);
         self.monsters.retain(|m| m.hp > 0);
-        let tail = if left == 0 { "杖の魔力は尽きた。".to_string() } else { format!("(残り{left}回)") };
+        let tail = if left == 0 {
+            "杖の魔力は尽きた。".to_string()
+        } else {
+            format!("(残り{left}回)")
+        };
         (true, format!("{prefix} {body} {tail}"), true)
     }
 
@@ -88,7 +112,9 @@ impl Game {
         match t {
             ZapTarget::Dir(d) => {
                 let (dx, dy) = d.delta();
-                Ok((1..=ZAP_RANGE).map(|k| (self.pos.0 + dx * k, self.pos.1 + dy * k)).collect())
+                Ok((1..=ZAP_RANGE)
+                    .map(|k| (self.pos.0 + dx * k, self.pos.1 + dy * k))
+                    .collect())
             }
             ZapTarget::Nearest => {
                 let nearest = self
@@ -103,9 +129,19 @@ impl Game {
                 let t = self.monsters[nearest].pos;
                 let (dx, dy) = (t.0 - self.pos.0, t.1 - self.pos.1);
                 let m = dx.abs().max(dy.abs()).max(1);
-                let long = Map::line(self.pos, (self.pos.0 + dx * ZAP_RANGE / m, self.pos.1 + dy * ZAP_RANGE / m));
+                let long = Map::line(
+                    self.pos,
+                    (
+                        self.pos.0 + dx * ZAP_RANGE / m,
+                        self.pos.1 + dy * ZAP_RANGE / m,
+                    ),
+                );
                 // 延長した線が壁で先に遮られて敵に届かないときは、敵までの線に戻る
-                Ok(if self.open_cells(&long).contains(&t) { long } else { Map::line(self.pos, t) })
+                Ok(if self.open_cells(&long).contains(&t) {
+                    long
+                } else {
+                    Map::line(self.pos, t)
+                })
             }
         }
     }
@@ -121,7 +157,9 @@ impl Game {
 
     /// 道筋上の最初の敵。
     fn first_monster_on(&self, cells: &[(i32, i32)]) -> Option<usize> {
-        self.open_cells(cells).into_iter().find_map(|p| self.monster_at(p))
+        self.open_cells(cells)
+            .into_iter()
+            .find_map(|p| self.monster_at(p))
     }
 
     fn zap_effect(&mut self, fx: ZapFx, cells: &[(i32, i32)]) -> String {
@@ -150,9 +188,19 @@ impl Game {
                 }
                 s
             }
-            ZapFx::Damage { lo, hi, beam, drain, then, text } => {
+            ZapFx::Damage {
+                lo,
+                hi,
+                beam,
+                drain,
+                then,
+                text,
+            } => {
                 let hits: Vec<usize> = if beam {
-                    self.open_cells(cells).into_iter().filter_map(|p| self.monster_at(p)).collect()
+                    self.open_cells(cells)
+                        .into_iter()
+                        .filter_map(|p| self.monster_at(p))
+                        .collect()
                 } else {
                     self.first_monster_on(cells).into_iter().collect()
                 };
@@ -179,7 +227,10 @@ impl Game {
                         let gained = dmg.min(self.max_hp - self.hp);
                         if gained > 0 {
                             self.hp += gained;
-                            part.push_str(&format!(" 生命力を吸い取った。HP+{gained} (HP {}/{})", self.hp, self.max_hp));
+                            part.push_str(&format!(
+                                " 生命力を吸い取った。HP+{gained} (HP {}/{})",
+                                self.hp, self.max_hp
+                            ));
                         }
                     }
                     if let (Some((st, turns)), true) = (then, hp > 0) {
@@ -210,7 +261,10 @@ impl Game {
                 Some(i) => {
                     let old = self.foe_name(i);
                     // 今と違う種類から選ぶ
-                    let cur = KINDS.iter().position(|k| std::ptr::eq(*k, self.monsters[i].kind)).unwrap_or(0);
+                    let cur = KINDS
+                        .iter()
+                        .position(|k| std::ptr::eq(*k, self.monsters[i].kind))
+                        .unwrap_or(0);
                     let mut pick = self.rng.range(0, KINDS.len() as i32 - 1) as usize;
                     if pick >= cur {
                         pick += 1;
@@ -225,7 +279,12 @@ impl Game {
                     m.max_hp = new_max;
                     m.hp = (hp * new_max / max_hp.max(1)).max(1);
                     m.cancelled = false;
-                    format!("{old}の姿がぐにゃりと変わり、{}になった！ (HP {}/{})", self.foe_name(i), self.monsters[i].hp, new_max)
+                    format!(
+                        "{old}の姿がぐにゃりと変わり、{}になった！ (HP {}/{})",
+                        self.foe_name(i),
+                        self.monsters[i].hp,
+                        new_max
+                    )
                 }
                 None => "何にも当たらなかった。".to_string(),
             },

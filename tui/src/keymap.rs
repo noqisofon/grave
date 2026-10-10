@@ -81,7 +81,11 @@ mod tests {
         let km = Keymap::with_defaults();
         for (_, cmd) in km.list() {
             // コマンド行を開くだけの割り当ては、続きを打って初めて完成する
-            let cmd = if cmd.ends_with(' ') { format!("{cmd}a") } else { cmd.to_string() };
+            let cmd = if cmd.ends_with(' ') {
+                format!("{cmd}a")
+            } else {
+                cmd.to_string()
+            };
             assert!(grave_core::command::parse(&cmd).is_ok(), "{cmd}");
         }
     }

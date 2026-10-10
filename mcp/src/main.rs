@@ -36,7 +36,10 @@ impl Recorder {
     fn write(&mut self, ev: &Event) {
         self.history.push(ev.clone());
         if let Some(f) = self.file.as_mut() {
-            if writeln!(f, "{}", ev.to_line()).and_then(|_| f.flush()).is_err() {
+            if writeln!(f, "{}", ev.to_line())
+                .and_then(|_| f.flush())
+                .is_err()
+            {
                 self.file = None; // 以降は記録しない
             }
         }
@@ -125,7 +128,9 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
                 is_error = true;
             }
             if game.is_won() {
-                text.push_str("\nクリア！ 地上へ脱出した。journal ツールで冒険日誌の素材が得られる。\n");
+                text.push_str(
+                    "\nクリア！ 地上へ脱出した。journal ツールで冒険日誌の素材が得られる。\n",
+                );
             }
             if game.is_dead() {
                 text.push_str("\nゲームオーバー。journal ツールで冒険日誌の素材が得られる。\n");
@@ -141,7 +146,10 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
             rec.history.clear();
             rec.write(&Event::new_game(seed));
             (
-                format!("New game (seed {seed}).\n\n{}", game.observe_text(LOG_LINES)),
+                format!(
+                    "New game (seed {seed}).\n\n{}",
+                    game.observe_text(LOG_LINES)
+                ),
                 false,
             )
         }
@@ -162,7 +170,11 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
             (text, false)
         }
         "journal_write" => {
-            let text = args.get("text").and_then(Value::as_str).map(str::trim).unwrap_or("");
+            let text = args
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
             if text.is_empty() {
                 return ("text (non-empty string) is required".to_string(), true);
             }

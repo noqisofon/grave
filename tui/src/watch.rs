@@ -169,7 +169,15 @@ mod tests {
         let path = dir.join("rec.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "{}", Event::new_game(1).to_line()).unwrap();
-        writeln!(f, "{}", Event::Journal { text: "一日目の日誌".into() }.to_line()).unwrap();
+        writeln!(
+            f,
+            "{}",
+            Event::Journal {
+                text: "一日目の日誌".into()
+            }
+            .to_line()
+        )
+        .unwrap();
 
         let mut w = Watcher::new(path.to_str().unwrap());
         assert!(w.poll().unwrap());

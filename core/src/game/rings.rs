@@ -35,7 +35,12 @@ impl Game {
         self.rings
             .iter()
             .flatten()
-            .filter_map(|&l| self.inventory.iter().find(|s| s.letter == l).and_then(|s| s.tool.map(|t| (l, t))))
+            .filter_map(|&l| {
+                self.inventory
+                    .iter()
+                    .find(|s| s.letter == l)
+                    .and_then(|s| s.tool.map(|t| (l, t)))
+            })
             .collect()
     }
 
@@ -63,7 +68,9 @@ impl Game {
 
     /// 装備している（武器・防具・指輪）か。
     pub(super) fn is_equipped(&self, letter: char) -> bool {
-        self.weapon == Some(letter) || self.armor == Some(letter) || self.rings.contains(&Some(letter))
+        self.weapon == Some(letter)
+            || self.armor == Some(letter)
+            || self.rings.contains(&Some(letter))
     }
 
     /// 指輪の表示名。種類が分からなければ見た目、分かれば本名に強さを添える。
@@ -81,13 +88,19 @@ impl Game {
 
     /// 指輪の効果の説明（識別済みのときだけ使う）。
     fn ring_effect_text(t: &Tool) -> String {
-        t.kind.ring_def().map_or(String::new(), |r| r.effect.describe(t.val))
+        t.kind
+            .ring_def()
+            .map_or(String::new(), |r| r.effect.describe(t.val))
     }
 
     /// 指輪を指にはめる。
     pub(super) fn equip_ring(&mut self, letter: char, t: Tool) -> (bool, String, bool) {
         if self.rings.contains(&Some(letter)) {
-            return (false, format!("{}はすでにはめている。", self.ring_name(&t)), false);
+            return (
+                false,
+                format!("{}はすでにはめている。", self.ring_name(&t)),
+                false,
+            );
         }
         let Some(slot) = self.rings.iter().position(|r| r.is_none()) else {
             return (
@@ -104,14 +117,22 @@ impl Game {
             // 呪いは身につけて初めて分かる。正体も明らかになる
             self.reveal_ring(letter);
             let t2 = self.tool_of(letter).expect("はめた指輪は持ち物にある");
-            msg.push_str(&format!(" {}だった！ ({})", self.ring_name(&t2), Self::ring_effect_text(&t2)));
+            msg.push_str(&format!(
+                " {}だった！ ({})",
+                self.ring_name(&t2),
+                Self::ring_effect_text(&t2)
+            ));
             if t2.is_sticky() {
                 msg.push_str(" 呪われていた！ もうはずせない。");
             }
         } else if kind_known {
             self.reveal_ring(letter);
             let t2 = self.tool_of(letter).expect("はめた指輪は持ち物にある");
-            msg.push_str(&format!(" {} ({})", self.ring_name(&t2), Self::ring_effect_text(&t2)));
+            msg.push_str(&format!(
+                " {} ({})",
+                self.ring_name(&t2),
+                Self::ring_effect_text(&t2)
+            ));
         } else {
             msg.push_str(" (効果はまだ分からない。身につけているうちに分かる)");
         }
@@ -119,12 +140,20 @@ impl Game {
     }
 
     fn tool_of(&self, letter: char) -> Option<Tool> {
-        self.inventory.iter().find(|s| s.letter == letter).and_then(|s| s.tool)
+        self.inventory
+            .iter()
+            .find(|s| s.letter == letter)
+            .and_then(|s| s.tool)
     }
 
     /// 指輪の種類と強さを明らかにする。
     pub(super) fn reveal_ring(&mut self, letter: char) {
-        if let Some(t) = self.inventory.iter_mut().find(|s| s.letter == letter).and_then(|s| s.tool.as_mut()) {
+        if let Some(t) = self
+            .inventory
+            .iter_mut()
+            .find(|s| s.letter == letter)
+            .and_then(|s| s.tool.as_mut())
+        {
             t.identified = true;
             self.known[t.kind.index()] = true;
         }
@@ -133,10 +162,18 @@ impl Game {
     /// 指輪をはずす。
     pub(super) fn unequip_ring(&mut self, letter: char, t: Tool) -> (bool, String, bool) {
         let Some(slot) = self.rings.iter().position(|r| *r == Some(letter)) else {
-            return (false, format!("{}ははめていない。", self.ring_name(&t)), false);
+            return (
+                false,
+                format!("{}ははめていない。", self.ring_name(&t)),
+                false,
+            );
         };
         if t.is_sticky() {
-            return (false, format!("{}は呪われていて、はずせない。", self.ring_name(&t)), false);
+            return (
+                false,
+                format!("{}は呪われていて、はずせない。", self.ring_name(&t)),
+                false,
+            );
         }
         self.rings[slot] = None;
         (true, format!("{}をはずした。", self.ring_name(&t)), true)
@@ -150,14 +187,21 @@ impl Game {
 
     /// 持ち物の光源に持ち替える。今の光源は持ち物に戻る。
     pub(super) fn equip_light(&mut self, letter: char, t: Tool) -> (bool, String, bool) {
-        let si = self.inventory.iter().position(|s| s.letter == letter).expect("光源は持ち物にある");
+        let si = self
+            .inventory
+            .iter()
+            .position(|s| s.letter == letter)
+            .expect("光源は持ち物にある");
         let old = self.light.replace(t);
         let mut msg = format!("{}に持ち替えた。", self.light_text(&t));
         match old {
             Some(o) => {
                 self.inventory[si].kind = o.kind;
                 self.inventory[si].tool = Some(o);
-                msg.push_str(&format!(" 今までの{}は持ち物に戻した。({letter})", self.light_text(&o)));
+                msg.push_str(&format!(
+                    " 今までの{}は持ち物に戻した。({letter})",
+                    self.light_text(&o)
+                ));
             }
             None => {
                 self.inventory.remove(si);
@@ -176,12 +220,19 @@ impl Game {
         if !def.refillable {
             return (
                 false,
-                format!("{}には油を継ぎ足せない。ランタンを装備しよう。", l.kind.true_name()),
+                format!(
+                    "{}には油を継ぎ足せない。ランタンを装備しよう。",
+                    l.kind.true_name()
+                ),
                 false,
             );
         }
         if l.val >= def.max_fuel {
-            return (false, format!("{}はもう満タンだ。", l.kind.true_name()), false);
+            return (
+                false,
+                format!("{}はもう満タンだ。", l.kind.true_name()),
+                false,
+            );
         }
         let si = match flask {
             Some(c) => match self.inventory.iter().position(|s| s.letter == c) {
@@ -189,7 +240,11 @@ impl Game {
                 Some(_) => return (false, format!("{c} は油つぼではない。"), false),
                 None => return (false, format!("持ち物 {c} はない。"), false),
             },
-            None => match self.inventory.iter().position(|s| s.kind == ItemKind::OilFlask) {
+            None => match self
+                .inventory
+                .iter()
+                .position(|s| s.kind == ItemKind::OilFlask)
+            {
                 Some(i) => i,
                 None => return (false, "油つぼを持っていない。".to_string(), false),
             },
@@ -213,7 +268,11 @@ impl Game {
             format!(
                 "油を継ぎ足した。燃料 +{added} ({now}/{}){}",
                 def.max_fuel,
-                if was_dark { " 再び辺りが明るくなった。" } else { "" }
+                if was_dark {
+                    " 再び辺りが明るくなった。"
+                } else {
+                    ""
+                }
             ),
             true,
         )
@@ -222,7 +281,11 @@ impl Game {
     /// 毎ターンの、装備に関する効果（指輪・光源）。ターン処理から呼ばれる唯一の入口。
     pub(super) fn tick_equipment(&mut self, fx: &RingFx) {
         // 自然回復。再生の指輪があれば速く、敵がいても回復する
-        let interval = if fx.regeneration > 0 { (REGEN_INTERVAL as i32 - 3 * fx.regeneration).max(2) as u32 } else { REGEN_INTERVAL };
+        let interval = if fx.regeneration > 0 {
+            (REGEN_INTERVAL as i32 - 3 * fx.regeneration).max(2) as u32
+        } else {
+            REGEN_INTERVAL
+        };
         if self.turn.is_multiple_of(interval)
             && self.hp < self.max_hp
             && !self.status.has(Status::Poisoned)
@@ -250,7 +313,9 @@ impl Game {
                 let name = l.kind.true_name();
                 match l.val {
                     0 => {
-                        self.note(&format!("{name}が燃え尽きた！ 辺りが暗くなり、視界が狭まった。"));
+                        self.note(&format!(
+                            "{name}が燃え尽きた！ 辺りが暗くなり、視界が狭まった。"
+                        ));
                         self.alert = Some("明かりが消えて中断した。".to_string());
                         self.refresh_fov();
                     }

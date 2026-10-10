@@ -276,13 +276,19 @@ fn parse_body(line: &str) -> Result<Command, String> {
             let target = match args.get(1).copied() {
                 None => None,
                 Some("nearest" | "near" | "target") => Some(ZapTarget::Nearest),
-                Some(a) => Some(ZapTarget::Dir(Dir::parse(a).ok_or_else(|| format!("不明な向き: {a} (8方向か nearest)"))?)),
+                Some(a) => {
+                    Some(ZapTarget::Dir(Dir::parse(a).ok_or_else(|| {
+                        format!("不明な向き: {a} (8方向か nearest)")
+                    })?))
+                }
             };
             Ok(Command::Zap(letter, target))
         }
         "refill" | "fuel" => match args.first() {
             None => Ok(Command::Refill(None)),
-            Some(a) => Ok(Command::Refill(Some(letter_arg(a).ok_or_else(|| format!("不正な油つぼの文字: {a}"))?))),
+            Some(a) => Ok(Command::Refill(Some(
+                letter_arg(a).ok_or_else(|| format!("不正な油つぼの文字: {a}"))?,
+            ))),
         },
         "use" | "u" => Err(
             "use はない。薬は quaff、食べ物は eat、巻物は read、装備は equip を使う".to_string(),
@@ -292,9 +298,7 @@ fn parse_body(line: &str) -> Result<Command, String> {
             let letter = args
                 .first()
                 .and_then(|a| letter_arg(a))
-                .ok_or_else(|| {
-                    format!("{head} には持ち物の文字が必要です (例: {head} a)")
-                })?;
+                .ok_or_else(|| format!("{head} には持ち物の文字が必要です (例: {head} a)"))?;
             Ok(if equip {
                 Command::Equip(letter)
             } else {
@@ -373,9 +377,18 @@ mod tests {
 
     #[test]
     fn zap_parses_directions_and_nearest() {
-        assert_eq!(parse("zap c east"), Ok(Command::Zap('c', Some(ZapTarget::Dir(Dir::E)))));
-        assert_eq!(parse("zap c n"), Ok(Command::Zap('c', Some(ZapTarget::Dir(Dir::N)))));
-        assert_eq!(parse("zap c nearest"), Ok(Command::Zap('c', Some(ZapTarget::Nearest))));
+        assert_eq!(
+            parse("zap c east"),
+            Ok(Command::Zap('c', Some(ZapTarget::Dir(Dir::E))))
+        );
+        assert_eq!(
+            parse("zap c n"),
+            Ok(Command::Zap('c', Some(ZapTarget::Dir(Dir::N))))
+        );
+        assert_eq!(
+            parse("zap c nearest"),
+            Ok(Command::Zap('c', Some(ZapTarget::Nearest)))
+        );
         assert_eq!(parse("aim c"), Ok(Command::Zap('c', None)));
         assert!(parse("zap").is_err());
         assert!(parse("zap c sideways").is_err());

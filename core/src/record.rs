@@ -23,9 +23,7 @@ pub enum Event {
         rules: Option<u32>,
     },
     /// エージェントが書いた冒険日誌
-    Journal {
-        text: String,
-    },
+    Journal { text: String },
     Command {
         command: String,
         /// なぜその手を選んだか（任意。エージェントが添える）
@@ -128,7 +126,8 @@ impl Event {
                     v["hp"] = json!(h);
                 }
                 if !status_events.is_empty() {
-                    v["status_events"] = Value::Array(status_events.iter().map(status_event_json).collect());
+                    v["status_events"] =
+                        Value::Array(status_events.iter().map(status_event_json).collect());
                 }
                 if !statuses.is_empty() {
                     let mut m = serde_json::Map::new();
@@ -193,13 +192,18 @@ pub fn golden_player(seed: u64, steps: usize, mut sink: impl FnMut(&crate::game:
             break;
         }
         let me = g.pos();
-        let cmd = match g.visible_enemies().iter().min_by_key(|e| {
-            (e.pos.0 - me.0).abs().max((e.pos.1 - me.1).abs())
-        }) {
+        let cmd = match g
+            .visible_enemies()
+            .iter()
+            .min_by_key(|e| (e.pos.0 - me.0).abs().max((e.pos.1 - me.1).abs()))
+        {
             Some(e) => {
                 let (dx, dy) = (e.pos.0 - me.0, e.pos.1 - me.1);
                 if dx.abs().max(dy.abs()) <= 1 {
-                    let d = crate::Dir::ALL.iter().find(|d| d.delta() == (dx, dy)).unwrap();
+                    let d = crate::Dir::ALL
+                        .iter()
+                        .find(|d| d.delta() == (dx, dy))
+                        .unwrap();
                     format!("attack {}", d.name())
                 } else {
                     "wait".to_string()
@@ -211,15 +215,25 @@ pub fn golden_player(seed: u64, steps: usize, mut sink: impl FnMut(&crate::game:
                     let eat = g
                         .inventory_lines()
                         .iter()
-                        .find(|l| l.contains("キノコ") || l.contains("パン") || l.contains("干し肉"))
+                        .find(|l| {
+                            l.contains("キノコ") || l.contains("パン") || l.contains("干し肉")
+                        })
                         .and_then(|l| l.chars().next());
                     // 装備に加えて、薬・巻物・杖も試す(失敗してもよい)
                     let mut c = "equip a; equip b; equip c".to_string();
                     // 薬・巻物・杖は、持ち物の行から種類で文字を探して使う(文字の取り違えで失敗に終わらないように)
-                    for (word, verb) in [("の薬", "quaff"), ("の巻物", "read"), ("の杖", "zap")] {
-                        if let Some(l) = g.inventory_lines().iter().find(|l| l.contains(word) && !l.contains("装備中")) {
+                    for (word, verb) in [("の薬", "quaff"), ("の巻物", "read"), ("の杖", "zap")]
+                    {
+                        if let Some(l) = g
+                            .inventory_lines()
+                            .iter()
+                            .find(|l| l.contains(word) && !l.contains("装備中"))
+                        {
                             let letter = l.chars().next().unwrap();
-                            c.push_str(&format!("; {verb} {letter}{}", if verb == "zap" { " nearest" } else { "" }));
+                            c.push_str(&format!(
+                                "; {verb} {letter}{}",
+                                if verb == "zap" { " nearest" } else { "" }
+                            ));
                         }
                     }
                     if let Some(letter) = eat {
@@ -332,7 +346,12 @@ mod tests {
 
     #[test]
     fn software_patch_version_matches_rules_version() {
-        let patch: u32 = env!("CARGO_PKG_VERSION").rsplit('.').next().unwrap().parse().unwrap();
+        let patch: u32 = env!("CARGO_PKG_VERSION")
+            .rsplit('.')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
         assert_eq!(
             patch, RULES_VERSION,
             "Cargo.toml の workspace.package.version の z を RULES_VERSION ({RULES_VERSION}) に合わせる"
@@ -342,15 +361,24 @@ mod tests {
     #[test]
     fn new_game_carries_rules_version_and_old_records_have_none() {
         let line = Event::new_game(3).to_line();
-        assert!(line.contains(&format!("\"rules\":{RULES_VERSION}")), "{line}");
+        assert!(
+            line.contains(&format!("\"rules\":{RULES_VERSION}")),
+            "{line}"
+        );
         assert_eq!(
             Event::parse(&line),
-            Ok(Event::NewGame { seed: 3, rules: Some(RULES_VERSION) })
+            Ok(Event::NewGame {
+                seed: 3,
+                rules: Some(RULES_VERSION)
+            })
         );
         // rules のない古い記録も読める
         assert_eq!(
             Event::parse(r#"{"kind":"new_game","seed":3}"#),
-            Ok(Event::NewGame { seed: 3, rules: None })
+            Ok(Event::NewGame {
+                seed: 3,
+                rules: None
+            })
         );
     }
 
@@ -378,12 +406,21 @@ mod tests {
                 equips += o.message.matches("を装備した").count();
                 meals += o.message.matches("満腹度が").count();
                 poisoned += o.message.matches("毒を受けた").count();
-                used += o.message.matches("を飲んだ").count() + o.message.matches("を読んだ").count() + o.message.matches("を振った").count();
+                used += o.message.matches("を飲んだ").count()
+                    + o.message.matches("を読んだ").count()
+                    + o.message.matches("を振った").count();
                 deepest = deepest.max(o.depth);
             });
         }
         // 指紋が何も踏んでいないと、ルールが変わっても気づけない
-        assert!(hits > 20 && kills > 10 && equips >= 2 && deepest >= 3 && meals >= 3 && poisoned >= 1 && used >= 3,
+        assert!(
+            hits > 20
+                && kills > 10
+                && equips >= 2
+                && deepest >= 3
+                && meals >= 3
+                && poisoned >= 1
+                && used >= 3,
             "{hits} {kills} {equips} {deepest} {meals} {poisoned} {used}"
         );
         if RULES_VERSION == GOLDEN_RULES {

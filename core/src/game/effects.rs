@@ -7,7 +7,12 @@ use super::*;
 impl Game {
     /// 薬を飲む・食べる・巻物を読む。種類が合わないものは失敗（ターン消費なし）。
     /// (成功か, メッセージ, 1ターン消費するか)
-    pub(super) fn consume(&mut self, letter: char, target: Option<char>, how: Consume) -> (bool, String, bool) {
+    pub(super) fn consume(
+        &mut self,
+        letter: char,
+        target: Option<char>,
+        how: Consume,
+    ) -> (bool, String, bool) {
         let Some(si) = self.inventory.iter().position(|s| s.letter == letter) else {
             return (false, format!("持ち物 {letter} はない。"), false);
         };
@@ -33,7 +38,10 @@ impl Game {
             };
             return (
                 false,
-                format!("{letter} は{is}だ。{} ではなく {instead} を使う。", how.command()),
+                format!(
+                    "{letter} は{is}だ。{} ではなく {instead} を使う。",
+                    how.command()
+                ),
                 false,
             );
         }
@@ -48,14 +56,20 @@ impl Game {
         let prefix = if was_known {
             format!("{}を{verb}。", kind.true_name())
         } else {
-            format!("{}を{verb}。これは{}だった！", self.looks[k], kind.true_name())
+            format!(
+                "{}を{verb}。これは{}だった！",
+                self.looks[k],
+                kind.true_name()
+            )
         };
 
         let body = match kind.class() {
-            Class::Potion | Class::Scroll => match self.run_effects(kind, letter, target, was_known) {
-                Ok(body) => body,
-                Err(msg) => return (false, msg, false),
-            },
+            Class::Potion | Class::Scroll => {
+                match self.run_effects(kind, letter, target, was_known) {
+                    Ok(body) => body,
+                    Err(msg) => return (false, msg, false),
+                }
+            }
             _ => self.eat_effect(kind),
         };
 
@@ -85,7 +99,11 @@ impl Game {
             }
             ItemKind::EdibleShroom => format!("おいしい。{}", self.gain_food(kind.nutrition())),
             ItemKind::PoisonShroom => {
-                let hurt = if self.try_poison(8) { "毒を受けた。" } else { "毒は守りに阻まれた。" };
+                let hurt = if self.try_poison(8) {
+                    "毒を受けた。"
+                } else {
+                    "毒は守りに阻まれた。"
+                };
                 format!("{hurt}{}", self.gain_food(kind.nutrition()))
             }
             ItemKind::VigorShroom => {
@@ -126,13 +144,15 @@ impl Game {
             return Ok(parts.join(" "));
         }
         // 治すものがなかった薬は、そう伝える
-        Ok(match kind.def().effects.iter().find_map(|e| match e {
-            Effect::Cure(st) => Some(*st),
-            _ => None,
-        }) {
-            Some(st) => format!("{}にはかかっていなかった。", st.name()),
-            None => "何も起こらなかった。".to_string(),
-        })
+        Ok(
+            match kind.def().effects.iter().find_map(|e| match e {
+                Effect::Cure(st) => Some(*st),
+                _ => None,
+            }) {
+                Some(st) => format!("{}にはかかっていなかった。", st.name()),
+                None => "何も起こらなかった。".to_string(),
+            },
+        )
     }
 
     /// 効果1つを実行して、その結果の説明を返す（何も起きなければ空）。
@@ -144,14 +164,21 @@ impl Game {
                 if amount > gained && max_up > 0 {
                     self.max_hp += max_up;
                     self.hp += max_up;
-                    format!("HPが{gained}回復し、最大HPが{max_up}増えた。(HP {}/{})", self.hp, self.max_hp)
+                    format!(
+                        "HPが{gained}回復し、最大HPが{max_up}増えた。(HP {}/{})",
+                        self.hp, self.max_hp
+                    )
                 } else {
                     format!("HPが{gained}回復した。(HP {}/{})", self.hp, self.max_hp)
                 }
             }
             Effect::Damage(n) => {
                 self.hp -= n;
-                let mut s = format!("{n}のダメージを受けた。(HP {}/{})", self.hp.max(0), self.max_hp);
+                let mut s = format!(
+                    "{n}のダメージを受けた。(HP {}/{})",
+                    self.hp.max(0),
+                    self.max_hp
+                );
                 if self.hp <= 0 {
                     self.dead = true;
                     s.push_str(" 毒で力尽きた…。ゲームオーバー。");
@@ -170,7 +197,10 @@ impl Game {
             Effect::GainStrength(n) => {
                 self.max_strength += n;
                 self.strength += n;
-                format!("力がみなぎる。(腕力 {}/{})", self.strength, self.max_strength)
+                format!(
+                    "力がみなぎる。(腕力 {}/{})",
+                    self.strength, self.max_strength
+                )
             }
             Effect::RestoreStrength => {
                 if self.strength < self.max_strength {
@@ -193,7 +223,11 @@ impl Game {
                 }
             }
             Effect::SelfStatus(st, turns) => self.inflict(st, turns),
-            Effect::MonstersStatus { status, turns, radius } => self.afflict_monsters(status, turns, radius),
+            Effect::MonstersStatus {
+                status,
+                turns,
+                radius,
+            } => self.afflict_monsters(status, turns, radius),
             Effect::DetectMonsters => self.detect_monsters(),
             Effect::DetectItems => self.detect_items(),
             Effect::MagicMap => {
@@ -234,16 +268,14 @@ impl Game {
                 }
                 None => "鎧を着ていないので、何も起こらず消えた。".to_string(),
             },
-            Effect::CreateMonster => {
-                match self.random_free_step(self.pos) {
-                    Some(p) => {
-                        let kind = self.pick_monster_kind();
-                        let i = self.add_monster(kind, p);
-                        format!("すぐそばに{}が現れた！", self.foe_name(i))
-                    }
-                    None => String::new(),
+            Effect::CreateMonster => match self.random_free_step(self.pos) {
+                Some(p) => {
+                    let kind = self.pick_monster_kind();
+                    let i = self.add_monster(kind, p);
+                    format!("すぐそばに{}が現れた！", self.foe_name(i))
                 }
-            }
+                None => String::new(),
+            },
             Effect::Aggravate => {
                 let n = self.monsters.len();
                 for i in 0..n {
@@ -259,11 +291,18 @@ impl Game {
     }
 
     /// 識別の巻物。対象の文字を指定できる。
-    fn identify_effect(&mut self, letter: char, target: Option<char>, was_known: bool) -> Result<String, String> {
+    fn identify_effect(
+        &mut self,
+        letter: char,
+        target: Option<char>,
+        was_known: bool,
+    ) -> Result<String, String> {
         let ti = match target {
             Some(t) if t == letter => return Err("その巻物自身は対象にできない。".to_string()),
             Some(t) => match self.inventory.iter().position(|s| s.letter == t) {
-                Some(i) if !self.needs_identify(&self.inventory[i]) => return Err(format!("{t} はすでに識別済みだ。")),
+                Some(i) if !self.needs_identify(&self.inventory[i]) => {
+                    return Err(format!("{t} はすでに識別済みだ。"))
+                }
                 Some(i) => Some(i),
                 None => return Err(format!("持ち物 {t} はない。")),
             },
@@ -283,8 +322,18 @@ impl Game {
                 let old = self.ring_name(&self.inventory[i].tool.expect("指輪"));
                 self.reveal_ring(letter);
                 let t = self.inventory[i].tool.expect("指輪");
-                let cursed = if t.cursed { " 呪われている！" } else { "" };
-                Ok(format!("{old}の正体が分かった。{} ({}){cursed}", self.ring_name(&t), t.kind.ring_def().map_or(String::new(), |r| r.effect.describe(t.val))))
+                let cursed = if t.cursed {
+                    " 呪われている！"
+                } else {
+                    ""
+                };
+                Ok(format!(
+                    "{old}の正体が分かった。{} ({}){cursed}",
+                    self.ring_name(&t),
+                    t.kind
+                        .ring_def()
+                        .map_or(String::new(), |r| r.effect.describe(t.val))
+                ))
             }
             Some(i) => {
                 let tk = self.inventory[i].kind;
@@ -299,14 +348,21 @@ impl Game {
 
     fn armor_gear_mut(&mut self) -> Option<&mut Gear> {
         let l = self.armor?;
-        self.inventory.iter_mut().find(|s| s.letter == l)?.gear.as_mut()
+        self.inventory
+            .iter_mut()
+            .find(|s| s.letter == l)?
+            .gear
+            .as_mut()
     }
 
     /// 装備中の武器か防具を +1 強化する。
     fn enchant_gear(&mut self, weapon: bool) -> String {
         let slot = if weapon { self.weapon } else { self.armor };
         let Some(letter) = slot else {
-            return format!("{}を装備していないので、何も起こらず消えた。", if weapon { "武器" } else { "防具" });
+            return format!(
+                "{}を装備していないので、何も起こらず消えた。",
+                if weapon { "武器" } else { "防具" }
+            );
         };
         let g = self
             .inventory
@@ -315,13 +371,19 @@ impl Game {
             .and_then(|s| s.gear.as_mut())
             .expect("装備している物は持ち物にある");
         g.enchant = (g.enchant + 1).min(MAX_ENCHANT);
-        let stats = if g.identified { g.stats_text() } else { g.guess_text() };
+        let stats = if g.identified {
+            g.stats_text()
+        } else {
+            g.guess_text()
+        };
         format!("{}が青く光った。強化{:+}。({stats})", g.name(), g.enchant)
     }
 
     /// 敵に殴られて鎧が錆びる。保護されていれば防げる。
     pub(super) fn corrode_armor(&mut self) {
-        let Some(g) = self.armor_gear_mut() else { return };
+        let Some(g) = self.armor_gear_mut() else {
+            return;
+        };
         if g.protected {
             let name = g.name();
             self.note(&format!("{name}は守られていて、錆びなかった。"));
@@ -342,7 +404,10 @@ impl Game {
                 (p.0 - self.pos.0).abs().max((p.1 - self.pos.1).abs()) <= radius
             })
             .collect();
-        let n = idxs.iter().filter(|&&i| self.inflict_monster(i, status, turns)).count();
+        let n = idxs
+            .iter()
+            .filter(|&&i| self.inflict_monster(i, status, turns))
+            .count();
         if n == 0 {
             "周りには効く相手がいなかった。".to_string()
         } else {
@@ -356,7 +421,10 @@ impl Game {
         for _ in 0..200 {
             let x = self.rng.range(1, W - 1);
             let y = self.rng.range(1, H - 1);
-            if self.map.tile(x, y) == Tile::Floor && (x, y) != old && self.monster_at((x, y)).is_none() {
+            if self.map.tile(x, y) == Tile::Floor
+                && (x, y) != old
+                && self.monster_at((x, y)).is_none()
+            {
                 self.pos = (x, y);
                 break;
             }
@@ -375,7 +443,11 @@ impl Game {
             .iter()
             .map(|m| format!("{}が{}", m.name, rel_text(self.pos, m.pos)))
             .collect();
-        format!("{}体の敵の気配を感じた: {}。", self.monsters.len(), list.join("、"))
+        format!(
+            "{}体の敵の気配を感じた: {}。",
+            self.monsters.len(),
+            list.join("、")
+        )
     }
 
     /// 階じゅうの床の物の場所を知る（地図に残る）。
@@ -384,7 +456,10 @@ impl Game {
             .floor_items
             .iter()
             .map(|f| (f.pos, self.item_name(&f.item), f.item.kind().glyph()))
-            .chain(self.amulet.map(|p| (p, "魔除けのアミュレット".to_string(), ',')))
+            .chain(
+                self.amulet
+                    .map(|p| (p, "魔除けのアミュレット".to_string(), ',')),
+            )
             .collect();
         if spots.is_empty() {
             return "この階に落ちている物はない。".to_string();
@@ -397,7 +472,15 @@ impl Game {
             .take(10)
             .map(|(p, name, glyph)| format!("{glyph} {name}が{}", rel_text(self.pos, *p)))
             .collect();
-        let more = if spots.len() > 10 { format!(" ほか{}個", spots.len() - 10) } else { String::new() };
-        format!("{}個の物の気配を感じた: {}{more}。", spots.len(), list.join("、"))
+        let more = if spots.len() > 10 {
+            format!(" ほか{}個", spots.len() - 10)
+        } else {
+            String::new()
+        };
+        format!(
+            "{}個の物の気配を感じた: {}{more}。",
+            spots.len(),
+            list.join("、")
+        )
     }
 }

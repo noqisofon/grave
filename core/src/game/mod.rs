@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 
 use crate::command::{self, Command, Dir, TravelTarget};
 use crate::item::{
-    Class, Effect, Gear, Item, ItemKind, Suffix, Tool, MUSHROOM_LOOKS, POTION_LOOKS, RING_LOOKS, SCROLL_LOOKS,
-    WAND_LOOKS,
+    Class, Effect, Gear, Item, ItemKind, Suffix, Tool, MUSHROOM_LOOKS, POTION_LOOKS, RING_LOOKS,
+    SCROLL_LOOKS, WAND_LOOKS,
 };
 use crate::map::{idx, Map, Tile, H, W};
 use crate::monster::{MonsterKind, KINDS};
@@ -257,10 +257,18 @@ fn rel_text(from: (i32, i32), to: (i32, i32)) -> String {
     let dy = to.1 - from.1;
     let mut parts = Vec::new();
     if dx != 0 {
-        parts.push(format!("{}に{}", if dx > 0 { "東" } else { "西" }, dx.abs()));
+        parts.push(format!(
+            "{}に{}",
+            if dx > 0 { "東" } else { "西" },
+            dx.abs()
+        ));
     }
     if dy != 0 {
-        parts.push(format!("{}に{}", if dy > 0 { "南" } else { "北" }, dy.abs()));
+        parts.push(format!(
+            "{}に{}",
+            if dy > 0 { "南" } else { "北" },
+            dy.abs()
+        ));
     }
     parts.join("、")
 }
@@ -477,7 +485,9 @@ impl Game {
 
     /// マス `p` の一番上の物（マップの記号になる）。
     fn item_at(&self, p: (i32, i32)) -> Option<Item> {
-        self.floor_order(p).first().map(|&i| self.floor_items[i].item)
+        self.floor_order(p)
+            .first()
+            .map(|&i| self.floor_items[i].item)
     }
 
     /// 持ち物や床では、正体を知っていれば本当の名前、知らなければ見た目の名前。
@@ -505,7 +515,9 @@ impl Game {
     /// 持ち物に加えられるか（同じ種類のスタックがあるか、空き文字があるか）。装備は重ならない。
     fn can_take(&self, item: impl Into<Item>) -> bool {
         match item.into() {
-            Item::Plain(kind) => self.inventory.iter().any(|s| s.kind == kind) || self.has_free_letter(),
+            Item::Plain(kind) => {
+                self.inventory.iter().any(|s| s.kind == kind) || self.has_free_letter()
+            }
             Item::Gear(_) | Item::Tool(_) => self.has_free_letter(),
         }
     }
@@ -540,7 +552,9 @@ impl Game {
         if self.amulet == Some(self.pos) {
             self.amulet = None;
             self.has_amulet = true;
-            self.note("魔除けのアミュレットを手に入れた！ 階段は登り階段になった。地上まで持ち帰ろう。");
+            self.note(
+                "魔除けのアミュレットを手に入れた！ 階段は登り階段になった。地上まで持ち帰ろう。",
+            );
             self.alert = Some("アミュレットを手に入れて中断した。".to_string());
         }
         // 自動で拾うのは、印のない物の一番上の1個だけ（捨てた物は拾わない）
@@ -554,7 +568,10 @@ impl Game {
 
     /// マス `p` で自動的に拾われる物（印のない物の先頭）の `floor_items` 内の番号。
     fn auto_pickable(&self, p: (i32, i32)) -> Option<usize> {
-        self.floor_order(p).first().copied().filter(|&j| !self.floor_items[j].dropped)
+        self.floor_order(p)
+            .first()
+            .copied()
+            .filter(|&j| !self.floor_items[j].dropped)
     }
 
     /// 床の物 `j` を持ち物に移す。成功ならそのメッセージ、満杯なら Err のメッセージ。
@@ -565,7 +582,10 @@ impl Game {
                 self.floor_items.remove(j);
                 Ok(format!("{}を拾った。({letter})", self.item_name(&item)))
             }
-            None => Err(format!("持ち物がいっぱいで、{}を拾えない。", self.item_name(&item))),
+            None => Err(format!(
+                "持ち物がいっぱいで、{}を拾えない。",
+                self.item_name(&item)
+            )),
         }
     }
 
@@ -579,7 +599,11 @@ impl Game {
         if n > order.len() {
             return (
                 false,
-                format!("足元の番号は 1〜{} だ。{}", order.len(), self.underfoot_text()),
+                format!(
+                    "足元の番号は 1〜{} だ。{}",
+                    order.len(),
+                    self.underfoot_text()
+                ),
                 false,
             );
         }
@@ -602,14 +626,28 @@ impl Game {
                 (_, Some(t)) => self.ring_name(&t),
                 _ => String::new(),
             };
-            return if stack.gear.is_some_and(|g| g.is_sticky()) || stack.tool.is_some_and(|t| t.is_sticky()) {
-                (false, format!("{name}は呪われていて、はずせない。捨てられない。"), false)
+            return if stack.gear.is_some_and(|g| g.is_sticky())
+                || stack.tool.is_some_and(|t| t.is_sticky())
+            {
+                (
+                    false,
+                    format!("{name}は呪われていて、はずせない。捨てられない。"),
+                    false,
+                )
             } else {
-                (false, format!("{name}は装備中だ。先に unequip {letter} ではずそう。"), false)
+                (
+                    false,
+                    format!("{name}は装備中だ。先に unequip {letter} ではずそう。"),
+                    false,
+                )
             };
         }
         if count > stack.count {
-            return (false, format!("{letter} は{}個しか持っていない。", stack.count), false);
+            return (
+                false,
+                format!("{letter} は{}個しか持っていない。", stack.count),
+                false,
+            );
         }
         let item = stack.item();
         let name = self.item_name(&item);
@@ -678,14 +716,25 @@ impl Game {
                 }
                 line
             })
-            .chain(self.has_amulet.then(|| "★ 魔除けのアミュレット".to_string()))
+            .chain(
+                self.has_amulet
+                    .then(|| "★ 魔除けのアミュレット".to_string()),
+            )
             .collect()
     }
 
     /// 装備中の光源の1行（持ち物の外にあるので、一覧とは別に出す）。
     pub fn light_line(&self) -> String {
         match self.light {
-            Some(l) => format!("光源: {} (装備中){}", self.light_text(&l), if l.val <= 0 { " 燃え尽きている" } else { "" }),
+            Some(l) => format!(
+                "光源: {} (装備中){}",
+                self.light_text(&l),
+                if l.val <= 0 {
+                    " 燃え尽きている"
+                } else {
+                    ""
+                }
+            ),
             None => "光源: なし".to_string(),
         }
     }
@@ -697,9 +746,18 @@ impl Game {
             if !self.known[t.kind.index()] {
                 line.push_str(" (未識別)");
             } else if t.identified {
-                line.push_str(&format!(" [{}]", t.kind.ring_def().map_or(String::new(), |r| r.effect.describe(t.val))));
+                line.push_str(&format!(
+                    " [{}]",
+                    t.kind
+                        .ring_def()
+                        .map_or(String::new(), |r| r.effect.describe(t.val))
+                ));
                 if t.cursed {
-                    line.push_str(if t.freed { " (呪い解除済み)" } else { " (呪われている)" });
+                    line.push_str(if t.freed {
+                        " (呪い解除済み)"
+                    } else {
+                        " (呪われている)"
+                    });
                 }
             }
             if self.rings.contains(&Some(letter)) {
@@ -725,7 +783,11 @@ impl Game {
         let wands: Vec<String> = self
             .inventory
             .iter()
-            .filter_map(|s| s.tool.filter(|t| t.kind.is_wand()).map(|t| format!("{}:{}", s.letter, t.val)))
+            .filter_map(|s| {
+                s.tool
+                    .filter(|t| t.kind.is_wand())
+                    .map(|t| format!("{}:{}", s.letter, t.val))
+            })
             .collect();
         wands.join(" ")
     }
@@ -742,7 +804,10 @@ impl Game {
             if !equipped {
                 // 今の装備（なければ素手・防具なし）との差
                 if let Some((lo, hi)) = g.weapon_range() {
-                    let (clo, chi) = self.weapon_gear().and_then(|w| w.weapon_range()).unwrap_or((2, 4));
+                    let (clo, chi) = self
+                        .weapon_gear()
+                        .and_then(|w| w.weapon_range())
+                        .unwrap_or((2, 4));
                     line.push_str(&format!(" (装備比 {:+}〜{:+})", lo - clo, hi - chi));
                 } else {
                     let cur = self.armor_gear().map_or(0, |a| a.armor_value());
@@ -796,7 +861,9 @@ impl Game {
             g.worn += 1;
             if g.worn >= IDENTIFY_AFTER_WORN {
                 let (old, text) = self.identify_gear(letter);
-                self.note(&format!("身につけているうちに、{old}の正体が分かった。{text}"));
+                self.note(&format!(
+                    "身につけているうちに、{old}の正体が分かった。{text}"
+                ));
             }
         }
     }
@@ -893,7 +960,9 @@ impl Game {
 
     /// 幻覚で見える敵の種類（ターンと敵ごとに決まる。乱数は使わない）。
     fn hallu_kind(&self, i: usize) -> &'static MonsterKind {
-        let mut x = self.seed ^ ((self.turn as u64) << 24) ^ (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut x = self.seed
+            ^ ((self.turn as u64) << 24)
+            ^ (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         x ^= x >> 33;
         x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
         x ^= x >> 33;
@@ -954,7 +1023,13 @@ impl Game {
 
     /// 満腹度と毒の状態（観測やTUIの見出し用）。
     pub fn status_text(&self) -> String {
-        let mut s = format!("腕力 {}/{} 満腹度 {}/{}", self.effective_strength(), self.max_strength, self.food, MAX_FOOD);
+        let mut s = format!(
+            "腕力 {}/{} 満腹度 {}/{}",
+            self.effective_strength(),
+            self.max_strength,
+            self.food,
+            MAX_FOOD
+        );
         if self.has_amulet {
             s.push_str(" ★アミュレット所持");
         }
@@ -968,7 +1043,12 @@ impl Game {
         match self.light {
             Some(l) => {
                 let max = l.kind.light_def().map_or(0, |d| d.max_fuel);
-                s.push_str(&format!(" 光源:{} 燃料{}/{}", l.kind.true_name(), l.val, max));
+                s.push_str(&format!(
+                    " 光源:{} 燃料{}/{}",
+                    l.kind.true_name(),
+                    l.val,
+                    max
+                ));
                 if l.val <= 0 {
                     s.push_str("(暗闇: 視界が狭い)");
                 } else if l.val <= 100 {
@@ -1001,7 +1081,10 @@ impl Game {
 
     /// 武器の攻撃範囲（含む）。装備がなければ素手。レベルの上乗せを含む。
     fn attack_range(&self) -> (i32, i32) {
-        let (lo, hi) = self.weapon_gear().and_then(|g| g.weapon_range()).unwrap_or((2, 4));
+        let (lo, hi) = self
+            .weapon_gear()
+            .and_then(|g| g.weapon_range())
+            .unwrap_or((2, 4));
         let b = self.level_bonus() + self.strength_bonus() + self.ring_fx().damage;
         ((lo + b).max(1), (hi + b).max(1))
     }
@@ -1053,14 +1136,33 @@ impl Game {
             }
         }
         let Some(gear) = s.gear else {
-            return (false, format!("{}は装備できない。", self.display_name(s.kind)), false);
+            return (
+                false,
+                format!("{}は装備できない。", self.display_name(s.kind)),
+                false,
+            );
         };
-        let slot = if gear.kind.is_weapon() { self.weapon } else { self.armor };
+        let slot = if gear.kind.is_weapon() {
+            self.weapon
+        } else {
+            self.armor
+        };
         if slot == Some(letter) {
-            return (false, format!("{}はすでに装備している。", gear.name()), false);
+            return (
+                false,
+                format!("{}はすでに装備している。", gear.name()),
+                false,
+            );
         }
         if let Some(cur) = self.gear_of(slot).filter(|g| g.is_sticky()) {
-            return (false, format!("{}は呪われていて、はずせない。別の装備には替えられない。", cur.name()), false);
+            return (
+                false,
+                format!(
+                    "{}は呪われていて、はずせない。別の装備には替えられない。",
+                    cur.name()
+                ),
+                false,
+            );
         }
         let old = self.gear_of(slot).map(|g| g.name());
         if gear.kind.is_weapon() {
@@ -1074,10 +1176,18 @@ impl Game {
         }
         if gear.is_sticky() {
             // 呪いは装備して初めて分かる。正体も明らかになる
-            if let Some(g) = self.inventory.iter_mut().find(|s| s.letter == letter).and_then(|s| s.gear.as_mut()) {
+            if let Some(g) = self
+                .inventory
+                .iter_mut()
+                .find(|s| s.letter == letter)
+                .and_then(|s| s.gear.as_mut())
+            {
                 g.identified = true;
             }
-            msg.push_str(&format!(" 呪われていた！ もうはずせない。({})", gear.suffix.map_or("", Suffix::describe)));
+            msg.push_str(&format!(
+                " 呪われていた！ もうはずせない。({})",
+                gear.suffix.map_or("", Suffix::describe)
+            ));
         }
         (true, msg, true)
     }
@@ -1091,13 +1201,21 @@ impl Game {
             return self.unequip_ring(letter, t);
         }
         let Some(gear) = s.gear else {
-            return (false, format!("{}は装備品ではない。", self.display_name(s.kind)), false);
+            return (
+                false,
+                format!("{}は装備品ではない。", self.display_name(s.kind)),
+                false,
+            );
         };
         if self.weapon != Some(letter) && self.armor != Some(letter) {
             return (false, format!("{}は装備していない。", gear.name()), false);
         }
         if gear.is_sticky() {
-            return (false, format!("{}は呪われていて、はずせない。", gear.name()), false);
+            return (
+                false,
+                format!("{}は呪われていて、はずせない。", gear.name()),
+                false,
+            );
         }
         if gear.kind.is_weapon() {
             self.weapon = None;
@@ -1170,7 +1288,9 @@ impl Game {
     }
 
     fn visible_monster_indices(&self) -> Vec<usize> {
-        (0..self.monsters.len()).filter(|&i| self.can_see_monster(i)).collect()
+        (0..self.monsters.len())
+            .filter(|&i| self.can_see_monster(i))
+            .collect()
     }
 
     /// 敵 `i` が、いまこちらに気づいているか。見通せる範囲に入ったとき気づく。
@@ -1255,7 +1375,11 @@ impl Game {
                 }
                 roll -= k.weight();
             }
-            self.traps.push(Trap { pos: (x, y), kind, revealed: false });
+            self.traps.push(Trap {
+                pos: (x, y),
+                kind,
+                revealed: false,
+            });
         }
     }
 
@@ -1294,7 +1418,11 @@ impl Game {
             TrapKind::Dart => {
                 self.hp -= 2;
                 self.hit = true;
-                self.note(&format!("毒矢の罠だ！ 2のダメージを受けた。(HP {}/{})", self.hp.max(0), self.max_hp));
+                self.note(&format!(
+                    "毒矢の罠だ！ 2のダメージを受けた。(HP {}/{})",
+                    self.hp.max(0),
+                    self.max_hp
+                ));
                 if self.hp <= 0 {
                     self.dead = true;
                     self.note("あなたは力尽きた…。ゲームオーバー。");
@@ -1330,15 +1458,28 @@ impl Game {
             Some(d) => (self.pos.0 + d.delta().0, self.pos.1 + d.delta().1),
             None => self.pos,
         };
-        let Some(ti) = self.traps.iter().position(|t| t.pos == target && t.revealed) else {
-            return (false, "そこには見つけた罠がない。(隠れた罠は解除できない。近くに立って探そう)".to_string(), false);
+        let Some(ti) = self
+            .traps
+            .iter()
+            .position(|t| t.pos == target && t.revealed)
+        else {
+            return (
+                false,
+                "そこには見つけた罠がない。(隠れた罠は解除できない。近くに立って探そう)"
+                    .to_string(),
+                false,
+            );
         };
         let kind = self.traps[ti].kind;
         let percent = self.disarm_percent();
         if self.rng.range(0, 100) < percent {
             self.traps.remove(ti);
             self.map.mark_seen(target.0, target.1);
-            return (true, format!("{}を解除した！ (成功率{percent}%)", kind.name()), true);
+            return (
+                true,
+                format!("{}を解除した！ (成功率{percent}%)", kind.name()),
+                true,
+            );
         }
         let mut msg = format!("{}の解除に失敗した。(成功率{percent}%)", kind.name());
         // 失敗すると3回に1回は作動する。足元の罠以外の落とし穴は、落ちずに済む
@@ -1374,7 +1515,10 @@ impl Game {
 
     /// 知っている罠（見つけたもの）が `p` にあるか。
     fn known_trap_at(&self, p: (i32, i32)) -> Option<Trap> {
-        self.traps.iter().copied().find(|t| t.pos == p && t.revealed)
+        self.traps
+            .iter()
+            .copied()
+            .find(|t| t.pos == p && t.revealed)
     }
 
     /// 敵が見えていて自動移動できないなら、その理由。
@@ -1425,13 +1569,14 @@ impl Game {
     /// 1ターンぶんの空腹と毒。
     fn tick_body(&mut self, fx: &RingFx) {
         // Famine の防具は、2ターンに1回、満腹度を余計に減らす。消化遅延の指輪は減る回数を間引く
-        let drain = if fx.slow_digestion > 0 && !self.turn.is_multiple_of(fx.slow_digestion as u32 + 1) {
-            0
-        } else if self.armor_suffix() == Some(Suffix::Famine) && self.turn.is_multiple_of(2) {
-            2
-        } else {
-            1
-        };
+        let drain =
+            if fx.slow_digestion > 0 && !self.turn.is_multiple_of(fx.slow_digestion as u32 + 1) {
+                0
+            } else if self.armor_suffix() == Some(Suffix::Famine) && self.turn.is_multiple_of(2) {
+                2
+            } else {
+                1
+            };
         for _ in 0..drain {
             if self.food <= 0 {
                 break;
@@ -1463,7 +1608,11 @@ impl Game {
             cause = Some("毒");
         }
         if let Some(cause) = cause {
-            let msg = format!("{cause}で1ダメージ。(HP {}/{})", self.hp.max(0), self.max_hp);
+            let msg = format!(
+                "{cause}で1ダメージ。(HP {}/{})",
+                self.hp.max(0),
+                self.max_hp
+            );
             self.note(&msg);
             if self.hp <= 0 {
                 self.dead = true;
@@ -1500,7 +1649,8 @@ impl Game {
                 continue;
             }
             // 遅い敵・減速した敵は行動が半分に、加速した敵は倍になる（打ち消し合う）
-            let net = kind.slow as i32 + st.has(Status::Slowed) as i32 - st.has(Status::Hasted) as i32;
+            let net =
+                kind.slow as i32 + st.has(Status::Slowed) as i32 - st.has(Status::Hasted) as i32;
             if net > 0 && !self.turn.is_multiple_of(1 << net) {
                 continue;
             }
@@ -1546,7 +1696,9 @@ impl Game {
                 let (dx, dy) = d.delta();
                 (from.0 + dx, from.1 + dy)
             })
-            .filter(|&p| self.map.tile(p.0, p.1).walkable() && p != self.pos && self.monster_at(p).is_none())
+            .filter(|&p| {
+                self.map.tile(p.0, p.1).walkable() && p != self.pos && self.monster_at(p).is_none()
+            })
             .filter(|&p| dist(p) > dist(from))
             .max_by_key(|&p| dist(p))
     }
@@ -1567,7 +1719,9 @@ impl Game {
             // 追い詰められたら戦う
         }
         let lost = st.has(Status::Confused) || st.has(Status::Blind);
-        if (kind.erratic && !self.monsters[i].cancelled && self.rng.range(0, 3) == 0) || (lost && self.rng.range(0, 2) == 0) {
+        if (kind.erratic && !self.monsters[i].cancelled && self.rng.range(0, 3) == 0)
+            || (lost && self.rng.range(0, 2) == 0)
+        {
             if let Some(np) = self.random_free_step(mpos) {
                 self.monsters[i].pos = np;
             }
@@ -1585,7 +1739,10 @@ impl Game {
             let bonus = (self.depth as i32 - 1) / 3;
             let raw = self.rng.range(kind.dmg.0, kind.dmg.1 + 1 + bonus);
             // 防御で減らして「最低1」にしたあとに足す。重い鎧でも呪いの代償は必ず受ける
-            let curse = self.weapon_gear().and_then(|g| g.suffix).map_or(0, Suffix::damage_taken_bonus);
+            let curse = self
+                .weapon_gear()
+                .and_then(|g| g.suffix)
+                .map_or(0, Suffix::damage_taken_bonus);
             let dmg = (raw - self.defense()).max(1) + curse;
             self.hp -= dmg;
             self.hit = true;
@@ -1609,13 +1766,20 @@ impl Game {
                 if self.monsters[i].hp <= 0 {
                     let xp = kind.xp + self.depth - 1;
                     self.pending_xp += xp;
-                    self.note(&format!("トゲが{name}に1ダメージを返し、倒した！ (経験値 +{xp})"));
+                    self.note(&format!(
+                        "トゲが{name}に1ダメージを返し、倒した！ (経験値 +{xp})"
+                    ));
                 } else {
                     self.note(&format!("トゲが{name}に1ダメージを返した。"));
                 }
             }
             // Thorns で倒された敵は、毒を撒けない
-            if kind.poisons && !self.monsters[i].cancelled && self.hp > 0 && self.monsters[i].hp > 0 && self.rng.range(0, 2) == 0 {
+            if kind.poisons
+                && !self.monsters[i].cancelled
+                && self.hp > 0
+                && self.monsters[i].hp > 0
+                && self.rng.range(0, 2) == 0
+            {
                 if self.try_poison(5) {
                     self.note("毒を受けた！");
                 } else {
@@ -1723,7 +1887,10 @@ impl Game {
         let gained = heal.min(self.max_hp - self.hp);
         if gained > 0 {
             self.hp += gained;
-            msg.push_str(&format!(" 武器が生命を吸った。HP+{gained} (HP {}/{})", self.hp, self.max_hp));
+            msg.push_str(&format!(
+                " 武器が生命を吸った。HP+{gained} (HP {}/{})",
+                self.hp, self.max_hp
+            ));
         }
         msg
     }
@@ -1852,7 +2019,11 @@ impl Game {
         let (ok, mut message, spent) = match cmd {
             Command::Move(d) => {
                 let (d, reeled) = self.confuse_dir(d);
-                let lead = if reeled { format!("混乱して{}へ向かってしまった。 ", d.name()) } else { String::new() };
+                let lead = if reeled {
+                    format!("混乱して{}へ向かってしまった。 ", d.name())
+                } else {
+                    String::new()
+                };
                 let (dx, dy) = d.delta();
                 let t = (self.pos.0 + dx, self.pos.1 + dy);
                 if let Some(i) = self.monster_at(t) {
@@ -1861,7 +2032,11 @@ impl Game {
                     self.pos = t;
                     self.refresh_fov();
                     if self.pos == self.stairs {
-                        let hint = if self.has_amulet { "ascend で登れる" } else { "descend で降りられる" };
+                        let hint = if self.has_amulet {
+                            "ascend で登れる"
+                        } else {
+                            "descend で降りられる"
+                        };
                         (true, format!("{lead}階段の上にいる。({hint})"), true)
                     } else {
                         (true, format!("{lead}{}へ進んだ。", d.name()), true)
@@ -1875,7 +2050,11 @@ impl Game {
             }
             Command::Attack(d) => {
                 let (d, reeled) = self.confuse_dir(d);
-                let lead = if reeled { format!("混乱して{}を攻撃してしまった。 ", d.name()) } else { String::new() };
+                let lead = if reeled {
+                    format!("混乱して{}を攻撃してしまった。 ", d.name())
+                } else {
+                    String::new()
+                };
                 let (dx, dy) = d.delta();
                 let t = (self.pos.0 + dx, self.pos.1 + dy);
                 match self.monster_at(t) {
@@ -1886,11 +2065,20 @@ impl Game {
             }
             Command::Descend => {
                 if self.has_amulet {
-                    (false, "アミュレットを持っていると、階段は登り階段だ。ascend で登ろう。".to_string(), false)
+                    (
+                        false,
+                        "アミュレットを持っていると、階段は登り階段だ。ascend で登ろう。"
+                            .to_string(),
+                        false,
+                    )
                 } else if self.pos != self.stairs {
                     (false, "ここに階段はない。".to_string(), false)
                 } else if self.depth >= AMULET_DEPTH {
-                    (false, "ここが最深部だ。魔除けのアミュレットを探そう。".to_string(), false)
+                    (
+                        false,
+                        "ここが最深部だ。魔除けのアミュレットを探そう。".to_string(),
+                        false,
+                    )
                 } else {
                     self.depth += 1;
                     self.new_level();
@@ -1899,7 +2087,12 @@ impl Game {
             }
             Command::Ascend => {
                 if !self.has_amulet {
-                    (false, "登り階段はない。アミュレットを手に入れると、階段が登り階段になる。".to_string(), false)
+                    (
+                        false,
+                        "登り階段はない。アミュレットを手に入れると、階段が登り階段になる。"
+                            .to_string(),
+                        false,
+                    )
                 } else if self.pos != self.stairs {
                     (false, "ここに階段はない。".to_string(), false)
                 } else if self.depth == 1 {
@@ -2019,7 +2212,10 @@ impl Game {
             return (true, "すでに階段の上にいる。".to_string());
         }
         if !self.map.is_seen(self.stairs.0, self.stairs.1) {
-            return (false, "階段の場所をまだ知らない。explore で探そう。".to_string());
+            return (
+                false,
+                "階段の場所をまだ知らない。explore で探そう。".to_string(),
+            );
         }
         if let Some(m) = self.refuse_if_enemies() {
             return (false, m);
@@ -2035,12 +2231,21 @@ impl Game {
             if let Some(i) = self.monster_at(p) {
                 return (
                     true,
-                    format!("階段へ向かう途中({n}歩)、進路上に{}がいる。", self.foe_name(i)),
+                    format!(
+                        "階段へ向かう途中({n}歩)、進路上に{}がいる。",
+                        self.foe_name(i)
+                    ),
                 );
             }
             // 浮遊が途中で切れて、次のマスが見つけた罠なら、踏む前に止まる
-            if let Some(t) = self.known_trap_at(p).filter(|_| !self.status.has(Status::Levitating)) {
-                return (true, format!("階段へ向かう途中({n}歩)、進路上に{}がある。", t.kind.name()));
+            if let Some(t) = self
+                .known_trap_at(p)
+                .filter(|_| !self.status.has(Status::Levitating))
+            {
+                return (
+                    true,
+                    format!("階段へ向かう途中({n}歩)、進路上に{}がある。", t.kind.name()),
+                );
             }
             self.step_to(p);
             n += 1;
@@ -2136,7 +2341,14 @@ impl Game {
             let fx = if e.statuses.is_empty() {
                 String::new()
             } else {
-                format!("[{}]", e.statuses.iter().map(|(s, n)| format!("{}{n}", s.name())).collect::<Vec<_>>().join(" "))
+                format!(
+                    "[{}]",
+                    e.statuses
+                        .iter()
+                        .map(|(s, n)| format!("{}{n}", s.name()))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
             };
             parts.push(format!(
                 "{}(HP {}/{}){fx}が{}にいる。",
@@ -2148,11 +2360,19 @@ impl Game {
         }
         for t in self.traps.iter().filter(|t| t.revealed) {
             if t.pos != self.pos {
-                parts.push(format!("{} {}が{}にある。", crate::trap::TRAP_GLYPH, t.kind.name(), rel_text(self.pos, t.pos)));
+                parts.push(format!(
+                    "{} {}が{}にある。",
+                    crate::trap::TRAP_GLYPH,
+                    t.kind.name(),
+                    rel_text(self.pos, t.pos)
+                ));
             }
         }
         if let Some(p) = self.amulet.filter(|p| self.map.is_seen(p.0, p.1)) {
-            parts.push(format!(", 魔除けのアミュレットが{}にある。", rel_text(self.pos, p)));
+            parts.push(format!(
+                ", 魔除けのアミュレットが{}にある。",
+                rel_text(self.pos, p)
+            ));
         }
         let under = self.underfoot_text();
         if !under.is_empty() {
@@ -2188,7 +2408,11 @@ impl Game {
             };
         }
         if let Some(&(_, ch)) = self.detect_marks.iter().find(|(p, _)| *p == (x, y)) {
-            return Cell { ch, visible: false, seen: true };
+            return Cell {
+                ch,
+                visible: false,
+                seen: true,
+            };
         }
         let seen = self.map.is_seen(x, y);
         if blind {
@@ -2274,7 +2498,11 @@ impl Game {
         if !active.is_empty() {
             s.push_str("-- 状態 --\n");
             for (st, n) in active {
-                s.push_str(&format!("{}: 残り{n}ターン — {}\n", st.name(), st.def().effect));
+                s.push_str(&format!(
+                    "{}: 残り{n}ターン — {}\n",
+                    st.name(),
+                    st.def().effect
+                ));
             }
         }
         let enemies = self.visible_enemies();
@@ -2289,7 +2517,11 @@ impl Game {
                 } else {
                     format!(
                         " [{}]",
-                        e.statuses.iter().map(|(s, n)| format!("{}{n}", s.name())).collect::<Vec<_>>().join(" ")
+                        e.statuses
+                            .iter()
+                            .map(|(s, n)| format!("{}{n}", s.name()))
+                            .collect::<Vec<_>>()
+                            .join(" ")
                     )
                 };
                 s.push_str(&format!(
@@ -2418,7 +2650,11 @@ mod tests {
         let mut g = with_gear(&[ItemKind::Dagger, ItemKind::Sword, ItemKind::Leather]);
         assert!(g.run("equip a").ok);
         let o = g.run("equip b");
-        assert!(o.ok && o.message.contains("Daggerをはずした"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("Daggerをはずした"),
+            "{}",
+            o.message
+        );
         assert!(g.run("equip c").ok); // 防具は別枠
         let lines = g.inventory_lines();
         assert!(!lines[0].contains("(装備中)"));
@@ -2444,7 +2680,12 @@ mod tests {
         assert!(!g.run("equip z").ok);
 
         // 種類の合わない動詞は、ターンを使わず失敗する
-        let mut g = with_gear(&[ItemKind::Plate, ItemKind::Healing, ItemKind::Bread, ItemKind::Teleport]);
+        let mut g = with_gear(&[
+            ItemKind::Plate,
+            ItemKind::Healing,
+            ItemKind::Bread,
+            ItemKind::Teleport,
+        ]);
         let turn = g.turn();
         for (cmd, hint) in [
             ("quaff a", "equip"),
@@ -2520,7 +2761,18 @@ mod tests {
     }
 
     fn quality_gear(kind: ItemKind, quality: crate::item::Quality, bonus: i32) -> Gear {
-        Gear { kind, quality, word: quality.words()[0], bonus, suffix: None, identified: true, worn: 0, enchant: 0, protected: false, freed: false }
+        Gear {
+            kind,
+            quality,
+            word: quality.words()[0],
+            bonus,
+            suffix: None,
+            identified: true,
+            worn: 0,
+            enchant: 0,
+            protected: false,
+            freed: false,
+        }
     }
 
     #[test]
@@ -2629,7 +2881,11 @@ mod tests {
         let mut rng = Rng::new(5);
         let mut seen = std::collections::HashSet::new();
         for i in 0..3000 {
-            let kind = if i % 2 == 0 { ItemKind::Axe } else { ItemKind::Plate };
+            let kind = if i % 2 == 0 {
+                ItemKind::Axe
+            } else {
+                ItemKind::Plate
+            };
             let g = Gear::roll(&mut rng, kind, 1 + (i % 30) as u32);
             if let Some(s) = g.suffix {
                 assert_ne!(g.quality, Quality::Common, "{g:?}");
@@ -2674,7 +2930,11 @@ mod tests {
         assert!(!o.message.contains("HP+"), "{}", o.message);
         g.monsters[0].hp = 1;
         let o = g.run("attack east");
-        assert!(o.message.contains("倒した") && o.message.contains("HP+2"), "{}", o.message);
+        assert!(
+            o.message.contains("倒した") && o.message.contains("HP+2"),
+            "{}",
+            o.message
+        );
     }
 
     #[test]
@@ -2690,7 +2950,11 @@ mod tests {
         g.monsters[0].hp = 1;
         let xp = g.xp;
         let o = g.run("wait");
-        assert!(o.message.contains("トゲ") && o.message.contains("倒した"), "{}", o.message);
+        assert!(
+            o.message.contains("トゲ") && o.message.contains("倒した"),
+            "{}",
+            o.message
+        );
         assert!(g.monsters.is_empty());
         assert!(g.xp > xp);
     }
@@ -2706,7 +2970,12 @@ mod tests {
         assert_eq!(g.poison(), 0);
         assert!(g.hp < 1000, "攻撃自体は受ける");
         g.take(ItemKind::PoisonShroom);
-        let l = g.inventory.iter().find(|s| s.kind == ItemKind::PoisonShroom).unwrap().letter;
+        let l = g
+            .inventory
+            .iter()
+            .find(|s| s.kind == ItemKind::PoisonShroom)
+            .unwrap()
+            .letter;
         let o = g.run(&format!("eat {l}"));
         assert_eq!(g.poison(), 0, "{}", o.message);
     }
@@ -2730,7 +2999,11 @@ mod tests {
         let c = give(&mut g, suffix_gear(ItemKind::Axe, Suffix::Cataclysm));
         let d = give(&mut g, Gear::plain(ItemKind::Dagger));
         // 装備するまで呪いは分からない
-        assert!(!g.inventory_lines()[0].contains("呪"), "{:?}", g.inventory_lines());
+        assert!(
+            !g.inventory_lines()[0].contains("呪"),
+            "{:?}",
+            g.inventory_lines()
+        );
         let o = g.run(&format!("equip {c}"));
         assert!(o.ok && o.message.contains("呪われていた"), "{}", o.message);
         let t = g.turn();
@@ -2753,13 +3026,22 @@ mod tests {
         assert!(!line.contains("Vampire"), "{line}");
         // 床の上でも同じ見え方
         let p = (g.pos.0 + 1, g.pos.1);
-        g.floor_items.push(FloorItem::new(p, Item::Gear(suffix_gear(ItemKind::Axe, Suffix::Thorns))));
+        g.floor_items.push(FloorItem::new(
+            p,
+            Item::Gear(suffix_gear(ItemKind::Axe, Suffix::Thorns)),
+        ));
         g.map.update_fov(g.pos, FOV_RADIUS);
         let look = g.run("look").message;
-        assert!(look.contains("Sanctified Axe (?)") && !look.contains("Thorns"), "{look}");
+        assert!(
+            look.contains("Sanctified Axe (?)") && !look.contains("Thorns"),
+            "{look}"
+        );
         // 普通の品は隠すものがないので (?) が付かない
         g.take(ItemKind::Dagger);
-        assert!(g.inventory_lines().iter().any(|l| l.contains("Basic Dagger [") && !l.contains("(?)")));
+        assert!(g
+            .inventory_lines()
+            .iter()
+            .any(|l| l.contains("Basic Dagger [") && !l.contains("(?)")));
         let _ = w;
     }
 
@@ -2770,18 +3052,34 @@ mod tests {
         let w = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Vampire));
         let s1 = g.take(ItemKind::Identify).unwrap();
         let o = g.run(&format!("read {s1} {w}"));
-        assert!(o.ok && o.message.contains("of the Vampire"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("of the Vampire"),
+            "{}",
+            o.message
+        );
         assert!(g.inventory_lines()[0].contains("Sanctified Sword of the Vampire"));
         assert!(!g.inventory_lines()[0].contains("(?)"));
         // 識別済みの装備は対象にできず、巻物も減らない
         let s2 = g.take(ItemKind::Identify).unwrap();
         let o = g.run(&format!("read {s2} {w}"));
-        assert!(!o.ok && o.message.contains("すでに識別済み"), "{}", o.message);
+        assert!(
+            !o.ok && o.message.contains("すでに識別済み"),
+            "{}",
+            o.message
+        );
         // 対象を省くと、未識別の装備が自動で選ばれる
         let a = give(&mut g, suffix_gear(ItemKind::Plate, Suffix::Warding));
         let o = g.run(&format!("read {s2}"));
         assert!(o.ok && o.message.contains("of Warding"), "{}", o.message);
-        assert!(g.inventory.iter().find(|s| s.letter == a).unwrap().gear.unwrap().identified);
+        assert!(
+            g.inventory
+                .iter()
+                .find(|s| s.letter == a)
+                .unwrap()
+                .gear
+                .unwrap()
+                .identified
+        );
     }
 
     #[test]
@@ -2809,7 +3107,9 @@ mod tests {
             told |= g.run("wait").message.contains("正体が分かった");
         }
         assert!(told);
-        assert!(g.inventory_lines()[0].contains("of Might") && !g.inventory_lines()[0].contains("(?)"));
+        assert!(
+            g.inventory_lines()[0].contains("of Might") && !g.inventory_lines()[0].contains("(?)")
+        );
         // 装備していないものは、時間が経っても分からない
         assert!(g.inventory_lines()[1].contains("(?)"));
         let _ = spare;
@@ -2825,14 +3125,31 @@ mod tests {
         let c = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Might));
         let l = g.inventory_lines();
         // 素手(2〜4)との差
-        assert!(l[0].contains("Basic Dagger [攻撃 3〜5 (装備比 +1〜+1)]"), "{}", l[0]);
-        assert!(l[1].contains("Basic Sword [攻撃 6〜9 (装備比 +4〜+5)]") || l[1].contains("Sword [攻撃 6〜9"), "{}", l[1]);
+        assert!(
+            l[0].contains("Basic Dagger [攻撃 3〜5 (装備比 +1〜+1)]"),
+            "{}",
+            l[0]
+        );
+        assert!(
+            l[1].contains("Basic Sword [攻撃 6〜9 (装備比 +4〜+5)]")
+                || l[1].contains("Sword [攻撃 6〜9"),
+            "{}",
+            l[1]
+        );
         // 未識別は、正確な値ではなく分かる範囲だけ
-        assert!(l[2].contains("Sanctified Sword (?) [攻撃 4〜7 +(2〜3)?]"), "{}", l[2]);
+        assert!(
+            l[2].contains("Sanctified Sword (?) [攻撃 4〜7 +(2〜3)?]"),
+            "{}",
+            l[2]
+        );
         assert!(!l[2].contains("装備比"), "{}", l[2]);
         g.run(&format!("equip {a}"));
         let l = g.inventory_lines();
-        assert!(l[0].contains("(装備中)") && !l[0].contains("装備比"), "{}", l[0]);
+        assert!(
+            l[0].contains("(装備中)") && !l[0].contains("装備比"),
+            "{}",
+            l[0]
+        );
         // 差は今の装備(短剣 3〜5)から
         assert!(l[1].contains("(装備比 +3〜+4)"), "{}", l[1]);
         let _ = (b, c);
@@ -2846,7 +3163,10 @@ mod tests {
         let o = g.observe_text(3);
         // 見出しは品質補正を含む値 (板金 3 + 補正 2)
         assert!(o.contains("防御 5"), "{o}");
-        assert!(o.contains("a) Sanctified Plate Armor (?) [防御 3 +(2〜3)?] (装備中)"), "{o}");
+        assert!(
+            o.contains("a) Sanctified Plate Armor (?) [防御 3 +(2〜3)?] (装備中)"),
+            "{o}"
+        );
     }
 
     #[test]
@@ -2871,7 +3191,11 @@ mod tests {
             g.floor_items.push(FloorItem::new(g.pos, *it));
         }
         for it in dropped {
-            g.floor_items.push(FloorItem { pos: g.pos, item: *it, dropped: true });
+            g.floor_items.push(FloorItem {
+                pos: g.pos,
+                item: *it,
+                dropped: true,
+            });
         }
     }
 
@@ -2881,7 +3205,11 @@ mod tests {
         let a = give(&mut g, Gear::plain(ItemKind::Dagger));
         let t = g.turn();
         let o = g.run(&format!("drop {a}"));
-        assert!(o.ok && o.message.contains("Basic Daggerを足元に捨てた"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("Basic Daggerを足元に捨てた"),
+            "{}",
+            o.message
+        );
         assert_eq!(g.turn(), t + 1);
         assert!(g.inventory.is_empty());
         assert_eq!(g.floor_items.len(), 1);
@@ -2889,7 +3217,10 @@ mod tests {
         // 個体の情報(未識別など)はそのまま床へ
         let w = give(&mut g, suffix_gear(ItemKind::Sword, Suffix::Might));
         g.run(&format!("drop {w}"));
-        assert_eq!(g.floor_items[1].item, Item::Gear(suffix_gear(ItemKind::Sword, Suffix::Might)));
+        assert_eq!(
+            g.floor_items[1].item,
+            Item::Gear(suffix_gear(ItemKind::Sword, Suffix::Might))
+        );
     }
 
     #[test]
@@ -2957,15 +3288,24 @@ mod tests {
         g.map.reveal_all();
         let far = *g
             .find_path(&|q| {
-                g.map.tile(q.0, q.1) == Tile::Floor && (q.0 - g.pos.0).abs() + (q.1 - g.pos.1).abs() > 6
+                g.map.tile(q.0, q.1) == Tile::Floor
+                    && (q.0 - g.pos.0).abs() + (q.1 - g.pos.1).abs() > 6
             })
             .unwrap()
             .last()
             .unwrap();
-        g.floor_items.push(FloorItem { pos: far, item: ItemKind::Healing.into(), dropped: true });
+        g.floor_items.push(FloorItem {
+            pos: far,
+            item: ItemKind::Healing.into(),
+            dropped: true,
+        });
         let start = g.pos;
         let o = g.run("explore");
-        assert!(o.message.contains("もう探索する場所がない"), "{}", o.message);
+        assert!(
+            o.message.contains("もう探索する場所がない"),
+            "{}",
+            o.message
+        );
         assert_eq!(g.pos, start);
         // 印のない物なら、今までどおり拾いに行く
         g.floor_items[0].dropped = false;
@@ -2978,7 +3318,11 @@ mod tests {
     fn walking_onto_a_tile_picks_only_the_top_undropped_item() {
         let mut g = quiet(2);
         let p = (g.pos.0 + 1, g.pos.1);
-        g.floor_items.push(FloorItem { pos: p, item: ItemKind::Sleep.into(), dropped: true });
+        g.floor_items.push(FloorItem {
+            pos: p,
+            item: ItemKind::Sleep.into(),
+            dropped: true,
+        });
         g.floor_items.push(FloorItem::new(p, ItemKind::Healing));
         g.floor_items.push(FloorItem::new(p, ItemKind::Bread));
         let o = g.run("move east");
@@ -3014,7 +3358,11 @@ mod tests {
     #[test]
     fn pickup_by_number_can_take_dropped_items_and_checks_range() {
         let mut g = quiet(2);
-        put_underfoot(&mut g, &[ItemKind::Healing.into()], &[ItemKind::Sleep.into(), ItemKind::Bread.into()]);
+        put_underfoot(
+            &mut g,
+            &[ItemKind::Healing.into()],
+            &[ItemKind::Sleep.into(), ItemKind::Bread.into()],
+        );
         let t = g.turn();
         for bad in ["pickup 4", "pickup 99"] {
             let o = g.run(bad);
@@ -3033,7 +3381,13 @@ mod tests {
     fn pickup_fails_when_the_inventory_is_full_without_spending_a_turn() {
         let mut g = quiet(2);
         for c in 'a'..='z' {
-            g.inventory.push(Stack { letter: c, kind: ItemKind::Dagger, count: 1, gear: Some(Gear::plain(ItemKind::Dagger)), tool: None });
+            g.inventory.push(Stack {
+                letter: c,
+                kind: ItemKind::Dagger,
+                count: 1,
+                gear: Some(Gear::plain(ItemKind::Dagger)),
+                tool: None,
+            });
         }
         put_underfoot(&mut g, &[ItemKind::Healing.into()], &[]);
         let t = g.turn();
@@ -3047,7 +3401,13 @@ mod tests {
     fn full_inventory_drop_then_pickup_takes_only_the_potion() {
         let mut g = quiet(2);
         for c in 'a'..='z' {
-            g.inventory.push(Stack { letter: c, kind: ItemKind::Dagger, count: 1, gear: Some(Gear::plain(ItemKind::Dagger)), tool: None });
+            g.inventory.push(Stack {
+                letter: c,
+                kind: ItemKind::Dagger,
+                count: 1,
+                gear: Some(Gear::plain(ItemKind::Dagger)),
+                tool: None,
+            });
         }
         // 1. 満杯で、足元に薬。歩いて乗っても拾えない
         let p = (g.pos.0 + 1, g.pos.1);
@@ -3058,7 +3418,10 @@ mod tests {
         // 2. 不要な装備を drop して空きを作る
         assert!(g.run("drop a").ok);
         let u = g.underfoot_text();
-        assert!(u.contains("1) ") && u.contains("2) Basic Dagger (捨てた)"), "{u}");
+        assert!(
+            u.contains("1) ") && u.contains("2) Basic Dagger (捨てた)"),
+            "{u}"
+        );
         // 3. 引数なしの pickup は薬だけを拾い、捨てた装備は拾い直さない
         let o = g.run("pickup");
         assert!(o.ok, "{}", o.message);
@@ -3079,9 +3442,15 @@ mod tests {
         put_underfoot(&mut g, &[ItemKind::Teleport.into()], &[]);
         let look = g.run("look").message;
         let name = g.looks[ItemKind::Teleport.index()];
-        assert!(look.contains(&format!("足元: 1) {name}  2) Basic Sword (捨てた)")), "{look}");
+        assert!(
+            look.contains(&format!("足元: 1) {name}  2) Basic Sword (捨てた)")),
+            "{look}"
+        );
         let o = g.observe_text(3);
-        assert!(o.contains(&format!("足元: 1) {name}  2) Basic Sword (捨てた)")), "{o}");
+        assert!(
+            o.contains(&format!("足元: 1) {name}  2) Basic Sword (捨てた)")),
+            "{o}"
+        );
     }
 
     #[test]
@@ -3089,7 +3458,17 @@ mod tests {
         let play = |seed: u64| {
             let mut g = Game::new(seed);
             let mut out = Vec::new();
-            for script in ["explore", "pickup", "drop a", "pickup 1", "explore", "drop b", "stay 3", "pickup", "inventory"] {
+            for script in [
+                "explore",
+                "pickup",
+                "drop a",
+                "pickup 1",
+                "explore",
+                "drop b",
+                "stay 3",
+                "pickup",
+                "inventory",
+            ] {
                 let o = g.run(script);
                 out.push(format!("{} {} {} {}", o.ok, o.message, o.turn, o.hp));
             }
@@ -3105,7 +3484,10 @@ mod tests {
     fn cataclysm_adds_one_to_every_hit_taken_even_through_armor() {
         let run = |cursed: bool| {
             let mut g = with_adjacent(3, &crate::monster::BAT);
-            let a = give(&mut g, quality_gear(ItemKind::Plate, crate::item::Quality::Ancient, 5));
+            let a = give(
+                &mut g,
+                quality_gear(ItemKind::Plate, crate::item::Quality::Ancient, 5),
+            );
             g.run(&format!("equip {a}"));
             if cursed {
                 let w = give(&mut g, suffix_gear(ItemKind::Axe, Suffix::Cataclysm));
@@ -3134,7 +3516,11 @@ mod tests {
         let mut g = quiet(1);
         let t = g.turn();
         let o = g.run("stay 4");
-        assert!(o.ok && o.message.contains("4ターン留まった"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("4ターン留まった"),
+            "{}",
+            o.message
+        );
         assert_eq!(g.turn(), t + 4);
         assert_eq!(o.command, "stay 4");
         let o = g.run("stay");
@@ -3152,9 +3538,13 @@ mod tests {
         let mut g = with_adjacent(3, &crate::monster::GOBLIN);
         let t = g.turn();
         let o = g.run("stay 10");
-        assert!(o.message.contains("1ターン留まったところで、攻撃を受けて中断した"), "{}", o.message);
+        assert!(
+            o.message
+                .contains("1ターン留まったところで、攻撃を受けて中断した"),
+            "{}",
+            o.message
+        );
         assert_eq!(g.turn(), t + 1);
-
     }
 
     /// `stay` の結果メッセージ（「Nターン留まった…」）から N を取り出す。
@@ -3221,14 +3611,18 @@ mod tests {
         let here = g.pos;
         g.floor_items.push(FloorItem::new(here, ItemKind::Healing));
         let o = g.run("wait");
-        assert!(o.ok && g.inventory.is_empty() && g.floor_items.len() == 1, "{}", o.message);
+        assert!(
+            o.ok && g.inventory.is_empty() && g.floor_items.len() == 1,
+            "{}",
+            o.message
+        );
         let t = g.turn();
         let o = g.run("stay 2");
         assert!(o.message.contains("を拾った"), "{}", o.message);
         assert!(g.floor_items.is_empty());
         assert_eq!(g.inventory.len(), 1);
         assert_eq!(g.turn(), t + 2); // 拾うのにターンは使わない
-        // 何もなければ、ただ留まるだけ
+                                     // 何もなければ、ただ留まるだけ
         let o = g.run("stay");
         assert!(!o.message.contains("拾った"), "{}", o.message);
     }
@@ -3329,7 +3723,11 @@ mod tests {
         g.hp = 1;
         g.status.apply(Status::Poisoned, 5);
         let o = g.run("wait");
-        assert!(g.is_dead() && o.message.contains("毒で力尽きた"), "{}", o.message);
+        assert!(
+            g.is_dead() && o.message.contains("毒で力尽きた"),
+            "{}",
+            o.message
+        );
 
         let mut g = with_gear(&[ItemKind::Healing]);
         g.status.apply(Status::Poisoned, 9);
@@ -3346,7 +3744,11 @@ mod tests {
         assert!(o.ok && o.message.contains("毒が抜けた"), "{}", o.message);
         assert_eq!(g.poison(), 0);
         let o = g.run("quaff a");
-        assert!(o.ok && o.message.contains("毒にはかかっていなかった"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("毒にはかかっていなかった"),
+            "{}",
+            o.message
+        );
     }
 
     #[test]
@@ -3354,7 +3756,11 @@ mod tests {
         let mut g = with_gear(&[ItemKind::Experience]);
         let (level, max_hp) = (g.level(), g.max_hp);
         let o = g.run("quaff a");
-        assert!(o.ok && o.message.contains("レベルが上がった"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("レベルが上がった"),
+            "{}",
+            o.message
+        );
         assert_eq!(g.level(), level + 1);
         // 次のレベルに届いたちょうどの経験値になる
         assert_eq!(g.xp(), 5 * level * (level + 1));
@@ -3363,9 +3769,16 @@ mod tests {
 
     #[test]
     fn bad_potions_are_at_most_a_third_of_potion_weight() {
-        let potions: Vec<ItemKind> = ItemKind::ALL.into_iter().filter(|k| k.is_potion()).collect();
+        let potions: Vec<ItemKind> = ItemKind::ALL
+            .into_iter()
+            .filter(|k| k.is_potion())
+            .collect();
         let total: u32 = potions.iter().map(|k| k.weight()).sum();
-        let bad: u32 = potions.iter().filter(|k| k.is_bad()).map(|k| k.weight()).sum();
+        let bad: u32 = potions
+            .iter()
+            .filter(|k| k.is_bad())
+            .map(|k| k.weight())
+            .sum();
         assert!(bad * 3 <= total, "{bad}/{total}");
         assert!(potions.len() <= crate::item::POTION_LOOKS.len());
     }
@@ -3411,10 +3824,21 @@ mod tests {
 
     #[test]
     fn mushrooms_are_unidentified_until_eaten() {
-        let g = with_gear(&[ItemKind::PoisonShroom, ItemKind::VigorShroom, ItemKind::EdibleShroom]);
+        let g = with_gear(&[
+            ItemKind::PoisonShroom,
+            ItemKind::VigorShroom,
+            ItemKind::EdibleShroom,
+        ]);
         let lines = g.inventory_lines();
-        assert!(lines.iter().all(|l| l.contains("キノコ") && l.contains("未識別")), "{lines:?}");
-        assert!(lines.iter().all(|l| !l.contains("毒キノコ") && !l.contains("元気")));
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.contains("キノコ") && l.contains("未識別")),
+            "{lines:?}"
+        );
+        assert!(lines
+            .iter()
+            .all(|l| !l.contains("毒キノコ") && !l.contains("元気")));
         let mut g = with_gear(&[ItemKind::PoisonShroom]);
         let o = g.run("eat a");
         assert!(o.message.contains("これは毒キノコだった"), "{}", o.message);
@@ -3422,7 +3846,11 @@ mod tests {
         let mut g = with_gear(&[ItemKind::VigorShroom]);
         g.hp = 5;
         let o = g.run("eat a");
-        assert!(o.message.contains("これは元気キノコだった") && g.hp() >= 12, "{}", o.message);
+        assert!(
+            o.message.contains("これは元気キノコだった") && g.hp() >= 12,
+            "{}",
+            o.message
+        );
         assert!(g.known[ItemKind::VigorShroom.index()]);
     }
 
@@ -3464,7 +3892,11 @@ mod tests {
                 g.depth = depth;
                 g.spawn_monsters();
                 for m in &g.monsters {
-                    assert!(m.kind.min_depth <= depth, "seed {seed} depth {depth} {}", m.name);
+                    assert!(
+                        m.kind.min_depth <= depth,
+                        "seed {seed} depth {depth} {}",
+                        m.name
+                    );
                     assert_eq!(m.hp, m.kind.hp_at(depth));
                 }
             }
@@ -3484,7 +3916,10 @@ mod tests {
             g.spawn_monsters();
             seen.extend(g.monsters.iter().map(|m| m.glyph));
         }
-        assert!(seen_shallow.iter().all(|c| *c == 's' || *c == 'b'), "{seen_shallow:?}");
+        assert!(
+            seen_shallow.iter().all(|c| *c == 's' || *c == 'b'),
+            "{seen_shallow:?}"
+        );
         for c in ['s', 'b', 'g', 'O'] {
             assert!(seen.contains(&c), "{c} が現れなかった: {seen:?}");
         }
@@ -3509,7 +3944,10 @@ mod tests {
             }
         }
         assert!(double, "2回攻撃が一度もなかった");
-        assert!(missed_turns > 0, "ふらふら動くはずなのに毎ターン攻撃してきた");
+        assert!(
+            missed_turns > 0,
+            "ふらふら動くはずなのに毎ターン攻撃してきた"
+        );
     }
 
     #[test]
@@ -3598,7 +4036,8 @@ mod tests {
                     found = true;
                     break;
                 }
-                if o.message.contains("探索し尽くした") || o.message.contains("もう探索") {
+                if o.message.contains("探索し尽くした") || o.message.contains("もう探索")
+                {
                     break;
                 }
             }
@@ -3933,7 +4372,8 @@ mod tests {
             assert!(n > 0);
             for _ in 0..200 {
                 let o = g.run("explore");
-                if o.message.contains("探索し尽くした") || o.message.contains("もう探索") {
+                if o.message.contains("探索し尽くした") || o.message.contains("もう探索")
+                {
                     break;
                 }
             }
@@ -3977,15 +4417,30 @@ mod tests {
         let o = g.run("quaff a");
         assert!(g.is_dead());
         assert_eq!(g.turn(), t, "{}", o.message);
-        assert_eq!(o.message.matches("ゲームオーバー").count(), 1, "{}", o.message);
+        assert_eq!(
+            o.message.matches("ゲームオーバー").count(),
+            1,
+            "{}",
+            o.message
+        );
     }
 
     #[test]
     fn full_inventory_says_so_and_explore_does_not_chase_items() {
         let mut g = quiet(3);
         for (i, c) in ('a'..='z').enumerate() {
-            let kind = if i == 0 { ItemKind::Dagger } else { ItemKind::Bread };
-            g.inventory.push(Stack { letter: c, kind, count: 1, gear: kind.is_equipment().then(|| Gear::plain(kind)), tool: None });
+            let kind = if i == 0 {
+                ItemKind::Dagger
+            } else {
+                ItemKind::Bread
+            };
+            g.inventory.push(Stack {
+                letter: c,
+                kind,
+                count: 1,
+                gear: kind.is_equipment().then(|| Gear::plain(kind)),
+                tool: None,
+            });
         }
         assert!(!g.can_take(ItemKind::Healing));
         assert!(g.can_take(ItemKind::Bread));
@@ -4003,7 +4458,11 @@ mod tests {
         g.floor_items.push(FloorItem::new(a, ItemKind::Healing));
         g.floor_items.push(FloorItem::new(b, ItemKind::Healing));
         let o = g.run("explore");
-        assert!(o.message.contains("もう探索する場所がない"), "{}", o.message);
+        assert!(
+            o.message.contains("もう探索する場所がない"),
+            "{}",
+            o.message
+        );
         assert_eq!(g.turn(), 0);
         // 踏めば、拾えないと分かる
         g.floor_items.clear();
@@ -4044,7 +4503,10 @@ mod tests {
         g.map.reveal_all();
         g.run("stay");
         assert!(g.has_amulet && g.amulet.is_none());
-        assert!(g.inventory_lines().iter().any(|l| l.contains("アミュレット")));
+        assert!(g
+            .inventory_lines()
+            .iter()
+            .any(|l| l.contains("アミュレット")));
         assert!(g.status_text().contains("アミュレット"));
         let (sx, sy) = g.stairs;
         assert_eq!(g.cell(sx, sy).ch, '<');
@@ -4104,7 +4566,10 @@ mod tests {
             text.push_str(&o.message);
             assert_eq!(g.level(), if n < 3 { 1 } else { 2 }, "{n} {}", o.message);
         }
-        assert!(text.contains("経験値 +3") && text.contains("レベルが上がった！ Lv2"), "{text}");
+        assert!(
+            text.contains("経験値 +3") && text.contains("レベルが上がった！ Lv2"),
+            "{text}"
+        );
         assert_eq!(g.max_hp(), PLAYER_MAX_HP + HP_PER_LEVEL);
         assert!(g.hp() >= 10 + HP_PER_LEVEL - 4, "{}", g.hp());
         assert!(g.observe_text(3).contains("Lv2"));
@@ -4168,7 +4633,10 @@ mod tests {
     #[test]
     fn blindness_hides_the_map_and_enemies_and_says_so() {
         let mut g = with_adjacent(3, &crate::monster::GOBLIN);
-        let seen_before = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| g.map.is_seen(x, y)).count();
+        let seen_before = (0..H)
+            .flat_map(|y| (0..W).map(move |x| (x, y)))
+            .filter(|&(x, y)| g.map.is_seen(x, y))
+            .count();
         g.inflict(Status::Blind, 30);
         let text = g.observe_text(5);
         assert!(text.contains("目が見えない"), "{text}");
@@ -4185,12 +4653,19 @@ mod tests {
         assert!(o.message.contains("(東から)"), "{}", o.message);
         // 見えない相手のHPは分からない
         let o = g.run("attack east");
-        assert!(o.message.contains("手応えがあった") && !o.message.contains("与えた。(HP"), "{}", o.message);
+        assert!(
+            o.message.contains("手応えがあった") && !o.message.contains("与えた。(HP"),
+            "{}",
+            o.message
+        );
         // 手探りで動いても、新しい場所は覚えない
         for _ in 0..5 {
             g.run("move west");
         }
-        let seen_after = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| g.map.is_seen(x, y)).count();
+        let seen_after = (0..H)
+            .flat_map(|y| (0..W).map(move |x| (x, y)))
+            .filter(|&(x, y)| g.map.is_seen(x, y))
+            .count();
         assert_eq!(seen_before, seen_after);
         assert!(g.run("look").message.contains("目が見えない"));
     }
@@ -4205,7 +4680,10 @@ mod tests {
         }
         assert!(!g.status.has(Status::Blind));
         assert!(g.map.is_visible(g.pos.0, g.pos.1));
-        assert!(g.log().iter().any(|l| l.text.contains("目が見えるようになった")));
+        assert!(g
+            .log()
+            .iter()
+            .any(|l| l.text.contains("目が見えるようになった")));
     }
 
     #[test]
@@ -4223,7 +4701,10 @@ mod tests {
             glyphs.insert(e.glyph);
             g.turn += 1; // ターンが進むと見え方が変わる
         }
-        assert!(names.len() >= 3 && glyphs.len() >= 3, "{names:?} {glyphs:?}");
+        assert!(
+            names.len() >= 3 && glyphs.len() >= 3,
+            "{names:?} {glyphs:?}"
+        );
         // 同じターンの見え方は安定していて、観測が乱数を消費しない
         let a = g.observe_text(3);
         assert_eq!(a, g.observe_text(3));
@@ -4263,7 +4744,11 @@ mod tests {
         g.inflict(Status::Asleep, 4);
         let hp = g.hp;
         let o = g.run("wait");
-        assert!(g.hp < hp && o.message.contains("目が覚めた"), "{}", o.message);
+        assert!(
+            g.hp < hp && o.message.contains("目が覚めた"),
+            "{}",
+            o.message
+        );
     }
 
     #[test]
@@ -4300,10 +4785,16 @@ mod tests {
         g.inflict(Status::Levitating, 2);
         assert_eq!(g.status.short_text(), "加速3 浮遊2");
         let o = g.run("stay 1");
-        assert_eq!(o.statuses, vec![(Status::Hasted, 2), (Status::Levitating, 1)]);
+        assert_eq!(
+            o.statuses,
+            vec![(Status::Hasted, 2), (Status::Levitating, 1)]
+        );
         let o = g.run("stay 1");
         assert!(o.message.contains("浮遊が切れて"), "{}", o.message);
-        assert!(o.status_events.iter().any(|e| e.status == Status::Levitating && e.change == Change::End));
+        assert!(o
+            .status_events
+            .iter()
+            .any(|e| e.status == Status::Levitating && e.change == Change::End));
         assert!(g.observe_text(3).contains("加速: 残り1ターン"));
     }
 
@@ -4313,12 +4804,22 @@ mod tests {
         let mut g = quiet(1);
         g.take(ItemKind::Sleep);
         let o = g.run("quaff a");
-        assert!(o.status_events.iter().any(|e| e.target == "player"
-            && e.status == Status::Asleep
-            && matches!(e.change, Change::Apply(_))), "{:?}", o.status_events);
-        assert!(o.status_events.iter().any(|e| e.status == Status::Asleep && e.change == Change::End));
+        assert!(
+            o.status_events.iter().any(|e| e.target == "player"
+                && e.status == Status::Asleep
+                && matches!(e.change, Change::Apply(_))),
+            "{:?}",
+            o.status_events
+        );
+        assert!(o
+            .status_events
+            .iter()
+            .any(|e| e.status == Status::Asleep && e.change == Change::End));
         let line = Event::from_outcome(&o, None).to_line();
-        assert!(line.contains("\"status_events\"") && line.contains("asleep") && line.contains("apply"), "{line}");
+        assert!(
+            line.contains("\"status_events\"") && line.contains("asleep") && line.contains("apply"),
+            "{line}"
+        );
         assert_eq!(Event::parse(&line), Ok(Event::from_outcome(&o, None)));
         // 状態のないコマンドは、余計な欄を作らない
         let o = g.run("wait");
@@ -4328,7 +4829,11 @@ mod tests {
     fn put_trap(g: &mut Game, kind: TrapKind) -> (i32, i32) {
         let p = (g.pos.0 + 1, g.pos.1);
         assert!(g.map.tile(p.0, p.1).walkable());
-        g.traps.push(Trap { pos: p, kind, revealed: false });
+        g.traps.push(Trap {
+            pos: p,
+            kind,
+            revealed: false,
+        });
         p
     }
 
@@ -4364,7 +4869,11 @@ mod tests {
         put_trap(&mut g, TrapKind::SleepGas);
         let t = g.turn();
         let o = g.run("move east");
-        assert!(g.turn() - t >= 5 && o.message.contains("目が覚めた"), "{}", o.message);
+        assert!(
+            g.turn() - t >= 5 && o.message.contains("目が覚めた"),
+            "{}",
+            o.message
+        );
     }
 
     #[test]
@@ -4419,16 +4928,24 @@ mod tests {
             // 開始位置から少し離れた床に、毒矢の罠を隠す
             let Some(p) = (1..W - 1)
                 .flat_map(|x| (1..H - 1).map(move |y| (x, y)))
-                .find(|&(x, y)| g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs().max((y - g.pos.1).abs()) == 4)
+                .find(|&(x, y)| {
+                    g.map.tile(x, y) == Tile::Floor
+                        && (x - g.pos.0).abs().max((y - g.pos.1).abs()) == 4
+                })
             else {
                 continue;
             };
-            g.traps.push(Trap { pos: p, kind: TrapKind::Dart, revealed: false });
+            g.traps.push(Trap {
+                pos: p,
+                kind: TrapKind::Dart,
+                revealed: false,
+            });
             let mut msgs = String::new();
             for _ in 0..30 {
                 let o = g.run("explore");
                 msgs.push_str(&o.message);
-                if o.message.contains("探索し尽くした") || o.message.contains("もう探索") {
+                if o.message.contains("探索し尽くした") || o.message.contains("もう探索")
+                {
                     break;
                 }
             }
@@ -4484,7 +5001,9 @@ mod tests {
         for _ in 0..3 {
             g.run("wait");
         }
-        let d1 = (g.monsters[0].pos.0 - g.pos.0).abs().max((g.monsters[0].pos.1 - g.pos.1).abs());
+        let d1 = (g.monsters[0].pos.0 - g.pos.0)
+            .abs()
+            .max((g.monsters[0].pos.1 - g.pos.1).abs());
         assert!(d1 > d0 && g.hp == hp, "{d0} {d1}");
         // 逃げ場がなければ戦う
         let mut g = with_adjacent(3, &crate::monster::GOBLIN);
@@ -4531,7 +5050,11 @@ mod tests {
             }
             n
         };
-        let (base, fast, slow) = (hits(None), hits(Some(Status::Hasted)), hits(Some(Status::Slowed)));
+        let (base, fast, slow) = (
+            hits(None),
+            hits(Some(Status::Hasted)),
+            hits(Some(Status::Slowed)),
+        );
         assert_eq!(base, 20);
         assert_eq!(fast, 40);
         assert_eq!(slow, 10);
@@ -4565,7 +5088,11 @@ mod tests {
         g.inflict(Status::Blind, 20);
         let t = g.turn();
         let o = g.run("read a");
-        assert!(!o.ok && o.message.contains("読めない") && g.turn() == t, "{}", o.message);
+        assert!(
+            !o.ok && o.message.contains("読めない") && g.turn() == t,
+            "{}",
+            o.message
+        );
         assert!(g.run("quaff b").ok);
     }
 
@@ -4580,8 +5107,16 @@ mod tests {
     }
 
     fn use_item(g: &mut Game, letter: char) -> Outcome {
-        let kind = g.inventory.iter().find(|s| s.letter == letter).unwrap().kind;
-        g.run(&format!("{} {letter}", if kind.is_scroll() { "read" } else { "quaff" }))
+        let kind = g
+            .inventory
+            .iter()
+            .find(|s| s.letter == letter)
+            .unwrap()
+            .kind;
+        g.run(&format!(
+            "{} {letter}",
+            if kind.is_scroll() { "read" } else { "quaff" }
+        ))
     }
 
     #[test]
@@ -4590,13 +5125,39 @@ mod tests {
         assert!(count(|k| k.is_potion()) >= 16);
         assert!(count(|k| k.is_scroll()) >= 13);
         for name in [
-            "回復の薬", "大回復の薬", "力の薬", "レベルアップの薬", "力回復の薬", "加速の薬", "モンスター探知の薬",
-            "アイテム探知の薬", "透明視認の薬", "浮遊の薬", "混乱の薬", "幻覚の薬", "毒の薬", "盲目の薬", "眠りの薬",
-            "識別の巻物", "転移の巻物", "地図の巻物", "武器強化の巻物", "防具強化の巻物", "呪い解除の巻物",
-            "防具保護の巻物", "モンスター混乱の巻物", "モンスター停止の巻物", "睡眠の巻物", "怯えの巻物",
-            "モンスター生成の巻物", "怒りの巻物",
+            "回復の薬",
+            "大回復の薬",
+            "力の薬",
+            "レベルアップの薬",
+            "力回復の薬",
+            "加速の薬",
+            "モンスター探知の薬",
+            "アイテム探知の薬",
+            "透明視認の薬",
+            "浮遊の薬",
+            "混乱の薬",
+            "幻覚の薬",
+            "毒の薬",
+            "盲目の薬",
+            "眠りの薬",
+            "識別の巻物",
+            "転移の巻物",
+            "地図の巻物",
+            "武器強化の巻物",
+            "防具強化の巻物",
+            "呪い解除の巻物",
+            "防具保護の巻物",
+            "モンスター混乱の巻物",
+            "モンスター停止の巻物",
+            "睡眠の巻物",
+            "怯えの巻物",
+            "モンスター生成の巻物",
+            "怒りの巻物",
         ] {
-            assert!(ItemKind::ALL.iter().any(|k| k.true_name() == name), "{name}");
+            assert!(
+                ItemKind::ALL.iter().any(|k| k.true_name() == name),
+                "{name}"
+            );
         }
         // 見た目が足りている
         assert!(count(|k| k.is_potion()) <= crate::item::POTION_LOOKS.len());
@@ -4605,7 +5166,10 @@ mod tests {
 
     #[test]
     fn every_potion_and_scroll_can_be_used_and_identifies_itself_the_same_way() {
-        for kind in ItemKind::ALL.into_iter().filter(|k| k.is_potion() || k.is_scroll()) {
+        for kind in ItemKind::ALL
+            .into_iter()
+            .filter(|k| k.is_potion() || k.is_scroll())
+        {
             for seed in [1u64, 2, 3] {
                 let mut g = with_adjacent(seed, &crate::monster::GOBLIN);
                 g.take(kind);
@@ -4613,25 +5177,38 @@ mod tests {
                 g.take(ItemKind::Bread);
                 let before = g.display_name(kind);
                 let o = use_item(&mut g, 'a');
-                assert!(o.ok || kind == ItemKind::Identify, "{kind:?}: {}", o.message);
+                assert!(
+                    o.ok || kind == ItemKind::Identify,
+                    "{kind:?}: {}",
+                    o.message
+                );
                 if !o.ok {
                     continue;
                 }
                 // 未識別のときは「見た目を使った。これは本物の名前だった！」の形に揃っている
                 assert!(
-                    o.message.starts_with(&format!("{before}を")) && o.message.contains(&format!("これは{}だった！", kind.true_name())),
+                    o.message.starts_with(&format!("{before}を"))
+                        && o.message
+                            .contains(&format!("これは{}だった！", kind.true_name())),
                     "{kind:?}: {}",
                     o.message
                 );
                 assert!(g.known[kind.index()]);
-                assert!(g.inventory.iter().all(|s| s.kind != kind), "{kind:?} が残っている");
+                assert!(
+                    g.inventory.iter().all(|s| s.kind != kind),
+                    "{kind:?} が残っている"
+                );
                 // 2個目は本名で出る
                 g.take(kind);
                 if !g.dead && !g.incapacitated() {
                     let letter = g.inventory.iter().find(|s| s.kind == kind).unwrap().letter;
                     let o = use_item(&mut g, letter);
                     if o.ok {
-                        assert!(o.message.starts_with(&format!("{}を", kind.true_name())), "{kind:?}: {}", o.message);
+                        assert!(
+                            o.message.starts_with(&format!("{}を", kind.true_name())),
+                            "{kind:?}: {}",
+                            o.message
+                        );
                         assert!(!o.message.contains("これは"), "{}", o.message);
                     }
                 }
@@ -4696,7 +5273,10 @@ mod tests {
             let mut g = holding(kind);
             let o = use_item(&mut g, 'a');
             assert!(g.status.has(st), "{kind:?} {}", o.message);
-            assert!(o.status_events.iter().any(|e| e.status == st && matches!(e.change, Change::Apply(_))));
+            assert!(o
+                .status_events
+                .iter()
+                .any(|e| e.status == st && matches!(e.change, Change::Apply(_))));
             assert!(o.message.contains(st.def().start), "{}", o.message);
         }
     }
@@ -4706,13 +5286,17 @@ mod tests {
         let mut g = holding(ItemKind::Blindness);
         use_item(&mut g, 'a');
         let t = g.observe_text(3);
-        assert!(t.contains("目が見えない") && t.contains("盲目: 残り"), "{t}");
+        assert!(
+            t.contains("目が見えない") && t.contains("盲目: 残り"),
+            "{t}"
+        );
     }
 
     #[test]
     fn detect_monsters_marks_them_on_the_map_until_the_next_command() {
         let mut g = holding(ItemKind::DetectMonsters);
-        g.monsters.push(monster(&crate::monster::GOBLIN, (g.pos.0 + 30, g.pos.1), 9));
+        g.monsters
+            .push(monster(&crate::monster::GOBLIN, (g.pos.0 + 30, g.pos.1), 9));
         let far = g.monsters[0].pos;
         assert!(!g.map.is_visible(far.0, far.1));
         let o = use_item(&mut g, 'a');
@@ -4742,9 +5326,18 @@ mod tests {
 
     #[test]
     fn enchant_scrolls_strengthen_the_worn_gear_and_say_so_when_nothing_is_worn() {
-        let mut g = with_gear(&[ItemKind::Sword, ItemKind::Leather, ItemKind::EnchantWeapon, ItemKind::EnchantArmor]);
+        let mut g = with_gear(&[
+            ItemKind::Sword,
+            ItemKind::Leather,
+            ItemKind::EnchantWeapon,
+            ItemKind::EnchantArmor,
+        ]);
         let o = g.run("read c");
-        assert!(o.ok && o.message.contains("装備していない"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("装備していない"),
+            "{}",
+            o.message
+        );
         g.take(ItemKind::EnchantWeapon);
         g.run("equip a");
         g.run("equip b");
@@ -4766,7 +5359,12 @@ mod tests {
         g.run(&format!("equip {a}"));
         assert!(!g.run(&format!("unequip {a}")).ok);
         g.take(ItemKind::RemoveCurse);
-        let b = g.inventory.iter().find(|s| s.kind == ItemKind::RemoveCurse).unwrap().letter;
+        let b = g
+            .inventory
+            .iter()
+            .find(|s| s.kind == ItemKind::RemoveCurse)
+            .unwrap()
+            .letter;
         let o = g.run(&format!("read {b}"));
         assert!(o.message.contains("呪いの束縛が解けた"), "{}", o.message);
         assert!(g.run(&format!("unequip {a}")).ok);
@@ -4789,7 +5387,12 @@ mod tests {
         let a = give(&mut g, Gear::plain(ItemKind::Chain));
         g.run(&format!("equip {a}"));
         g.take(ItemKind::ProtectArmor);
-        let b = g.inventory.iter().find(|s| s.kind == ItemKind::ProtectArmor).unwrap().letter;
+        let b = g
+            .inventory
+            .iter()
+            .find(|s| s.kind == ItemKind::ProtectArmor)
+            .unwrap()
+            .letter;
         g.run(&format!("read {b}"));
         let def = g.defense();
         for _ in 0..3 {
@@ -4809,7 +5412,10 @@ mod tests {
             g.take(kind);
             let o = g.run("read a");
             assert!(g.monsters[0].status.has(st), "{kind:?} {}", o.message);
-            assert!(o.status_events.iter().any(|e| e.target == "ゴブリン" && e.status == st));
+            assert!(o
+                .status_events
+                .iter()
+                .any(|e| e.target == "ゴブリン" && e.status == st));
         }
         // 停止は近くの敵だけ
         let mut g = with_adjacent(3, &crate::monster::GOBLIN);
@@ -4823,7 +5429,9 @@ mod tests {
         }
         // 相手がいなければそう言う
         let mut g = holding(ItemKind::HoldMonster);
-        assert!(use_item(&mut g, 'a').message.contains("効く相手がいなかった"));
+        assert!(use_item(&mut g, 'a')
+            .message
+            .contains("効く相手がいなかった"));
     }
 
     #[test]
@@ -4834,23 +5442,38 @@ mod tests {
         let m = g.monsters[0].pos;
         assert!((m.0 - g.pos.0).abs() <= 1 && (m.1 - g.pos.1).abs() <= 1);
         let mut g = holding(ItemKind::Aggravate);
-        g.monsters.push(monster(&crate::monster::GOBLIN, (g.pos.0 + 30, g.pos.1), 9));
+        g.monsters
+            .push(monster(&crate::monster::GOBLIN, (g.pos.0 + 30, g.pos.1), 9));
         use_item(&mut g, 'a');
         assert!(g.monsters[0].status.has(Status::Enraged));
         let mut g = holding(ItemKind::Slumber);
         let t = g.turn();
         let o = use_item(&mut g, 'a');
-        assert!(g.turn() - t >= 6 && o.message.contains("目が覚めた"), "{}", o.message);
+        assert!(
+            g.turn() - t >= 6 && o.message.contains("目が覚めた"),
+            "{}",
+            o.message
+        );
     }
 
     #[test]
     fn an_enraged_monster_hunts_you_from_anywhere() {
-        let mut g = (0..60).map(quiet).find(|g| {
-            (1..W - 1).any(|x| (1..H - 1).any(|y| g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs() + (y - g.pos.1).abs() > 25))
-        }).expect("遠い床がある seed");
+        let mut g = (0..60)
+            .map(quiet)
+            .find(|g| {
+                (1..W - 1).any(|x| {
+                    (1..H - 1).any(|y| {
+                        g.map.tile(x, y) == Tile::Floor
+                            && (x - g.pos.0).abs() + (y - g.pos.1).abs() > 25
+                    })
+                })
+            })
+            .expect("遠い床がある seed");
         let far = (1..W - 1)
             .flat_map(|x| (1..H - 1).map(move |y| (x, y)))
-            .find(|&(x, y)| g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs() + (y - g.pos.1).abs() > 25)
+            .find(|&(x, y)| {
+                g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs() + (y - g.pos.1).abs() > 25
+            })
             .unwrap();
         let id = g.add_monster(&crate::monster::SLIME, far);
         assert!(!g.monster_aware(id), "遠い敵は怒っていなければ気づかない");
@@ -4878,7 +5501,10 @@ mod tests {
     #[test]
     fn bad_things_stay_a_minority_of_the_floor_drops() {
         for class in [Class::Potion, Class::Scroll] {
-            let all: Vec<ItemKind> = ItemKind::ALL.into_iter().filter(|k| k.class() == class).collect();
+            let all: Vec<ItemKind> = ItemKind::ALL
+                .into_iter()
+                .filter(|k| k.class() == class)
+                .collect();
             let total: u32 = all.iter().map(|k| k.weight()).sum();
             let bad: u32 = all.iter().filter(|k| k.is_bad()).map(|k| k.weight()).sum();
             assert!(bad * 3 <= total, "{class:?} {bad}/{total}");
@@ -4908,13 +5534,33 @@ mod tests {
     #[test]
     fn all_the_original_wand_kinds_exist() {
         for name in [
-            "光の杖", "透明化の杖", "雷の杖", "火の杖", "冷気の杖", "変身の杖", "魔法の矢の杖", "敵加速の杖",
-            "敵減速の杖", "生命吸収の杖", "消去の杖", "敵テレポートの杖", "自分テレポートの杖",
+            "光の杖",
+            "透明化の杖",
+            "雷の杖",
+            "火の杖",
+            "冷気の杖",
+            "変身の杖",
+            "魔法の矢の杖",
+            "敵加速の杖",
+            "敵減速の杖",
+            "生命吸収の杖",
+            "消去の杖",
+            "敵テレポートの杖",
+            "自分テレポートの杖",
         ] {
-            assert!(ItemKind::ALL.iter().any(|k| k.is_wand() && k.true_name() == name), "{name}");
+            assert!(
+                ItemKind::ALL
+                    .iter()
+                    .any(|k| k.is_wand() && k.true_name() == name),
+                "{name}"
+            );
         }
         let g = Game::new(5);
-        let wands: Vec<&str> = ItemKind::ALL.iter().filter(|k| k.is_wand()).map(|k| g.looks[k.index()]).collect();
+        let wands: Vec<&str> = ItemKind::ALL
+            .iter()
+            .filter(|k| k.is_wand())
+            .map(|k| g.looks[k.index()])
+            .collect();
         let uniq: std::collections::HashSet<_> = wands.iter().collect();
         assert_eq!(uniq.len(), wands.len());
         assert!(wands.iter().all(|l| l.ends_with('杖')));
@@ -4924,18 +5570,37 @@ mod tests {
     fn zapping_uses_a_charge_identifies_the_wand_and_reports_what_is_left() {
         let mut g = wand_vs_adjacent(ItemKind::WandMissile, &crate::monster::OGRE, 1000);
         let before = g.display_name(ItemKind::WandMissile);
-        assert!(g.inventory_lines()[0].contains("[残り5回]") && g.inventory_lines()[0].contains("(未識別)"));
-        assert!(g.status_text().contains("杖残り[a:5]"), "{}", g.status_text());
+        assert!(
+            g.inventory_lines()[0].contains("[残り5回]")
+                && g.inventory_lines()[0].contains("(未識別)")
+        );
+        assert!(
+            g.status_text().contains("杖残り[a:5]"),
+            "{}",
+            g.status_text()
+        );
         let o = g.run("zap a east");
         assert!(o.ok, "{}", o.message);
-        assert!(o.message.starts_with(&format!("{before}を振った。これは魔法の矢の杖だった！")), "{}", o.message);
+        assert!(
+            o.message
+                .starts_with(&format!("{before}を振った。これは魔法の矢の杖だった！")),
+            "{}",
+            o.message
+        );
         assert!(o.message.contains("(残り4回)"), "{}", o.message);
         assert!(g.monsters[0].hp < 1000);
-        assert!(g.inventory_lines()[0].contains("魔法の矢の杖 [残り4回]") && !g.inventory_lines()[0].contains("未識別"));
+        assert!(
+            g.inventory_lines()[0].contains("魔法の矢の杖 [残り4回]")
+                && !g.inventory_lines()[0].contains("未識別")
+        );
         assert!(g.observe_text(3).contains("杖残り[a:4]"));
         // 2回目からは本名で
         let o = g.run("zap a east");
-        assert!(o.message.starts_with("魔法の矢の杖を振った。") && !o.message.contains("これは"), "{}", o.message);
+        assert!(
+            o.message.starts_with("魔法の矢の杖を振った。") && !o.message.contains("これは"),
+            "{}",
+            o.message
+        );
     }
 
     #[test]
@@ -4945,7 +5610,11 @@ mod tests {
             assert!(g.run("zap a east").ok);
         }
         let o = g.run("zap a east");
-        assert!(o.ok && o.message.contains("魔力は尽きた") && !o.message.contains("0回"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("魔力は尽きた") && !o.message.contains("0回"),
+            "{}",
+            o.message
+        );
         assert!(g.inventory_lines()[0].contains("[残り0回]"));
         let (t, hp) = (g.turn(), g.monsters[0].hp);
         let o = g.run("zap a east");
@@ -4962,7 +5631,11 @@ mod tests {
         let mut g = with_wand(ItemKind::WandFire, 3);
         let t = g.turn();
         let o = g.run("zap a");
-        assert!(!o.ok && o.message.contains("向きが要る") && g.turn() == t, "{}", o.message);
+        assert!(
+            !o.ok && o.message.contains("向きが要る") && g.turn() == t,
+            "{}",
+            o.message
+        );
         let o = g.run("zap a nearest");
         assert!(!o.ok && o.message.contains("狙える敵"), "{}", o.message);
         assert_eq!(g.tool_charges('a'), 3);
@@ -4976,7 +5649,11 @@ mod tests {
 
     impl Game {
         fn tool_charges(&self, letter: char) -> i32 {
-            self.inventory.iter().find(|s| s.letter == letter).and_then(|s| s.tool).map_or(-1, |t| t.val)
+            self.inventory
+                .iter()
+                .find(|s| s.letter == letter)
+                .and_then(|s| s.tool)
+                .map_or(-1, |t| t.val)
         }
     }
 
@@ -5024,7 +5701,11 @@ mod tests {
         g.hp = 1000;
         g.max_hp = 1000;
         g.take(Tool::charged(ItemKind::WandLightning, 5));
-        let ps = [(g.pos.0 + 1, g.pos.1), (g.pos.0 + 2, g.pos.1), (g.pos.0 + 3, g.pos.1)];
+        let ps = [
+            (g.pos.0 + 1, g.pos.1),
+            (g.pos.0 + 2, g.pos.1),
+            (g.pos.0 + 3, g.pos.1),
+        ];
         assert!(ps.iter().all(|p| g.map.tile(p.0, p.1).walkable()));
         for p in ps {
             g.monsters.push(monster(&crate::monster::OGRE, p, 500));
@@ -5032,7 +5713,11 @@ mod tests {
             g.inflict_monster(i, Status::Paralyzed, 100);
         }
         g.run("zap a nearest");
-        assert!(g.monsters.iter().all(|m| m.hp < 500), "{:?}", g.monsters.iter().map(|m| m.hp).collect::<Vec<_>>());
+        assert!(
+            g.monsters.iter().all(|m| m.hp < 500),
+            "{:?}",
+            g.monsters.iter().map(|m| m.hp).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -5046,12 +5731,20 @@ mod tests {
             g.map.set_tile(g.pos.0 + k, g.pos.1 + k, Tile::Floor);
         }
         for k in [1, 3] {
-            g.monsters.push(monster(&crate::monster::OGRE, (g.pos.0 + k, g.pos.1 + k), 500));
+            g.monsters.push(monster(
+                &crate::monster::OGRE,
+                (g.pos.0 + k, g.pos.1 + k),
+                500,
+            ));
             let i = g.monsters.len() - 1;
             g.inflict_monster(i, Status::Paralyzed, 100);
         }
         g.run("zap a nearest");
-        assert!(g.monsters.iter().all(|m| m.hp < 500), "{:?}", g.monsters.iter().map(|m| m.hp).collect::<Vec<_>>());
+        assert!(
+            g.monsters.iter().all(|m| m.hp < 500),
+            "{:?}",
+            g.monsters.iter().map(|m| m.hp).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -5093,7 +5786,10 @@ mod tests {
         assert!(g.can_see_monster(0), "直線が通っているので見えるはず");
         // 延長線は敵の手前で塞がれているが、直線に戻って敵に当たる
         assert!(!g.open_cells(&long).contains(&t));
-        assert_eq!(g.bolt_cells(crate::command::ZapTarget::Nearest).unwrap(), direct);
+        assert_eq!(
+            g.bolt_cells(crate::command::ZapTarget::Nearest).unwrap(),
+            direct
+        );
         g.run("zap a nearest");
         assert!(g.monsters[0].hp < 500);
     }
@@ -5117,7 +5813,11 @@ mod tests {
                 g.inflict_monster(0, Status::Paralyzed, 100);
                 g.inventory[0].tool.as_mut().unwrap().val = 5;
                 let o = g.run("zap a nearest");
-                assert!(g.monsters[0].hp < 500, "seed {seed} {dx},{dy}: {}", o.message);
+                assert!(
+                    g.monsters[0].hp < 500,
+                    "seed {seed} {dx},{dy}: {}",
+                    o.message
+                );
                 checked += 1;
             }
         }
@@ -5155,7 +5855,10 @@ mod tests {
         let mut g = wand_vs_adjacent(ItemKind::WandSlow, &crate::monster::GOBLIN, 1000);
         let o = g.run("zap a east");
         assert!(g.monsters[0].status.has(Status::Slowed), "{}", o.message);
-        assert!(o.status_events.iter().any(|e| e.target == "ゴブリン" && e.status == Status::Slowed));
+        assert!(o
+            .status_events
+            .iter()
+            .any(|e| e.target == "ゴブリン" && e.status == Status::Slowed));
         let mut g = wand_vs_adjacent(ItemKind::WandHaste, &crate::monster::GOBLIN, 1000);
         g.run("zap a east");
         assert!(g.monsters[0].status.has(Status::Hasted));
@@ -5167,7 +5870,12 @@ mod tests {
         g.hp = 5;
         g.monsters[0].status.apply(Status::Paralyzed, 100); // 反撃を受けない
         let o = g.run("zap a east");
-        assert!(g.hp > 5 && o.message.contains("生命力を吸い取った"), "{} hp={}", o.message, g.hp);
+        assert!(
+            g.hp > 5 && o.message.contains("生命力を吸い取った"),
+            "{} hp={}",
+            o.message,
+            g.hp
+        );
         assert_eq!(1000 - g.monsters[0].hp, g.hp - 5);
     }
 
@@ -5208,12 +5916,22 @@ mod tests {
         let mut g = wand_vs_adjacent(ItemKind::WandCancel, &crate::monster::SPIDER, 1000);
         g.inflict_monster(0, Status::Hasted, 50);
         let o = g.run("zap a east");
-        assert!(g.monsters[0].status.active().is_empty() && g.monsters[0].cancelled, "{}", o.message);
+        assert!(
+            g.monsters[0].status.active().is_empty() && g.monsters[0].cancelled,
+            "{}",
+            o.message
+        );
         for _ in 0..40 {
             g.run("wait");
         }
-        assert!(!g.status.has(Status::Poisoned), "消去された毒グモが毒を撒いた");
-        assert!(o.status_events.iter().any(|e| e.status == Status::Hasted && e.change == Change::End));
+        assert!(
+            !g.status.has(Status::Poisoned),
+            "消去された毒グモが毒を撒いた"
+        );
+        assert!(o
+            .status_events
+            .iter()
+            .any(|e| e.status == Status::Hasted && e.change == Change::End));
     }
 
     #[test]
@@ -5239,7 +5957,8 @@ mod tests {
             g.map.forget_all();
             for d in Dir::ALL {
                 let (dx, dy) = d.delta();
-                let open = (1..=6).all(|k| g.map.tile(g.pos.0 + dx * k, g.pos.1 + dy * k).walkable());
+                let open =
+                    (1..=6).all(|k| g.map.tile(g.pos.0 + dx * k, g.pos.1 + dy * k).walkable());
                 let far = (g.pos.0 + 6 * dx, g.pos.1 + 6 * dy);
                 if open {
                     let o = g.run(&format!("zap a {}", d.name()));
@@ -5266,7 +5985,11 @@ mod tests {
             for _ in 0..40 {
                 let hp = g.monsters[0].hp;
                 g.run(cmd);
-                if g.monsters[0].hp == hp { misses += 1 } else { hits += 1 }
+                if g.monsters[0].hp == hp {
+                    misses += 1
+                } else {
+                    hits += 1
+                }
                 g.inventory[0].tool.as_mut().unwrap().val = 5;
             }
             assert!(misses > 5 && hits > 5, "{cmd}: {misses} {hits}");
@@ -5307,7 +6030,10 @@ mod tests {
         g.take(Tool::charged(ItemKind::WandFire, 4));
         g.take(Tool::charged(ItemKind::WandFire, 2));
         assert_eq!(g.inventory.len(), 2);
-        assert!(g.inventory_lines()[0].contains("[残り4回]") && g.inventory_lines()[1].contains("[残り2回]"));
+        assert!(
+            g.inventory_lines()[0].contains("[残り4回]")
+                && g.inventory_lines()[1].contains("[残り2回]")
+        );
         g.run("drop a");
         assert!(g.underfoot_text().contains("火の杖") || g.underfoot_text().contains("杖"));
         g.run("pickup");
@@ -5319,7 +6045,9 @@ mod tests {
         let mut rng = Rng::new(9);
         for k in ItemKind::ALL.into_iter().filter(|k| k.is_wand()) {
             for _ in 0..20 {
-                let Item::Tool(t) = Item::roll(&mut rng, k, 5) else { panic!() };
+                let Item::Tool(t) = Item::roll(&mut rng, k, 5) else {
+                    panic!()
+                };
                 let (lo, hi) = k.zap().unwrap().charges;
                 assert!((lo..=hi).contains(&t.val), "{k:?} {}", t.val);
             }
@@ -5368,15 +6096,40 @@ mod tests {
     #[test]
     fn all_the_rogue_rings_exist_with_gem_looks() {
         for name in [
-            "防御の指輪", "腕力の指輪", "器用さの指輪", "ダメージ増加の指輪", "再生の指輪", "消化遅延の指輪", "隠密の指輪",
-            "探索の指輪", "透明視認の指輪", "装飾の指輪", "怒らせる指輪", "テレポート癖の指輪",
+            "防御の指輪",
+            "腕力の指輪",
+            "器用さの指輪",
+            "ダメージ増加の指輪",
+            "再生の指輪",
+            "消化遅延の指輪",
+            "隠密の指輪",
+            "探索の指輪",
+            "透明視認の指輪",
+            "装飾の指輪",
+            "怒らせる指輪",
+            "テレポート癖の指輪",
         ] {
-            assert!(ItemKind::ALL.iter().any(|k| k.is_ring() && k.true_name() == name), "{name}");
+            assert!(
+                ItemKind::ALL
+                    .iter()
+                    .any(|k| k.is_ring() && k.true_name() == name),
+                "{name}"
+            );
         }
         let g = Game::new(7);
-        let looks: Vec<&str> = ItemKind::ALL.iter().filter(|k| k.is_ring()).map(|k| g.looks[k.index()]).collect();
-        assert_eq!(looks.iter().collect::<std::collections::HashSet<_>>().len(), looks.len());
-        assert!(looks.iter().all(|l| l.ends_with("の指輪")) && !looks.iter().any(|l| l.contains("防御")));
+        let looks: Vec<&str> = ItemKind::ALL
+            .iter()
+            .filter(|k| k.is_ring())
+            .map(|k| g.looks[k.index()])
+            .collect();
+        assert_eq!(
+            looks.iter().collect::<std::collections::HashSet<_>>().len(),
+            looks.len()
+        );
+        assert!(
+            looks.iter().all(|l| l.ends_with("の指輪"))
+                && !looks.iter().any(|l| l.contains("防御"))
+        );
     }
 
     #[test]
@@ -5386,7 +6139,11 @@ mod tests {
         assert!(g.inventory_lines()[0].contains(look) && g.inventory_lines()[0].contains("未識別"));
         let def = g.defense();
         let o = g.run("equip a");
-        assert!(o.ok && o.message.contains("効果はまだ分からない"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("効果はまだ分からない"),
+            "{}",
+            o.message
+        );
         assert_eq!(g.defense(), def + 2, "識別前でも効果は効いている");
         assert!(g.inventory_lines()[0].contains("(装備中)"));
         for _ in 0..27 {
@@ -5397,18 +6154,32 @@ mod tests {
         for _ in 0..4 {
             msg.push_str(&g.run("wait").message);
         }
-        assert!(msg.contains("正体が分かった") && msg.contains("防御の指輪 +2"), "{msg}");
+        assert!(
+            msg.contains("正体が分かった") && msg.contains("防御の指輪 +2"),
+            "{msg}"
+        );
         assert!(g.known[ItemKind::RingProtection.index()]);
-        assert!(g.inventory_lines()[0].contains("防御の指輪 +2") && g.inventory_lines()[0].contains("防御+2"));
+        assert!(
+            g.inventory_lines()[0].contains("防御の指輪 +2")
+                && g.inventory_lines()[0].contains("防御+2")
+        );
     }
 
     #[test]
     fn a_known_kind_is_identified_as_soon_as_it_is_worn() {
         let mut g = with_rings(&[ring(ItemKind::RingStrength, 1)]);
         g.known[ItemKind::RingStrength.index()] = true;
-        assert!(g.inventory_lines()[0].contains("腕力の指輪 (+?)"), "{}", g.inventory_lines()[0]);
+        assert!(
+            g.inventory_lines()[0].contains("腕力の指輪 (+?)"),
+            "{}",
+            g.inventory_lines()[0]
+        );
         let o = g.run("equip a");
-        assert!(o.message.contains("腕力の指輪 +1") && o.message.contains("腕力+1"), "{}", o.message);
+        assert!(
+            o.message.contains("腕力の指輪 +1") && o.message.contains("腕力+1"),
+            "{}",
+            o.message
+        );
     }
 
     #[test]
@@ -5420,7 +6191,11 @@ mod tests {
         ]);
         assert!(g.run("equip a").ok && g.run("equip b").ok);
         let o = g.run("equip c");
-        assert!(!o.ok && o.message.contains("ふさがっている"), "{}", o.message);
+        assert!(
+            !o.ok && o.message.contains("ふさがっている"),
+            "{}",
+            o.message
+        );
         assert!(!g.run("equip a").ok);
         assert!(g.run("unequip a").ok);
         assert!(g.run("equip c").ok);
@@ -5435,7 +6210,11 @@ mod tests {
         let mut g = with_rings(&[ring(ItemKind::RingProtection, -2)]);
         let def = g.defense();
         let o = g.run("equip a");
-        assert!(o.message.contains("呪われていた") && o.message.contains("防御の指輪 -2"), "{}", o.message);
+        assert!(
+            o.message.contains("呪われていた") && o.message.contains("防御の指輪 -2"),
+            "{}",
+            o.message
+        );
         assert_eq!(g.defense(), def - 2);
         let o = g.run("unequip a");
         assert!(!o.ok && o.message.contains("はずせない"), "{}", o.message);
@@ -5450,7 +6229,10 @@ mod tests {
 
     #[test]
     fn strength_damage_and_dexterity_rings() {
-        let mut g = with_rings(&[ring(ItemKind::RingStrength, 2), ring(ItemKind::RingDamage, 1)]);
+        let mut g = with_rings(&[
+            ring(ItemKind::RingStrength, 2),
+            ring(ItemKind::RingDamage, 1),
+        ]);
         let (lo, hi) = g.attack_range();
         g.run("equip a");
         assert_eq!(g.attack_range(), (lo + 1, hi + 1)); // 腕力 +2 → 攻撃 +1
@@ -5474,7 +6256,9 @@ mod tests {
         g.monsters[0].status.apply(Status::Paralyzed, 1000);
         g.take(ring(ItemKind::RingDexterity, -3));
         g.run("equip a");
-        let whiffs = (0..60).filter(|_| g.run("attack east").message.contains("空を切った")).count();
+        let whiffs = (0..60)
+            .filter(|_| g.run("attack east").message.contains("空を切った"))
+            .count();
         assert!(whiffs > 8 && whiffs < 40, "{whiffs}");
     }
 
@@ -5516,14 +6300,20 @@ mod tests {
             f - g.food
         };
         let (plain, slow) = (hunger(false), hunger(true));
-        assert!(slow * 2 <= plain + 2 && slow * 2 + 2 >= plain, "{plain} {slow}");
+        assert!(
+            slow * 2 <= plain + 2 && slow * 2 + 2 >= plain,
+            "{plain} {slow}"
+        );
     }
 
     #[test]
     fn stealth_shrinks_the_distance_enemies_notice_you() {
         let mut g = (3..200)
             .map(|seed| with_adjacent(seed, &crate::monster::GOBLIN))
-            .find(|g| g.map.tile(g.pos.0 + 5, g.pos.1).walkable() && g.map.los(g.pos, (g.pos.0 + 5, g.pos.1)))
+            .find(|g| {
+                g.map.tile(g.pos.0 + 5, g.pos.1).walkable()
+                    && g.map.los(g.pos, (g.pos.0 + 5, g.pos.1))
+            })
             .expect("東に5マス見通せる seed がある");
         let far = (g.pos.0 + 5, g.pos.1);
         g.monsters[0].pos = far;
@@ -5540,13 +6330,20 @@ mod tests {
         let mut g = quiet(3);
         let p = (g.pos.0 + 3, g.pos.1);
         assert!(g.map.tile(p.0, p.1).walkable());
-        g.traps.push(Trap { pos: p, kind: TrapKind::Dart, revealed: false });
+        g.traps.push(Trap {
+            pos: p,
+            kind: TrapKind::Dart,
+            revealed: false,
+        });
         g.take(ring(ItemKind::RingSearching, 3));
         g.run("equip a");
         for _ in 0..3 {
             g.run("wait");
         }
-        assert!(g.traps[0].revealed, "探索の指輪でも3マス先の罠が見つからなかった");
+        assert!(
+            g.traps[0].revealed,
+            "探索の指輪でも3マス先の罠が見つからなかった"
+        );
     }
 
     #[test]
@@ -5564,7 +6361,9 @@ mod tests {
         let mut g = quiet(2);
         let far = (1..W - 1)
             .flat_map(|x| (1..H - 1).map(move |y| (x, y)))
-            .find(|&(x, y)| g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs() + (y - g.pos.1).abs() > 25)
+            .find(|&(x, y)| {
+                g.map.tile(x, y) == Tile::Floor && (x - g.pos.0).abs() + (y - g.pos.1).abs() > 25
+            })
             .unwrap();
         let id = g.add_monster(&crate::monster::SLIME, far);
         assert!(!g.monster_aware(id));
@@ -5602,7 +6401,12 @@ mod tests {
         let mut g = with_rings(&[ring(ItemKind::RingDamage, -2)]);
         g.take(ItemKind::Identify);
         let o = g.run("read b a");
-        assert!(o.ok && o.message.contains("ダメージ増加の指輪 -2") && o.message.contains("呪われている"), "{}", o.message);
+        assert!(
+            o.ok && o.message.contains("ダメージ増加の指輪 -2")
+                && o.message.contains("呪われている"),
+            "{}",
+            o.message
+        );
         assert!(g.known[ItemKind::RingDamage.index()]);
         // 呪いと分かっていれば、はめる前に避けられる
         assert!(g.inventory_lines()[0].contains("(呪われている)"));
@@ -5629,7 +6433,10 @@ mod tests {
                 cursed += t.cursed as u32;
             }
         }
-        assert!(cursed * 10 > total && cursed * 2 < total, "{cursed}/{total}");
+        assert!(
+            cursed * 10 > total && cursed * 2 < total,
+            "{cursed}/{total}"
+        );
     }
 
     // ---- 光源 ----
@@ -5637,18 +6444,29 @@ mod tests {
     #[test]
     fn you_start_with_a_lit_torch_and_its_fuel_is_always_shown() {
         let g = quiet(2);
-        assert!(g.status_text().contains("光源:松明 燃料1500/1500"), "{}", g.status_text());
-        assert!(g.observe_text(3).contains("光源: 松明 [燃料 1500/1500] (装備中)"));
+        assert!(
+            g.status_text().contains("光源:松明 燃料1500/1500"),
+            "{}",
+            g.status_text()
+        );
+        assert!(g
+            .observe_text(3)
+            .contains("光源: 松明 [燃料 1500/1500] (装備中)"));
         assert!(g.light_line().contains("松明"));
         let mut g = quiet(2);
-        assert!(g.run("inventory").message.contains("光源: 松明 [燃料 1500/1500]"));
+        assert!(g
+            .run("inventory")
+            .message
+            .contains("光源: 松明 [燃料 1500/1500]"));
     }
 
     #[test]
     fn fuel_burns_each_turn_warns_when_low_and_darkens_when_out() {
         let mut g = quiet(2);
         g.light = Some(Tool::charged(ItemKind::Torch, 103));
-        assert!(g.map.is_visible(g.pos.0 + 6, g.pos.1) || !g.map.tile(g.pos.0 + 6, g.pos.1).walkable());
+        assert!(
+            g.map.is_visible(g.pos.0 + 6, g.pos.1) || !g.map.tile(g.pos.0 + 6, g.pos.1).walkable()
+        );
         let mut warned = false;
         for _ in 0..3 {
             warned |= g.run("wait").message.contains("火が弱くなってきた");
@@ -5663,9 +6481,12 @@ mod tests {
         assert_eq!(g.light.unwrap().val, 0);
         assert!(g.status_text().contains("暗闇"));
         // 視界が狭まる: 半径2より遠くは見えない
-        let far = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| g.map.is_visible(x, y)).all(|(x, y)| {
-            (x - g.pos.0).pow(2) + (y - g.pos.1).pow(2) <= crate::item::DARK_RADIUS.pow(2)
-        });
+        let far = (0..H)
+            .flat_map(|y| (0..W).map(move |x| (x, y)))
+            .filter(|&(x, y)| g.map.is_visible(x, y))
+            .all(|(x, y)| {
+                (x - g.pos.0).pow(2) + (y - g.pos.1).pow(2) <= crate::item::DARK_RADIUS.pow(2)
+            });
         assert!(far);
         // 燃料は減り続けない
         g.run("wait");
@@ -5689,10 +6510,18 @@ mod tests {
         assert!(o.ok && o.message.contains("ランタン"), "{}", o.message);
         assert_eq!(g.light.unwrap().kind, ItemKind::Lantern);
         // 古い松明が同じ文字に戻る
-        assert!(g.inventory_lines()[0].starts_with("a) 松明 [燃料") , "{:?}", g.inventory_lines());
+        assert!(
+            g.inventory_lines()[0].starts_with("a) 松明 [燃料"),
+            "{:?}",
+            g.inventory_lines()
+        );
         // 油を継ぎ足す
         let o = g.run("refill");
-        assert!(!o.ok && o.message.contains("油つぼを持っていない"), "{}", o.message);
+        assert!(
+            !o.ok && o.message.contains("油つぼを持っていない"),
+            "{}",
+            o.message
+        );
         g.take(ItemKind::OilFlask);
         g.take(ItemKind::OilFlask);
         let t = g.turn();
@@ -5700,7 +6529,10 @@ mod tests {
         assert!(o.ok && g.turn() == t + 1, "{}", o.message);
         let fuel = g.light.unwrap().val;
         assert!((2490..=2500).contains(&fuel), "{fuel}");
-        assert!(g.inventory_lines().iter().any(|l| l.contains("油つぼ") && !l.contains("x2")));
+        assert!(g
+            .inventory_lines()
+            .iter()
+            .any(|l| l.contains("油つぼ") && !l.contains("x2")));
         // 満タンを超えない
         g.run("refill");
         let max = ItemKind::Lantern.light_def().unwrap().max_fuel;
@@ -5764,13 +6596,29 @@ mod tests {
         g.take(Tool::charged(ItemKind::Torch, 700));
         g.take(Tool::charged(ItemKind::Torch, 300));
         let lines = g.inventory_lines();
-        assert!(lines[1].contains("[燃料 700/1500]") && lines[2].contains("[燃料 300/1500]"), "{lines:?}");
+        assert!(
+            lines[1].contains("[燃料 700/1500]") && lines[2].contains("[燃料 300/1500]"),
+            "{lines:?}"
+        );
     }
 
     /// 全種類のアイテムを持たせて乱暴に遊び、全メッセージを返す。途中で不変条件も確かめる。
     fn fuzz_play(seed: u64, steps: usize) -> Vec<String> {
-        let verbs = ["quaff", "read", "eat", "equip", "unequip", "drop", "zap", "refill"];
-        let dirs = ["north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest", "nearest", ""];
+        let verbs = [
+            "quaff", "read", "eat", "equip", "unequip", "drop", "zap", "refill",
+        ];
+        let dirs = [
+            "north",
+            "south",
+            "east",
+            "west",
+            "northeast",
+            "northwest",
+            "southeast",
+            "southwest",
+            "nearest",
+            "",
+        ];
         let mut out = Vec::new();
         let mut g = Game::new(seed);
         let mut r = Rng::new(seed ^ 0xABCDEF);
@@ -5785,8 +6633,14 @@ mod tests {
             }
             let letter = (b'a' + r.range(0, 26) as u8) as char;
             let cmd = match r.range(0, 12) {
-                0 | 1 => format!("{} {letter}", verbs[r.range(0, verbs.len() as i32) as usize]),
-                2 => format!("zap {letter} {}", dirs[r.range(0, dirs.len() as i32) as usize]),
+                0 | 1 => format!(
+                    "{} {letter}",
+                    verbs[r.range(0, verbs.len() as i32) as usize]
+                ),
+                2 => format!(
+                    "zap {letter} {}",
+                    dirs[r.range(0, dirs.len() as i32) as usize]
+                ),
                 3 => "explore".to_string(),
                 4 => "travel >; descend".to_string(),
                 5 => "pickup".to_string(),
@@ -5796,15 +6650,29 @@ mod tests {
                 _ => format!("move {}", dirs[r.range(0, 8) as usize]),
             };
             for o in g.run_script(&cmd) {
-                assert!(o.hp <= g.max_hp(), "seed {seed} step {step}: {} -> hp {}", o.command, o.hp);
-                out.push(format!("{} | {} | {} | {}", o.command, o.ok, o.message, o.turn));
+                assert!(
+                    o.hp <= g.max_hp(),
+                    "seed {seed} step {step}: {} -> hp {}",
+                    o.command,
+                    o.hp
+                );
+                out.push(format!(
+                    "{} | {} | {} | {}",
+                    o.command, o.ok, o.message, o.turn
+                ));
             }
             let text = g.observe_text(5);
             assert!(text.contains("光源:"), "{text}");
             out.push(text);
             // 装備している物は、必ず持ち物にある
-            for l in [g.weapon, g.armor, g.rings[0], g.rings[1]].into_iter().flatten() {
-                assert!(g.inventory.iter().any(|s| s.letter == l), "seed {seed}: 装備 {l} が持ち物にない");
+            for l in [g.weapon, g.armor, g.rings[0], g.rings[1]]
+                .into_iter()
+                .flatten()
+            {
+                assert!(
+                    g.inventory.iter().any(|s| s.letter == l),
+                    "seed {seed}: 装備 {l} が持ち物にない"
+                );
             }
             assert!(g.rings[0].is_none() || g.rings[0] != g.rings[1]);
         }
@@ -5847,14 +6715,18 @@ mod tests {
             for cmd in ["explore", "explore", "travel >", "explore"] {
                 g.food = MAX_FOOD;
                 let o = g.run(cmd);
-                if o.message.contains("飛ばされて中断") || o.message.contains("飛ばされた") {
+                if o.message.contains("飛ばされて中断") || o.message.contains("飛ばされた")
+                {
                     jumped += 1;
                     // 着いた場所に物があれば、飛んだ時点で拾っている(足元に取り残さない)
                     // (1マスにつき自動で拾うのは1個だけ。飛んだ直後に拾った知らせが続く)
-                    if let Some((_, after)) = o.message.rsplit_once("突然どこかへ飛ばされた！") {
+                    if let Some((_, after)) = o.message.rsplit_once("突然どこかへ飛ばされた！")
+                    {
                         // 拾っていないなら、そのマスにはもう何も残っていない(通った場所に飛んだ)
                         assert!(
-                            after.contains("拾った") || after.contains("いっぱい") || g.floor_order(g.pos).is_empty(),
+                            after.contains("拾った")
+                                || after.contains("いっぱい")
+                                || g.floor_order(g.pos).is_empty(),
                             "seed {seed}: {}",
                             o.message
                         );
@@ -5863,7 +6735,10 @@ mod tests {
                 }
             }
         }
-        assert!(jumped > 0 && landed > 0, "テレポート癖が発動しなかった({jumped}/{landed})");
+        assert!(
+            jumped > 0 && landed > 0,
+            "テレポート癖が発動しなかった({jumped}/{landed})"
+        );
     }
 
     #[test]
@@ -5884,7 +6759,11 @@ mod tests {
                 assert_ne!(g.cell(p.0, p.1).ch, '^');
                 ok += 1;
             } else {
-                assert!(o.message.contains("失敗") && g.traps.len() == 1, "{}", o.message);
+                assert!(
+                    o.message.contains("失敗") && g.traps.len() == 1,
+                    "{}",
+                    o.message
+                );
                 fail += 1;
             }
         }
@@ -5897,7 +6776,11 @@ mod tests {
         put_trap(&mut g, TrapKind::Dart); // 隠れている
         let t = g.turn();
         let o = g.run("disarm east");
-        assert!(!o.ok && o.message.contains("見つけた罠がない") && g.turn() == t, "{}", o.message);
+        assert!(
+            !o.ok && o.message.contains("見つけた罠がない") && g.turn() == t,
+            "{}",
+            o.message
+        );
         g.traps[0].revealed = true;
         g.status.apply(Status::Blind, 10);
         assert!(!g.run("disarm east").ok);
@@ -5914,7 +6797,11 @@ mod tests {
             let o = g.run("disarm east");
             if o.message.contains("作動した") {
                 fired = true;
-                assert!(g.hp < 1000 && g.status.has(Status::Poisoned), "{}", o.message);
+                assert!(
+                    g.hp < 1000 && g.status.has(Status::Poisoned),
+                    "{}",
+                    o.message
+                );
                 break;
             }
         }
@@ -5940,7 +6827,11 @@ mod tests {
     }
 
     /// 失敗して罠が作動する seed を探して、そのゲームを返す(作動前の状態)。
-    fn disarm_failure_that_fires(kind: TrapKind, under_foot: bool, setup: impl Fn(&mut Game)) -> Option<(Game, Outcome)> {
+    fn disarm_failure_that_fires(
+        kind: TrapKind,
+        under_foot: bool,
+        setup: impl Fn(&mut Game),
+    ) -> Option<(Game, Outcome)> {
         for seed in 0..300 {
             let mut g = quiet(3);
             g.hp = 1000;
@@ -5962,14 +6853,21 @@ mod tests {
 
     #[test]
     fn a_failed_disarm_of_the_trapdoor_underfoot_drops_you() {
-        let (g, o) = disarm_failure_that_fires(TrapKind::Trapdoor, true, |_| {}).expect("作動する seed がある");
+        let (g, o) = disarm_failure_that_fires(TrapKind::Trapdoor, true, |_| {})
+            .expect("作動する seed がある");
         assert_eq!(g.depth(), 2, "{}", o.message);
     }
 
     #[test]
-    fn a_slipped_disarm_fires_darts_and_gas_even_while_floating_but_never_drops_a_floating_player() {
+    fn a_slipped_disarm_fires_darts_and_gas_even_while_floating_but_never_drops_a_floating_player()
+    {
         // 毒矢と眠りガスは、浮いていても足元でも隣でも作動する
-        for (kind, foot) in [(TrapKind::Dart, true), (TrapKind::Dart, false), (TrapKind::SleepGas, true), (TrapKind::SleepGas, false)] {
+        for (kind, foot) in [
+            (TrapKind::Dart, true),
+            (TrapKind::Dart, false),
+            (TrapKind::SleepGas, true),
+            (TrapKind::SleepGas, false),
+        ] {
             let (g, o) = disarm_failure_that_fires(kind, foot, |g| {
                 g.status.apply(Status::Levitating, 1000);
             })
@@ -6006,8 +6904,16 @@ mod tests {
             let p = put_trap(&mut g, kind);
             g.status.apply(Status::Levitating, 100);
             let o = g.run("move east");
-            assert_eq!((g.depth(), g.pos(), g.hp), (1, p, 1000), "{kind:?}: {}", o.message);
-            assert!(!g.status.has(Status::Poisoned) && !g.status.has(Status::Asleep), "{kind:?}");
+            assert_eq!(
+                (g.depth(), g.pos(), g.hp),
+                (1, p, 1000),
+                "{kind:?}: {}",
+                o.message
+            );
+            assert!(
+                !g.status.has(Status::Poisoned) && !g.status.has(Status::Asleep),
+                "{kind:?}"
+            );
         }
     }
 
@@ -6035,7 +6941,11 @@ mod tests {
         let _ = p;
         g.status.clear(Status::Confused);
         let o = g.run("disarm east");
-        assert!(o.message.contains(&format!("成功率{base}%")), "{}", o.message);
+        assert!(
+            o.message.contains(&format!("成功率{base}%")),
+            "{}",
+            o.message
+        );
     }
 
     #[test]
@@ -6044,7 +6954,10 @@ mod tests {
         let p = put_trap(&mut g, TrapKind::Dart);
         g.traps[0].revealed = true;
         g.map.mark_seen(p.0, p.1);
-        assert!(g.find_path(&|q| q == p).is_none(), "既知の罠は経路から外れる");
+        assert!(
+            g.find_path(&|q| q == p).is_none(),
+            "既知の罠は経路から外れる"
+        );
         g.hp = 1000;
         g.max_hp = 1000;
         for seed in 0..100 {
@@ -6054,13 +6967,20 @@ mod tests {
             }
         }
         assert!(g.traps.is_empty());
-        assert!(g.find_path(&|q| q == p).is_some(), "解除した罠のマスには入れる");
+        assert!(
+            g.find_path(&|q| q == p).is_some(),
+            "解除した罠のマスには入れる"
+        );
     }
 
     #[test]
     fn disarm_rejects_bad_directions_with_the_same_wording_as_zap() {
-        assert!(crate::command::parse("disarm sideways").unwrap_err().contains("不明な向き"));
-        assert!(crate::command::parse("zap a sideways").unwrap_err().contains("不明な向き"));
+        assert!(crate::command::parse("disarm sideways")
+            .unwrap_err()
+            .contains("不明な向き"));
+        assert!(crate::command::parse("zap a sideways")
+            .unwrap_err()
+            .contains("不明な向き"));
     }
 
     #[test]
@@ -6071,18 +6991,32 @@ mod tests {
             g.hp = 1000;
             g.max_hp = 1000;
             g.map.reveal_all();
-            let Some(path) = g.find_path(&|p| p == g.stairs) else { continue };
+            let Some(path) = g.find_path(&|p| p == g.stairs) else {
+                continue;
+            };
             if path.len() < 6 {
                 continue;
             }
             // 経路の4歩目に既知の罠を置き、浮遊は3歩ぶんだけ持たせる
             let trap_at = path[3];
-            g.traps.push(Trap { pos: trap_at, kind: TrapKind::Dart, revealed: true });
+            g.traps.push(Trap {
+                pos: trap_at,
+                kind: TrapKind::Dart,
+                revealed: true,
+            });
             g.status.apply(Status::Levitating, 3);
             let o = g.run("travel >");
             assert_ne!(g.pos(), trap_at, "seed {seed}: {}", o.message);
-            assert!(!g.status.has(Status::Poisoned) && g.hp == 1000, "seed {seed}: {}", o.message);
-            assert!(o.message.contains("毒矢の罠がある"), "seed {seed}: {}", o.message);
+            assert!(
+                !g.status.has(Status::Poisoned) && g.hp == 1000,
+                "seed {seed}: {}",
+                o.message
+            );
+            assert!(
+                o.message.contains("毒矢の罠がある"),
+                "seed {seed}: {}",
+                o.message
+            );
             tested = true;
             break;
         }

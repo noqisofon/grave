@@ -4,10 +4,6 @@ mod watch;
 use std::io::{self, Write};
 use std::time::Duration;
 
-use grave_core::map::{H, W};
-use grave_core::record::Event as RecEvent;
-use grave_core::journal;
-use grave_core::{Game, COMMAND_NAMES};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -18,6 +14,10 @@ use crossterm::{
         EnterAlternateScreen, LeaveAlternateScreen,
     },
 };
+use grave_core::journal;
+use grave_core::map::{H, W};
+use grave_core::record::Event as RecEvent;
+use grave_core::{Game, COMMAND_NAMES};
 use keymap::Keymap;
 
 /// ゲームコマンド以外の、TUI 側で処理する組み込みコマンド。
@@ -167,7 +167,10 @@ impl App {
         if self.overlay {
             self.overlay = false;
             // 閉じるためのキーはそれだけで終わり。ほかのキーは閉じたうえで普通に働く
-            if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('i') | KeyCode::Char(' ')) {
+            if matches!(
+                code,
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('i') | KeyCode::Char(' ')
+            ) {
                 return;
             }
         }
@@ -292,7 +295,14 @@ impl App {
                 format!("{}  {}", self.status, count)
             }
         };
-        draw_scene(out, &self.game, None, &footer, self.mode == Mode::Command, self.overlay)
+        draw_scene(
+            out,
+            &self.game,
+            None,
+            &footer,
+            self.mode == Mode::Command,
+            self.overlay,
+        )
     }
 }
 
@@ -452,9 +462,17 @@ fn render_scene(
     }
     // プロンプトより下に前のフレームの残りがあれば消す（最下行を消さないように注意）
     if lay.footer + 1 < rows {
-        queue!(out, MoveTo(0, lay.footer + 1), Clear(ClearType::FromCursorDown))?;
+        queue!(
+            out,
+            MoveTo(0, lay.footer + 1),
+            Clear(ClearType::FromCursorDown)
+        )?;
     }
-    queue!(out, MoveTo(0, lay.footer), Print(clip_cols(footer, (cols as usize).saturating_sub(1))))?;
+    queue!(
+        out,
+        MoveTo(0, lay.footer),
+        Print(clip_cols(footer, (cols as usize).saturating_sub(1)))
+    )?;
     if show_inventory {
         draw_inventory_overlay(out, game, cols)?;
     }
@@ -480,13 +498,21 @@ fn draw_inventory_overlay(out: &mut impl Write, game: &Game, cols: u16) -> io::R
         lines.push(("(なし)".to_string(), Color::White));
     }
     for l in items.iter().take(H as usize - 2) {
-        let color = if l.contains("(装備中)") { Color::Yellow } else { Color::White };
+        let color = if l.contains("(装備中)") {
+            Color::Yellow
+        } else {
+            Color::White
+        };
         lines.push((l.clone(), color));
     }
     lines.push(("(Esc か i で閉じる)".to_string(), Color::DarkGrey));
     // マップの右端にそろえる。端末が狭ければ端末の右端まで
     let right = (W as u16).min(cols) as usize;
-    let inner = lines.iter().map(|(l, _)| display_width(l)).max().unwrap_or(0);
+    let inner = lines
+        .iter()
+        .map(|(l, _)| display_width(l))
+        .max()
+        .unwrap_or(0);
     let width = (inner + 2).min(right);
     let x0 = (right - width) as u16;
     for (i, (text, color)) in lines.iter().enumerate() {
@@ -534,7 +560,11 @@ fn draw_text_screen(out: &mut impl Write, title: &str, text: &str) -> io::Result
         Print(title),
         ResetColor
     )?;
-    for (i, l) in lines.iter().take((rows as usize).saturating_sub(3)).enumerate() {
+    for (i, l) in lines
+        .iter()
+        .take((rows as usize).saturating_sub(3))
+        .enumerate()
+    {
         queue!(out, MoveTo(0, (i + 2) as u16), Print(l))?;
     }
     queue!(out, Hide)?;
@@ -612,17 +642,28 @@ fn run_watch(path: &str) -> io::Result<()> {
                 } else {
                     ""
                 };
-                let diary = if w.journals.is_empty() { "" } else { "  (j で日誌)" };
+                let diary = if w.journals.is_empty() {
+                    ""
+                } else {
+                    "  (j で日誌)"
+                };
                 let footer = format!("観戦中: {path}{state}{diary}  (i で持ち物 / q で終了)");
-                draw_scene(&mut out, &w.game, Some(&w.thoughts), &footer, false, show_inv)?;
+                draw_scene(
+                    &mut out,
+                    &w.game,
+                    Some(&w.thoughts),
+                    &footer,
+                    false,
+                    show_inv,
+                )?;
             }
             dirty = false;
         }
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
-                    let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL)
-                        && k.code == KeyCode::Char('c');
+                    let ctrl_c =
+                        k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c');
                     // Esc は、持ち物を開いているときはそれを閉じるだけ
                     if k.code == KeyCode::Esc && show_inv {
                         show_inv = false;
@@ -747,7 +788,11 @@ mod tests {
         press(&mut app, "`stay 3");
         assert!(app.mode == Mode::Command);
         app.on_key_command(KeyCode::Enter);
-        assert!(app.game.turn() <= t0 + 3 && app.game.turn() > t0, "{}", app.game.turn());
+        assert!(
+            app.game.turn() <= t0 + 3 && app.game.turn() > t0,
+            "{}",
+            app.game.turn()
+        );
     }
 
     #[test]
@@ -801,7 +846,11 @@ mod tests {
         render_scene(&mut frame, &app.game, None, "footer", false, false).unwrap();
         let text = String::from_utf8_lossy(&frame);
         assert!(!text.contains("\x1b[2J"), "全画面クリアが残っている");
-        assert!(text.starts_with("\x1b[?2026h"), "{:?}", &text[..text.len().min(20)]);
+        assert!(
+            text.starts_with("\x1b[?2026h"),
+            "{:?}",
+            &text[..text.len().min(20)]
+        );
         assert!(text.ends_with("\x1b[?2026l"));
         // 行末まで消す指示が、マップの各行に入っている
         assert!(text.matches("\x1b[K").count() >= H as usize);
