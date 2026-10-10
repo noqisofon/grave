@@ -902,12 +902,18 @@ fn run_watch(path: &str) -> io::Result<()> {
                 } else {
                     ""
                 };
+                let skipped = if w.skipped > 0 {
+                    format!("  ※読めない行を{}件飛ばした", w.skipped)
+                } else {
+                    String::new()
+                };
                 let diary = if w.journals.is_empty() {
                     ""
                 } else {
                     "  (j で日誌)"
                 };
-                let footer = format!("観戦中: {path}{state}{diary}  (i で持ち物 / q で終了)");
+                let footer =
+                    format!("観戦中: {path}{state}{skipped}{diary}  (i で持ち物 / q で終了)");
                 let inv_lines;
                 let overlay = if show_inv {
                     inv_lines = w.game.inventory_lines();
