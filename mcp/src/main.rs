@@ -67,7 +67,7 @@ fn tools() -> Value {
         },
         {
             "name": "observe",
-            "description": "Show the current map (@ = you, > = stairs, > = stairs (< once you hold the amulet), , = the Amulet on depth 30, s = slime, ! = potion, ? = scroll, / = wand, = = ring, ~ = light/oil, ^ = known trap; remembered tiles stay), active status effects with remaining turns (poison, confusion, blindness, hallucination, ...; while blind no map is shown), visible enemies, the items under your feet (numbered, as used by pickup), your inventory (wands show remaining charges; the equipped light shows its fuel) and the recent message log. Does not consume a turn.",
+            "description": "Show the current map (@ = you, > = stairs (< once you hold the amulet), , = the Amulet on depth 30, s = slime, ! = potion, ? = scroll, / = wand, = = ring, ~ = light/oil, ^ = known trap; remembered tiles stay), active status effects with remaining turns (poison, confusion, blindness, hallucination, ...; while blind no map is shown), visible enemies, the items under your feet (numbered, as used by pickup), your inventory (wands show remaining charges; the equipped light shows its fuel) and the recent message log. Does not consume a turn.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -128,6 +128,14 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
             if outs.is_empty() {
                 text.push_str("(empty command)\n");
                 is_error = true;
+            }
+            // 失敗で止まったときは、実行しなかった分を知らせる
+            let total = script.split(';').filter(|c| !c.trim().is_empty()).count();
+            if outs.len() < total {
+                text.push_str(&format!(
+                    "(stopped at the failure: the remaining {} command(s) were not run)\n",
+                    total - outs.len()
+                ));
             }
             if game.is_won() {
                 text.push_str(
