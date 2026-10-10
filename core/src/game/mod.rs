@@ -2241,7 +2241,8 @@ impl Game {
         // 留まるときは、足元にあるアイテムを拾う（拾うこと自体はターンを使わない）
         self.pickup_here();
         for done in 1..=n {
-            self.pass_turn();
+            // `wait` と同じく、加速・減速を考える（n は行動の回数）
+            self.pass_action();
             let why = if self.dead {
                 Some("力尽きた。".to_string())
             } else if std::mem::take(&mut self.hit) {

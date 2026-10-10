@@ -2205,13 +2205,13 @@ fn haste_halves_and_slow_doubles_the_cost_of_actions() {
 #[test]
 fn statuses_count_down_each_turn_and_announce_the_end() {
     let mut g = quiet(1);
-    g.inflict(Status::Hasted, 3);
+    g.inflict(Status::Confused, 3);
     g.inflict(Status::Levitating, 2);
-    assert_eq!(g.status.short_text(), "加速3 浮遊2");
+    assert_eq!(g.status.short_text(), "混乱3 浮遊2");
     let o = g.run("stay 1");
     assert_eq!(
         o.statuses,
-        vec![(Status::Hasted, 2), (Status::Levitating, 1)]
+        vec![(Status::Confused, 2), (Status::Levitating, 1)]
     );
     let o = g.run("stay 1");
     assert!(o.message.contains("浮遊が切れて"), "{}", o.message);
@@ -2219,7 +2219,7 @@ fn statuses_count_down_each_turn_and_announce_the_end() {
         .status_events
         .iter()
         .any(|e| e.status == Status::Levitating && e.change == Change::End));
-    assert!(g.observe_text(3).contains("加速: 残り1ターン"));
+    assert!(g.observe_text(3).contains("混乱: 残り1ターン"));
 }
 
 #[test]
@@ -4502,4 +4502,19 @@ fn look_names_a_seen_amulet_as_its_own_sentence() {
         o.message
     );
     assert!(!o.message.contains(", "), "{}", o.message);
+}
+
+#[test]
+fn stay_counts_actions_like_wait_so_haste_and_slow_apply() {
+    let mut g = quiet(3);
+    g.status.apply(Status::Hasted, 100);
+    let t = g.turn();
+    assert!(g.run("stay 4").ok);
+    assert_eq!(g.turn(), t + 2, "加速中は4回の行動で2ターン");
+
+    let mut g = quiet(3);
+    g.status.apply(Status::Slowed, 100);
+    let t = g.turn();
+    assert!(g.run("stay 2").ok);
+    assert_eq!(g.turn(), t + 4, "減速中は2回の行動で4ターン");
 }
