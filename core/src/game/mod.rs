@@ -1998,14 +1998,14 @@ impl Game {
             return self.outcome(
                 cmd.to_string(),
                 false,
-                "クリア済み。new_game でもう一度遊べる。".to_string(),
+                "クリア済み。:new でもう一度遊べる。".to_string(),
             );
         }
         if self.dead {
             return self.outcome(
                 cmd.to_string(),
                 false,
-                "ゲームオーバー。new_game でやり直せる。".to_string(),
+                "ゲームオーバー。:new でやり直せる。".to_string(),
             );
         }
         let pos_before = self.pos;

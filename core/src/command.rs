@@ -261,7 +261,7 @@ fn parse_body(line: &str) -> Result<Command, String> {
         "descend" | "d" => Ok(Command::Descend),
         "ascend" | "up" => Ok(Command::Ascend),
         "inventory" | "i" => Ok(Command::Inventory),
-        "quaff" | "drink" => Ok(Command::Quaff(item_letter(head, &args)?)),
+        "quaff" | "drink" | "q" => Ok(Command::Quaff(item_letter(head, &args)?)),
         "eat" => Ok(Command::Eat(item_letter(head, &args)?)),
         "read" => {
             let letter = item_letter(head, &args)?;

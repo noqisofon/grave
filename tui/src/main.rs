@@ -21,7 +21,7 @@ use grave_core::{Game, COMMAND_NAMES};
 use keymap::Keymap;
 
 /// ゲームコマンド以外の、TUI 側で処理する組み込みコマンド。
-const BUILTINS: &[&str] = &["map", "unmap", "new", "quit", "help"];
+const BUILTINS: &[&str] = &["map", "unmap", "new", "new_game", "quit", "exit", "help"];
 
 #[derive(PartialEq)]
 enum Mode {
@@ -69,15 +69,15 @@ impl App {
         let args: Vec<&str> = it.collect();
         match head {
             "" => true,
-            "q" | "quit" => {
+            "quit" | "exit" => {
                 self.quit = true;
                 true
             }
             "help" => {
-                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 飲む・R 読む・a 杖を振る(続けて 文字 と向き) / F ランタンに油を継ぐ / i 持ち物 / > 降りる / < 登る(アミュレット所持時) / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new :q".to_string();
+                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 飲む・R 読む・a 杖を振る(続けて 文字 と向き) / F ランタンに油を継ぐ / i 持ち物 / > 降りる / < 登る(アミュレット所持時) / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new(:new_game) :quit".to_string();
                 true
             }
-            "new" => {
+            "new" | "new_game" => {
                 let seed = args
                     .first()
                     .and_then(|a| a.parse().ok())
@@ -344,7 +344,7 @@ struct Layout {
 /// 端末の高さ `rows` に合わせた行の割り当て。プロンプトは端末の一番下に置く。
 /// 高さが足りないときは、ログ（または思考）の次の行に置く。
 fn layout(rows: u16, with_thoughts: bool) -> Layout {
-    let log_top = (H + 2) as u16;
+    let log_top = (H + 1) as u16;
     let thoughts_top = log_top + LOG_LINES as u16;
     let natural = thoughts_top + if with_thoughts { 3 } else { 0 };
     Layout {
@@ -922,5 +922,36 @@ mod tests {
         press(&mut app, "2");
         app.on_key_normal(KeyCode::Home);
         assert_eq!(app.last.as_ref().unwrap().1, 2);
+    }
+
+    #[test]
+    fn new_game_command_restarts_like_new() {
+        let mut app = App::new(1);
+        press(&mut app, "zzz");
+        press(&mut app, ":new_game 7");
+        app.on_key_command(KeyCode::Enter);
+        assert_eq!(app.game.seed(), 7);
+        assert_eq!(app.game.turn(), 0);
+    }
+
+    #[test]
+    fn quit_exits_but_q_does_not_exit_and_runs_quaff() {
+        let mut app = App::new(1);
+        // :q だけ打った場合、終了せず持ち物指定エラーになる（quaff として処理される）
+        press(&mut app, ":q");
+        app.on_key_command(KeyCode::Enter);
+        assert!(!app.quit);
+        assert!(app.status.contains("持ち物の文字が必要"), "{}", app.status);
+
+        // :q a も終了せず quaff a として処理される
+        press(&mut app, ":q a");
+        app.on_key_command(KeyCode::Enter);
+        assert!(!app.quit);
+        assert!(app.status.contains("持ち物 a はない"), "{}", app.status);
+
+        // :quit で初めて終了する
+        press(&mut app, ":quit");
+        app.on_key_command(KeyCode::Enter);
+        assert!(app.quit);
     }
 }
