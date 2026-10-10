@@ -29,6 +29,8 @@ const WEAK_AT: i32 = 30;
 /// この HP 以下で毒や飢えが続くと、自動移動を止めて知らせる
 const DANGER_HP: i32 = 5;
 const MAX_MONSTERS: usize = 6;
+/// ログに残す件数の目安。これを超えたぶんは古い方から捨てる（読むのは末尾の数件だけ）。
+const LOG_KEEP: usize = 1000;
 /// 装備して、このターン数が過ぎると、その装備の正体（接尾辞と補正値）が分かる
 const IDENTIFY_AFTER_WORN: u32 = 50;
 /// レベルアップで増える最大HP
@@ -421,6 +423,10 @@ impl Game {
             turn: self.turn,
             text: text.to_string(),
         });
+        // 毎回ではなく、倍に達したときにまとめて捨てる
+        if self.log.len() >= LOG_KEEP * 2 {
+            self.log.drain(..self.log.len() - LOG_KEEP);
+        }
     }
 
     /// ログに残し、Outcome にも添える。

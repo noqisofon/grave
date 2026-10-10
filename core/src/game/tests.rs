@@ -4470,3 +4470,20 @@ fn disarm_without_a_direction_asks_when_several_traps_are_adjacent() {
     assert!(!o.ok && o.message.contains("向きを指定"), "{}", o.message);
     assert_eq!(g.turn(), t);
 }
+
+#[test]
+fn the_log_is_trimmed_but_keeps_the_latest_entries() {
+    let mut g = quiet(3);
+    for i in 0..(LOG_KEEP * 5) {
+        g.push_log(&format!("log {i}"));
+    }
+    assert!(g.log().len() < LOG_KEEP * 2, "{}", g.log().len());
+    assert!(g.log().len() >= LOG_KEEP);
+    // 末尾は最新のまま、並びも崩れない
+    let last = g.log().last().unwrap();
+    assert_eq!(last.text, format!("log {}", LOG_KEEP * 5 - 1));
+    let n = g.log().len();
+    assert_eq!(g.log()[n - 2].text, format!("log {}", LOG_KEEP * 5 - 2));
+    // 観測は末尾の数件を読むので、切り詰めても変わらない
+    assert!(g.observe_text(3).contains(&last.text));
+}
