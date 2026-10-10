@@ -118,11 +118,21 @@ impl Map {
             rooms.push(r);
         }
 
+        if rooms.is_empty() {
+            let r = Rect { x: 5, y: 5, w: 10, h: 5 };
+            for yy in r.y..r.y + r.h {
+                for xx in r.x..r.x + r.w {
+                    tiles[idx(xx, yy)] = Tile::Floor;
+                }
+            }
+            rooms.push(r);
+        }
+
         let start = rooms[0].center();
         let stairs = if rooms.len() > 1 {
             rooms[rooms.len() - 1].center()
         } else {
-            (start.0 + 1, start.1)
+            (rooms[0].x + 1, rooms[0].y + 1)
         };
         tiles[idx(stairs.0, stairs.1)] = Tile::Stairs;
 

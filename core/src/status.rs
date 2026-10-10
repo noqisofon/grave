@@ -275,7 +275,8 @@ impl StatusSet {
         Status::ALL
             .iter()
             .copied()
-            .filter_map(|s| self.has(s).then(|| (s, self.get(s))))
+            .filter(|&s| self.has(s))
+            .map(|s| (s, self.get(s)))
             .collect()
     }
 

@@ -1425,9 +1425,9 @@ impl Game {
     /// 1ターンぶんの空腹と毒。
     fn tick_body(&mut self, fx: &RingFx) {
         // Famine の防具は、2ターンに1回、満腹度を余計に減らす。消化遅延の指輪は減る回数を間引く
-        let drain = if fx.slow_digestion > 0 && self.turn % (fx.slow_digestion as u32 + 1) != 0 {
+        let drain = if fx.slow_digestion > 0 && !self.turn.is_multiple_of(fx.slow_digestion as u32 + 1) {
             0
-        } else if self.armor_suffix() == Some(Suffix::Famine) && self.turn % 2 == 0 {
+        } else if self.armor_suffix() == Some(Suffix::Famine) && self.turn.is_multiple_of(2) {
             2
         } else {
             1
@@ -1501,7 +1501,7 @@ impl Game {
             }
             // 遅い敵・減速した敵は行動が半分に、加速した敵は倍になる（打ち消し合う）
             let net = kind.slow as i32 + st.has(Status::Slowed) as i32 - st.has(Status::Hasted) as i32;
-            if net > 0 && self.turn % (1 << net) != 0 {
+            if net > 0 && !self.turn.is_multiple_of(1 << net) {
                 continue;
             }
             let acts = kind.actions_per_turn * if net < 0 { 2 } else { 1 };
@@ -4945,7 +4945,7 @@ mod tests {
             assert!(g.run("zap a east").ok);
         }
         let o = g.run("zap a east");
-        assert!(o.ok && o.message.contains("魔力は尽きた") && o.message.contains("0回") == false, "{}", o.message);
+        assert!(o.ok && o.message.contains("魔力は尽きた") && !o.message.contains("0回"), "{}", o.message);
         assert!(g.inventory_lines()[0].contains("[残り0回]"));
         let (t, hp) = (g.turn(), g.monsters[0].hp);
         let o = g.run("zap a east");
@@ -5309,7 +5309,7 @@ mod tests {
         assert_eq!(g.inventory.len(), 2);
         assert!(g.inventory_lines()[0].contains("[残り4回]") && g.inventory_lines()[1].contains("[残り2回]"));
         g.run("drop a");
-        assert_eq!(g.underfoot_text().contains("火の杖") || g.underfoot_text().contains("杖"), true);
+        assert!(g.underfoot_text().contains("火の杖") || g.underfoot_text().contains("杖"));
         g.run("pickup");
         assert!(g.inventory_lines().iter().any(|l| l.contains("[残り4回]")));
     }
@@ -5488,7 +5488,7 @@ mod tests {
         for _ in 0..40 {
             g.run("wait");
         }
-        assert!(g.hp >= 1 + 40 / 4, "{}", g.hp);
+        assert!(g.hp > 40 / 4, "{}", g.hp);
         // 敵が見えていても治る
         let mut g = with_adjacent(3, &crate::monster::GOBLIN);
         g.monsters[0].status.apply(Status::Paralyzed, 1000);

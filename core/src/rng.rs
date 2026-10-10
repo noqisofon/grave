@@ -15,9 +15,23 @@ impl Rng {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
-    /// lo 以上 hi 未満の整数。
+    /// lo 以上 hi 未満の整数。lo >= hi のときは安全に lo を返す。
     pub fn range(&mut self, lo: i32, hi: i32) -> i32 {
-        debug_assert!(lo < hi);
+        if lo >= hi {
+            return lo;
+        }
         lo + (self.next_u64() % (hi - lo) as u64) as i32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn range_handles_inverted_or_empty_bounds_safely() {
+        let mut rng = Rng::new(42);
+        assert_eq!(rng.range(5, 5), 5);
+        assert_eq!(rng.range(10, 5), 10);
     }
 }

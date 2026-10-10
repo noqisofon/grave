@@ -294,6 +294,7 @@ const fn def(
     ItemDef { kind, name, class, weight, min_depth, effects, bad, zap: None, ring: None, light: None }
 }
 
+#[allow(clippy::too_many_arguments)]
 const fn wand(
     kind: ItemKind,
     name: &'static str,

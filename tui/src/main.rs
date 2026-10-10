@@ -564,75 +564,89 @@ fn run_journal(path: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// 生端末モードと代替画面のライフサイクルを管理する RAII ガード。
+/// パニック発生時やスコープ終了時にも確実に端末状態を復元する。
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        terminal::enable_raw_mode()?;
+        let mut out = io::stdout();
+        execute!(out, EnterAlternateScreen, Hide)?;
+        Ok(TerminalGuard)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let mut out = io::stdout();
+        let _ = execute!(out, Show, LeaveAlternateScreen);
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
 fn run_watch(path: &str) -> io::Result<()> {
     let mut w = watch::Watcher::new(path);
-    terminal::enable_raw_mode()?;
+    let _guard = TerminalGuard::enter()?;
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen, Hide)?;
 
-    let result = (|| -> io::Result<()> {
-        let mut dirty = true;
-        let mut show_journal = false;
-        let mut show_inv = false;
-        loop {
-            if w.poll()? {
-                dirty = true;
-            }
-            if dirty {
-                if show_journal && !w.journals.is_empty() {
-                    let text = w.journals.last().unwrap();
-                    draw_text_screen(&mut out, "冒険日誌 (j で戻る / q で終了)", text)?;
+    let mut dirty = true;
+    let mut show_journal = false;
+    let mut show_inv = false;
+    loop {
+        if w.poll()? {
+            dirty = true;
+        }
+        if dirty {
+            if show_journal && !w.journals.is_empty() {
+                let text = w.journals.last().unwrap();
+                draw_text_screen(&mut out, "冒険日誌 (j で戻る / q で終了)", text)?;
+            } else {
+                show_journal = false;
+                let state = if !w.started {
+                    "  (記録待ち)"
+                } else if w.stale_rules {
+                    "  ※古いルールの記録 (再現できない)"
+                } else if w.desync {
+                    "  ※再現がずれている"
                 } else {
-                    show_journal = false;
-                    let state = if !w.started {
-                        "  (記録待ち)"
-                    } else if w.stale_rules {
-                        "  ※古いルールの記録 (再現できない)"
-                    } else if w.desync {
-                        "  ※再現がずれている"
-                    } else {
-                        ""
-                    };
-                    let diary = if w.journals.is_empty() { "" } else { "  (j で日誌)" };
-                    let footer = format!("観戦中: {path}{state}{diary}  (i で持ち物 / q で終了)");
-                    draw_scene(&mut out, &w.game, Some(&w.thoughts), &footer, false, show_inv)?;
-                }
-                dirty = false;
+                    ""
+                };
+                let diary = if w.journals.is_empty() { "" } else { "  (j で日誌)" };
+                let footer = format!("観戦中: {path}{state}{diary}  (i で持ち物 / q で終了)");
+                draw_scene(&mut out, &w.game, Some(&w.thoughts), &footer, false, show_inv)?;
             }
-            if event::poll(Duration::from_millis(200))? {
-                match event::read()? {
-                    Event::Key(k) if k.kind == KeyEventKind::Press => {
-                        let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL)
-                            && k.code == KeyCode::Char('c');
-                        // Esc は、持ち物を開いているときはそれを閉じるだけ
-                        if k.code == KeyCode::Esc && show_inv {
-                            show_inv = false;
-                            dirty = true;
-                            continue;
-                        }
-                        if ctrl_c || matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
-                            break;
-                        }
-                        if k.code == KeyCode::Char('i') {
-                            show_inv = !show_inv;
-                            dirty = true;
-                        }
-                        if k.code == KeyCode::Char('j') && !w.journals.is_empty() {
-                            show_journal = !show_journal;
-                            dirty = true;
-                        }
+            dirty = false;
+        }
+        if event::poll(Duration::from_millis(200))? {
+            match event::read()? {
+                Event::Key(k) if k.kind == KeyEventKind::Press => {
+                    let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL)
+                        && k.code == KeyCode::Char('c');
+                    // Esc は、持ち物を開いているときはそれを閉じるだけ
+                    if k.code == KeyCode::Esc && show_inv {
+                        show_inv = false;
+                        dirty = true;
+                        continue;
                     }
-                    Event::Resize(..) => dirty = true,
-                    _ => {}
+                    if ctrl_c || matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
+                        break;
+                    }
+                    if k.code == KeyCode::Char('i') {
+                        show_inv = !show_inv;
+                        dirty = true;
+                    }
+                    if k.code == KeyCode::Char('j') && !w.journals.is_empty() {
+                        show_journal = !show_journal;
+                        dirty = true;
+                    }
                 }
+                Event::Resize(..) => dirty = true,
+                _ => {}
             }
         }
-        Ok(())
-    })();
-
-    execute!(out, Show, LeaveAlternateScreen)?;
-    terminal::disable_raw_mode()?;
-    result
+    }
+    Ok(())
 }
 
 fn random_seed() -> u64 {
@@ -664,33 +678,28 @@ fn main() -> io::Result<()> {
         .unwrap_or_else(random_seed);
     let mut app = App::new(seed);
 
-    terminal::enable_raw_mode()?;
+    let _guard = TerminalGuard::enter()?;
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen, Hide)?;
 
-    let result = (|| -> io::Result<()> {
-        while !app.quit {
-            app.draw(&mut out)?;
-            if let Event::Key(k) = event::read()? {
-                if k.kind != KeyEventKind::Press {
-                    continue;
-                }
-                if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-                    break;
-                }
-                match app.mode {
-                    Mode::Normal => app.on_key_normal(k.code),
-                    Mode::Command => app.on_key_command(k.code),
-                }
+    while !app.quit {
+        app.draw(&mut out)?;
+        if let Event::Key(k) = event::read()? {
+            if k.kind != KeyEventKind::Press {
+                continue;
+            }
+            if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+                break;
+            }
+            match app.mode {
+                Mode::Normal => app.on_key_normal(k.code),
+                Mode::Command => app.on_key_command(k.code),
             }
         }
-        Ok(())
-    })();
+    }
 
-    execute!(out, Show, LeaveAlternateScreen)?;
-    terminal::disable_raw_mode()?;
+    drop(_guard);
     println!("seed: {}", app.game.seed());
-    result
+    Ok(())
 }
 
 #[cfg(test)]
