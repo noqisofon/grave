@@ -190,6 +190,19 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
     }
 }
 
+/// ツールの実行中に panic しても、サーバーごと落とさずエラーとして返す。
+/// （ゲームの状態は panic した時点のまま残る。直らなければ new_game でやり直せる）
+fn guarded(f: impl FnOnce() -> (String, bool)) -> (String, bool) {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        (
+            "internal error: the game panicked while running this tool. \
+             The game state may be inconsistent; call new_game to start over."
+                .to_string(),
+            true,
+        )
+    })
+}
+
 fn handle(game: &mut Game, rec: &mut Recorder, req: &Value) -> Option<Value> {
     let id = req.get("id")?.clone(); // id が無ければ通知なので返信しない
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
@@ -214,7 +227,7 @@ fn handle(game: &mut Game, rec: &mut Recorder, req: &Value) -> Option<Value> {
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-            let (text, is_error) = call_tool(game, rec, name, &args);
+            let (text, is_error) = guarded(|| call_tool(game, rec, name, &args));
             json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
         }
         _ => {
