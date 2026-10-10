@@ -17,7 +17,7 @@ use crossterm::{
 use grave_core::journal;
 use grave_core::map::{H, W};
 use grave_core::record::Event as RecEvent;
-use grave_core::{Class, Game, ItemEntry, ItemKind, COMMAND_NAMES};
+use grave_core::{Class, Game, ItemEntry, ItemKind, COMMAND_HELP, COMMAND_NAMES};
 use keymap::Keymap;
 
 /// ゲームコマンド以外の、TUI 側で処理する組み込みコマンド。
@@ -42,6 +42,10 @@ struct App {
     quit: bool,
     /// 持ち物を、マップの右上に重ねて出している（次のキーで閉じる）
     overlay: bool,
+    /// 持ち物オーバーレイの先頭に出す項目の番号（スクロール位置）
+    overlay_scroll: usize,
+    /// `:help` の全画面表示。中身は先頭行の番号（スクロール位置）
+    help: Option<usize>,
 }
 
 impl App {
@@ -58,6 +62,8 @@ impl App {
             status: "h/j/k/l で移動、: でコマンド、:help で一覧".to_string(),
             quit: false,
             overlay: false,
+            overlay_scroll: 0,
+            help: None,
         }
     }
 
@@ -74,7 +80,7 @@ impl App {
                 true
             }
             "help" => {
-                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 飲む・e 食べる・r 読む・w/E 装備・R/T はずす・a 杖を振る(続けて 文字 と向き) / F ランタンに油を継ぐ / i 持ち物 / > 降りる / < 登る(アミュレット所持時) / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new(:new_game) :quit".to_string();
+                self.help = Some(0);
                 true
             }
             "new" | "new_game" => {
@@ -148,6 +154,7 @@ impl App {
                 // `inventory` を実行したときだけ、持ち物をマップの上に重ねる
                 if outs.iter().any(|o| o.command == "inventory") {
                     self.overlay = true;
+                    self.overlay_scroll = 0;
                 }
                 ok
             }
@@ -164,7 +171,17 @@ impl App {
     }
 
     fn on_key_normal(&mut self, code: KeyCode) {
+        if self.help.is_some() {
+            self.on_key_help(code);
+            return;
+        }
         if self.overlay {
+            // 方向キーなどは持ち物の一覧をスクロールする
+            let total = self.game.inventory_lines().len();
+            if let Some(next) = scrolled(self.overlay_scroll, total, OVERLAY_ROWS, code) {
+                self.overlay_scroll = next;
+                return;
+            }
             self.overlay = false;
             // 閉じるためのキーはそれだけで終わり。ほかのキーは閉じたうえで普通に働く
             if matches!(
@@ -221,6 +238,21 @@ impl App {
             KeyCode::KeypadBegin => self.run_arrow("wait"),
             KeyCode::Esc => self.count = None,
             _ => {}
+        }
+    }
+
+    /// 全画面のヘルプ。方向キーでスクロールし、Esc / q / Enter で閉じる。
+    fn on_key_help(&mut self, code: KeyCode) {
+        let (cols, rows) = text_view_size();
+        let total = wrap(&help_text(), cols).len();
+        let cur = self.help.unwrap_or(0);
+        match scrolled(cur, total, rows, code) {
+            Some(next) => self.help = Some(next),
+            None => {
+                if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                    self.help = None;
+                }
+            }
         }
     }
 
@@ -300,6 +332,14 @@ impl App {
     }
 
     fn draw(&self, out: &mut impl Write) -> io::Result<()> {
+        if let Some(scroll) = self.help {
+            return draw_text_screen(
+                out,
+                "ヘルプ (↑↓ PgUp PgDn Home End でスクロール / Esc か q で戻る)",
+                &help_text(),
+                scroll,
+            );
+        }
         let footer = match self.mode {
             Mode::Command => format!(":{}", self.cmdline),
             Mode::Normal => {
@@ -319,6 +359,7 @@ impl App {
                 empty: p.empty,
                 footer: "(Esc で戻る)",
                 items: &p.items,
+                scroll: 0,
             })
         } else if self.overlay {
             inv_lines = self.game.inventory_lines();
@@ -327,6 +368,7 @@ impl App {
                 empty: "(なし)",
                 footer: "(Esc か i で閉じる)",
                 items: &inv_lines,
+                scroll: self.overlay_scroll,
             })
         } else {
             None
@@ -347,6 +389,8 @@ struct OverlayView<'a> {
     empty: &'a str,
     footer: &'a str,
     items: &'a [String],
+    /// 先頭に出す項目の番号
+    scroll: usize,
 }
 
 struct OverlayPrompt {
@@ -610,13 +654,23 @@ fn draw_overlay(out: &mut impl Write, ov: &OverlayView, cols: u16) -> io::Result
     if ov.items.is_empty() {
         lines.push((ov.empty.to_string(), Color::White));
     }
-    for l in ov.items.iter().take(H as usize - 2) {
+    let total = ov.items.len();
+    let start = ov.scroll.min(total.saturating_sub(OVERLAY_ROWS));
+    for l in ov.items.iter().skip(start).take(OVERLAY_ROWS) {
         let color = if l.contains("(装備中)") {
             Color::Yellow
         } else {
             Color::White
         };
         lines.push((l.clone(), color));
+    }
+    // 一覧が1画面に収まらないときは、見えている範囲と操作を知らせる
+    if total > OVERLAY_ROWS {
+        let end = (start + OVERLAY_ROWS).min(total);
+        lines.push((
+            format!("{}-{}/{}  ↑↓でスクロール", start + 1, end, total),
+            Color::DarkGrey,
+        ));
     }
     lines.push((ov.footer.to_string(), Color::DarkGrey));
     // マップの右端にそろえる。端末が狭ければ端末の右端まで
@@ -662,9 +716,69 @@ fn wrap(text: &str, cols: usize) -> Vec<String> {
     lines
 }
 
-fn draw_text_screen(out: &mut impl Write, title: &str, text: &str) -> io::Result<()> {
+/// 一覧オーバーレイに出せる項目の数。
+const OVERLAY_ROWS: usize = H as usize - 2;
+
+/// スクロールのキーなら、動かしたあとの先頭行（`total` 行のうち `page` 行が見える）。
+/// スクロールのキーでなければ None。
+fn scrolled(cur: usize, total: usize, page: usize, code: KeyCode) -> Option<usize> {
+    let max = total.saturating_sub(page);
+    let next = match code {
+        KeyCode::Up => cur.saturating_sub(1),
+        KeyCode::Down => cur + 1,
+        KeyCode::PageUp => cur.saturating_sub(page.saturating_sub(1).max(1)),
+        KeyCode::PageDown | KeyCode::Char(' ') => cur + page.saturating_sub(1).max(1),
+        KeyCode::Home => 0,
+        KeyCode::End => max,
+        _ => return None,
+    };
+    Some(next.min(max))
+}
+
+/// 全画面テキストの折り返し桁数と、見える行数。
+fn text_view_size() -> (usize, usize) {
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
-    let lines = wrap(text, (cols as usize).saturating_sub(2).max(10));
+    (
+        (cols as usize).saturating_sub(2).max(10),
+        (rows as usize).saturating_sub(3).max(1),
+    )
+}
+
+/// `:help` の本文。TUI のキー操作と、ゲームのコマンド一覧。
+fn help_text() -> String {
+    format!("{HELP_KEYS}\n{COMMAND_HELP}")
+}
+
+const HELP_KEYS: &str = "\
+== キー操作 ==
+h j k l / 矢印    西 南 北 東に移動 (敵のいる方向へ移動すると攻撃)
+y u b n           北西 北東 南西 南東に移動
+Home PgUp End PgDn  テンキーの斜め移動    KeypadBegin  待つ
+q + 文字          薬を飲む          e + 文字   食べる
+r + 文字          巻物を読む        w / E + 文字  装備する
+R / T + 文字      装備をはずす      a / Z + 文字 + 向き  杖を振る
+d + 文字          持ち物を捨てる    ,   足元の物を拾う
+F                 ランタンに油を継ぐ
+i                 持ち物 (↑↓ でスクロール、Esc か i で閉じる)
+> / <             階段を降りる / 登る (アミュレット所持時)
+_                 階段へ自動移動    x   自動探索    z   待つ    ;   見る
+3j                数字+キーで反復   .   直前の操作を繰り返す
+: または `        コマンドライン (Tab 補完、↑↓ 履歴、; で連続実行)
+:map <1文字> <コマンド>   キーの再割り当て    :unmap <1文字>
+:new [seed]       最初からやり直す  :quit   終了 (:q は quaff の略)
+罠の解除にはキーがない:  :disarm [向き]
+
+== コマンド一覧 ==";
+
+fn draw_text_screen(
+    out: &mut impl Write,
+    title: &str,
+    text: &str,
+    scroll: usize,
+) -> io::Result<()> {
+    let (wrap_cols, page) = text_view_size();
+    let lines = wrap(text, wrap_cols);
+    let scroll = scroll.min(lines.len().saturating_sub(page));
     queue!(
         out,
         Clear(ClearType::All),
@@ -673,11 +787,7 @@ fn draw_text_screen(out: &mut impl Write, title: &str, text: &str) -> io::Result
         Print(title),
         ResetColor
     )?;
-    for (i, l) in lines
-        .iter()
-        .take((rows as usize).saturating_sub(3))
-        .enumerate()
-    {
+    for (i, l) in lines.iter().skip(scroll).take(page).enumerate() {
         queue!(out, MoveTo(0, (i + 2) as u16), Print(l))?;
     }
     queue!(out, Hide)?;
@@ -736,6 +846,7 @@ fn run_watch(path: &str) -> io::Result<()> {
     let mut dirty = true;
     let mut show_journal = false;
     let mut show_inv = false;
+    let mut inv_scroll = 0usize;
     loop {
         if w.poll()? {
             dirty = true;
@@ -743,7 +854,7 @@ fn run_watch(path: &str) -> io::Result<()> {
         if dirty {
             if show_journal && !w.journals.is_empty() {
                 let text = w.journals.last().unwrap();
-                draw_text_screen(&mut out, "冒険日誌 (j で戻る / q で終了)", text)?;
+                draw_text_screen(&mut out, "冒険日誌 (j で戻る / q で終了)", text, 0)?;
             } else {
                 show_journal = false;
                 let state = if !w.started {
@@ -769,6 +880,7 @@ fn run_watch(path: &str) -> io::Result<()> {
                         empty: "(なし)",
                         footer: "(Esc か i で閉じる)",
                         items: &inv_lines,
+                        scroll: inv_scroll,
                     })
                 } else {
                     None
@@ -789,6 +901,15 @@ fn run_watch(path: &str) -> io::Result<()> {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     let ctrl_c =
                         k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c');
+                    // 持ち物を開いているときは、方向キーなどで一覧をスクロールする
+                    if show_inv {
+                        let total = w.game.inventory_lines().len();
+                        if let Some(next) = scrolled(inv_scroll, total, OVERLAY_ROWS, k.code) {
+                            inv_scroll = next;
+                            dirty = true;
+                            continue;
+                        }
+                    }
                     // Esc は、持ち物を開いているときはそれを閉じるだけ
                     if k.code == KeyCode::Esc && show_inv {
                         show_inv = false;
@@ -800,6 +921,7 @@ fn run_watch(path: &str) -> io::Result<()> {
                     }
                     if k.code == KeyCode::Char('i') {
                         show_inv = !show_inv;
+                        inv_scroll = 0;
                         dirty = true;
                     }
                     if k.code == KeyCode::Char('j') && !w.journals.is_empty() {
@@ -1152,5 +1274,53 @@ mod tests {
         app.on_key_command(KeyCode::Enter);
         assert_eq!(app.mode, Mode::Normal);
         assert!(app.status.contains("持ち物 b はない"), "{}", app.status);
+    }
+
+    #[test]
+    fn help_is_a_full_screen_that_scrolls_and_closes() {
+        let mut app = App::new(1);
+        press(&mut app, ":help");
+        app.on_key_command(KeyCode::Enter);
+        assert_eq!(app.help, Some(0));
+        // 閉じるキー以外ではゲームは進まず、スクロールだけする
+        let t = app.game.turn();
+        app.on_key_normal(KeyCode::Down);
+        app.on_key_normal(KeyCode::Char('z'));
+        assert_eq!(app.game.turn(), t);
+        assert!(app.help.is_some());
+        app.on_key_normal(KeyCode::Esc);
+        assert_eq!(app.help, None);
+        // 本文には、キー操作の節とコマンド一覧の両方が入る
+        let text = help_text();
+        assert!(text.contains("キー操作") && text.contains("disarm"));
+    }
+
+    #[test]
+    fn scrolled_clamps_and_ignores_other_keys() {
+        // 20行のうち5行が見える
+        assert_eq!(scrolled(0, 20, 5, KeyCode::Up), Some(0));
+        assert_eq!(scrolled(0, 20, 5, KeyCode::Down), Some(1));
+        assert_eq!(scrolled(0, 20, 5, KeyCode::PageDown), Some(4));
+        assert_eq!(scrolled(14, 20, 5, KeyCode::Down), Some(15));
+        assert_eq!(scrolled(15, 20, 5, KeyCode::Down), Some(15));
+        assert_eq!(scrolled(7, 20, 5, KeyCode::End), Some(15));
+        assert_eq!(scrolled(7, 20, 5, KeyCode::Home), Some(0));
+        // 1画面に収まるなら動かない
+        assert_eq!(scrolled(0, 3, 5, KeyCode::Down), Some(0));
+        assert_eq!(scrolled(0, 20, 5, KeyCode::Char('z')), None);
+    }
+
+    #[test]
+    fn inventory_overlay_scrolls_with_arrow_keys_instead_of_closing() {
+        let mut app = App::new(1);
+        press(&mut app, "i");
+        assert!(app.overlay);
+        // 持ち物が少ないと動かないが、閉じもしない
+        let t = app.game.turn();
+        app.on_key_normal(KeyCode::Down);
+        assert!(app.overlay);
+        assert_eq!(app.game.turn(), t);
+        app.on_key_normal(KeyCode::Esc);
+        assert!(!app.overlay);
     }
 }
