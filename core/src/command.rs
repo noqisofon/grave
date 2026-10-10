@@ -180,13 +180,13 @@ move <dir>     1歩移動 (north/south/east/west/northeast/northwest/southeast/s
 attack <dir>   その方向の敵を攻撃する (敵がいなければ失敗、ターン消費なし)
 descend        足元の階段で下の階へ降りる (地下30階が最深部。アミュレットを持っていると降りられない)
 ascend         アミュレットを持っているとき、足元の階段で上の階へ登る (地下1階で登ると地上へ脱出してクリア)
-quaff <文字>   薬を飲む (薬以外には使えない。未識別の薬は使うと正体が分かる。悪い薬もある)
-eat <文字>     食べ物・キノコを食べる (食べ物以外には使えない)
+quaff <文字>   薬を飲む (薬以外には使えない。未識別の薬は使うと正体が分かる。悪い薬もある。略: q)
+eat <文字>     食べ物・キノコを食べる (食べ物以外には使えない。略: e)
 zap <文字> [向き|nearest]  杖を振る (1ターン。向きは move と同じ 8 方向。nearest は一番近い見えている敵。自分に効く杖は向き不要)。使用回数があり、0 になると使えない。残りの回数は inventory とステータスに出る
-read <文字> [対象]  巻物を読む (巻物以外には使えない。盲目だと読めない)。識別の巻物は対象の文字を指定できる
-inventory      持ち物の一覧 (ターン消費なし。装備中のものには (装備中) と付く)
-equip <文字>   武器・防具・指輪・光源を身につける (武器・防具は1つずつ、指輪は2つまで。付け替えもこれ。光源は今の光源と持ち替える)
-unequip <文字> 装備や指輪をはずす (呪われたものははずせない)
+read <文字> [対象]  巻物を読む (巻物以外には使えない。盲目だと読めない。略: r)。識別の巻物は対象の文字を指定できる
+inventory      持ち物の一覧 (ターン消費なし。装備中のものには (装備中) と付く。略: i)
+equip <文字>   武器・防具・指輪・光源を身につける (武器・防具は1つずつ、指輪は2つまで。付け替えもこれ。光源は今の光源と持ち替える。略: w, wield, wear)
+unequip <文字> 装備や指輪をはずす (呪われたものははずせない。略: remove)
 refill [文字]  装備中のランタンに油つぼで燃料を継ぎ足す (文字は油つぼ。省くと最初の油つぼ。松明には使えない。1ターン)
 drop <文字> [数]  持ち物を足元に捨てる (1ターン。数を省くと1個。装備中のものは先に unequip。捨てた物は歩いても stay しても自動では拾われない)
 pickup [番号]  足元の物を1個拾う (別名 get。1ターン。番号は look や観測の「足元」の番号。省くと番号1。捨てた物もこれで拾える)
@@ -262,8 +262,8 @@ fn parse_body(line: &str) -> Result<Command, String> {
         "ascend" | "up" => Ok(Command::Ascend),
         "inventory" | "i" => Ok(Command::Inventory),
         "quaff" | "drink" | "q" => Ok(Command::Quaff(item_letter(head, &args)?)),
-        "eat" => Ok(Command::Eat(item_letter(head, &args)?)),
-        "read" => {
+        "eat" | "e" => Ok(Command::Eat(item_letter(head, &args)?)),
+        "read" | "r" => {
             let letter = item_letter(head, &args)?;
             let target = match args.get(1) {
                 Some(a) => Some(letter_arg(a).ok_or_else(|| format!("不正な対象: {a}"))?),
@@ -293,8 +293,8 @@ fn parse_body(line: &str) -> Result<Command, String> {
         "use" | "u" => Err(
             "use はない。薬は quaff、食べ物は eat、巻物は read、装備は equip を使う".to_string(),
         ),
-        "equip" | "e" | "wield" | "wear" | "unequip" | "r" | "remove" => {
-            let equip = matches!(head, "equip" | "e" | "wield" | "wear");
+        "equip" | "wield" | "wear" | "w" | "unequip" | "remove" => {
+            let equip = matches!(head, "equip" | "wield" | "wear" | "w");
             let letter = args
                 .first()
                 .and_then(|a| letter_arg(a))
@@ -367,9 +367,16 @@ mod tests {
     #[test]
     fn item_commands_are_separate_and_use_is_gone() {
         assert_eq!(parse("quaff b"), Ok(Command::Quaff('b')));
+        assert_eq!(parse("q b"), Ok(Command::Quaff('b')));
         assert_eq!(parse("eat c"), Ok(Command::Eat('c')));
+        assert_eq!(parse("e c"), Ok(Command::Eat('c')));
         assert_eq!(parse("read d"), Ok(Command::Read('d', None)));
+        assert_eq!(parse("r d"), Ok(Command::Read('d', None)));
         assert_eq!(parse("read d a"), Ok(Command::Read('d', Some('a'))));
+        assert_eq!(parse("w a"), Ok(Command::Equip('a')));
+        assert_eq!(parse("equip a"), Ok(Command::Equip('a')));
+        assert_eq!(parse("unequip a"), Ok(Command::Unequip('a')));
+        assert_eq!(parse("remove a"), Ok(Command::Unequip('a')));
         assert!(parse("quaff").is_err());
         assert!(parse("use a").unwrap_err().contains("quaff"));
         assert!(parse("u a").is_err());

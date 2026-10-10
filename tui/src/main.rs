@@ -17,13 +17,13 @@ use crossterm::{
 use grave_core::journal;
 use grave_core::map::{H, W};
 use grave_core::record::Event as RecEvent;
-use grave_core::{Game, COMMAND_NAMES};
+use grave_core::{Class, Game, ItemEntry, ItemKind, COMMAND_NAMES};
 use keymap::Keymap;
 
 /// ゲームコマンド以外の、TUI 側で処理する組み込みコマンド。
 const BUILTINS: &[&str] = &["map", "unmap", "new", "new_game", "quit", "exit", "help"];
 
-#[derive(PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Mode {
     Normal,
     Command,
@@ -74,7 +74,7 @@ impl App {
                 true
             }
             "help" => {
-                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 飲む・R 読む・a 杖を振る(続けて 文字 と向き) / F ランタンに油を継ぐ / i 持ち物 / > 降りる / < 登る(アミュレット所持時) / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new(:new_game) :quit".to_string();
+                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 飲む・e 食べる・r 読む・w/E 装備・R/T はずす・a 杖を振る(続けて 文字 と向き) / F ランタンに油を継ぐ / i 持ち物 / > 降りる / < 登る(アミュレット所持時) / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new(:new_game) :quit".to_string();
                 true
             }
             "new" | "new_game" => {
@@ -300,15 +300,101 @@ impl App {
                 format!("{}  {}", self.status, count)
             }
         };
+        let prompt = if self.mode == Mode::Command {
+            prompt_for_cmdline(&self.game, &self.cmdline)
+        } else {
+            None
+        };
+        let inv_lines;
+        let overlay = if let Some(p) = &prompt {
+            Some(OverlayView {
+                title: p.title,
+                empty: p.empty,
+                footer: "(Esc で戻る)",
+                items: &p.items,
+            })
+        } else if self.overlay {
+            inv_lines = self.game.inventory_lines();
+            Some(OverlayView {
+                title: "持ち物",
+                empty: "(なし)",
+                footer: "(Esc か i で閉じる)",
+                items: &inv_lines,
+            })
+        } else {
+            None
+        };
         draw_scene(
             out,
             &self.game,
             None,
             &footer,
             self.mode == Mode::Command,
-            self.overlay,
+            overlay.as_ref(),
         )
     }
+}
+
+struct OverlayView<'a> {
+    title: &'a str,
+    empty: &'a str,
+    footer: &'a str,
+    items: &'a [String],
+}
+
+struct OverlayPrompt {
+    title: &'static str,
+    empty: &'static str,
+    items: Vec<String>,
+}
+
+/// コマンドライン入力中のコマンドに応じて、対象アイテムの候補一覧と案内を返す。
+fn prompt_for_cmdline(game: &Game, cmdline: &str) -> Option<OverlayPrompt> {
+    let mut parts = cmdline.split_whitespace();
+    let head = parts.next()?;
+    let args: Vec<&str> = parts.collect();
+    if args.len() > 1 {
+        return None;
+    }
+    let entries = game.inventory_entries();
+    let (title, empty, filter): (&'static str, &'static str, fn(&ItemEntry) -> bool) = match head {
+        "read" | "r" => (
+            "どれを読む？ (巻物)",
+            "(読める巻物がない)",
+            |e| e.kind.is_scroll(),
+        ),
+        "quaff" | "q" | "drink" => ("どれを飲む？ (薬)", "(飲める薬がない)", |e| {
+            e.kind.is_potion()
+        }),
+        "eat" | "e" => (
+            "どれを食べる？",
+            "(食べられるものがない)",
+            |e| matches!(e.kind.class(), Class::Food | Class::Mushroom),
+        ),
+        "equip" | "w" | "wear" | "wield" => (
+            "どれを装備する？",
+            "(装備できるものがない)",
+            |e| {
+                !e.equipped
+                    && (e.kind.is_equipment() || e.kind.is_ring() || e.kind.class() == Class::Light)
+            },
+        ),
+        "unequip" | "remove" => ("どれをはずす？", "(はずせる装備がない)", |e| e.equipped),
+        "zap" | "aim" => ("どの杖を振る？", "(振れる杖がない)", |e| {
+            e.kind.class() == Class::Wand
+        }),
+        "drop" => ("どれを捨てる？", "(捨てられるものがない)", |e| !e.equipped),
+        "refill" | "fuel" => ("どの油を使う？", "(油つぼがない)", |e| {
+            e.kind == ItemKind::OilFlask
+        }),
+        _ => return None,
+    };
+    let items: Vec<String> = entries.into_iter().filter(filter).map(|e| e.line).collect();
+    Some(OverlayPrompt {
+        title,
+        empty,
+        items,
+    })
 }
 
 /// 全角を2桁として、`cols` 桁に収まるぶんだけ切り出す。
@@ -361,11 +447,11 @@ fn draw_scene(
     thoughts: Option<&[(u32, String)]>,
     footer: &str,
     cursor: bool,
-    show_inventory: bool,
+    overlay: Option<&OverlayView>,
 ) -> io::Result<()> {
     // ちらつき対策: 1フレームぶんを一度に組み立てて、1回の書き込みで送る
     let mut frame: Vec<u8> = Vec::with_capacity(8 * 1024);
-    render_scene(&mut frame, game, thoughts, footer, cursor, show_inventory)?;
+    render_scene(&mut frame, game, thoughts, footer, cursor, overlay)?;
     out.write_all(&frame)?;
     out.flush()
 }
@@ -376,7 +462,7 @@ fn render_scene(
     thoughts: Option<&[(u32, String)]>,
     footer: &str,
     cursor: bool,
-    show_inventory: bool,
+    overlay: Option<&OverlayView>,
 ) -> io::Result<()> {
     // 全角文字は2桁ぶん使うので、文字数の上限は桁数の半分にしておく
     let (cols, rows) = terminal::size().unwrap_or((80, 30));
@@ -478,8 +564,8 @@ fn render_scene(
         MoveTo(0, lay.footer),
         Print(clip_cols(footer, (cols as usize).saturating_sub(1)))
     )?;
-    if show_inventory {
-        draw_inventory_overlay(out, game, cols)?;
+    if let Some(ov) = overlay {
+        draw_overlay(out, ov, cols)?;
     }
     if cursor {
         queue!(out, Show)?;
@@ -495,14 +581,13 @@ fn display_width(s: &str) -> usize {
     s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
 }
 
-/// 持ち物を、マップの右上に重ねて描く。
-fn draw_inventory_overlay(out: &mut impl Write, game: &Game, cols: u16) -> io::Result<()> {
-    let items = game.inventory_lines();
-    let mut lines: Vec<(String, Color)> = vec![("持ち物".to_string(), Color::Cyan)];
-    if items.is_empty() {
-        lines.push(("(なし)".to_string(), Color::White));
+/// 持ち物やコマンド候補を、マップの右上に重ねて描く。
+fn draw_overlay(out: &mut impl Write, ov: &OverlayView, cols: u16) -> io::Result<()> {
+    let mut lines: Vec<(String, Color)> = vec![(ov.title.to_string(), Color::Cyan)];
+    if ov.items.is_empty() {
+        lines.push((ov.empty.to_string(), Color::White));
     }
-    for l in items.iter().take(H as usize - 2) {
+    for l in ov.items.iter().take(H as usize - 2) {
         let color = if l.contains("(装備中)") {
             Color::Yellow
         } else {
@@ -510,7 +595,7 @@ fn draw_inventory_overlay(out: &mut impl Write, game: &Game, cols: u16) -> io::R
         };
         lines.push((l.clone(), color));
     }
-    lines.push(("(Esc か i で閉じる)".to_string(), Color::DarkGrey));
+    lines.push((ov.footer.to_string(), Color::DarkGrey));
     // マップの右端にそろえる。端末が狭ければ端末の右端まで
     let right = (W as u16).min(cols) as usize;
     let inner = lines
@@ -653,13 +738,25 @@ fn run_watch(path: &str) -> io::Result<()> {
                     "  (j で日誌)"
                 };
                 let footer = format!("観戦中: {path}{state}{diary}  (i で持ち物 / q で終了)");
+                let inv_lines;
+                let overlay = if show_inv {
+                    inv_lines = w.game.inventory_lines();
+                    Some(OverlayView {
+                        title: "持ち物",
+                        empty: "(なし)",
+                        footer: "(Esc か i で閉じる)",
+                        items: &inv_lines,
+                    })
+                } else {
+                    None
+                };
                 draw_scene(
                     &mut out,
                     &w.game,
                     Some(&w.thoughts),
                     &footer,
                     false,
-                    show_inv,
+                    overlay.as_ref(),
                 )?;
             }
             dirty = false;
@@ -848,7 +945,7 @@ mod tests {
         // 全画面を消すとちらつく。行ごとにその場で描き直し、更新を保留で囲む
         let app = App::new(1);
         let mut frame = Vec::new();
-        render_scene(&mut frame, &app.game, None, "footer", false, false).unwrap();
+        render_scene(&mut frame, &app.game, None, "footer", false, None).unwrap();
         let text = String::from_utf8_lossy(&frame);
         assert!(!text.contains("\x1b[2J"), "全画面クリアが残っている");
         assert!(
@@ -953,5 +1050,66 @@ mod tests {
         press(&mut app, ":quit");
         app.on_key_command(KeyCode::Enter);
         assert!(app.quit);
+    }
+
+    #[test]
+    fn item_commands_show_candidate_prompts() {
+        let app = App::new(1);
+        // read / r
+        let p_r = prompt_for_cmdline(&app.game, "r").expect("r should prompt");
+        assert_eq!(p_r.title, "どれを読む？ (巻物)");
+        let p_read = prompt_for_cmdline(&app.game, "read ").expect("read should prompt");
+        assert_eq!(p_read.title, "どれを読む？ (巻物)");
+
+        // quaff / q
+        let p_q = prompt_for_cmdline(&app.game, "q").expect("q should prompt");
+        assert_eq!(p_q.title, "どれを飲む？ (薬)");
+
+        // eat / e
+        let p_e = prompt_for_cmdline(&app.game, "e").expect("e should prompt");
+        assert_eq!(p_e.title, "どれを食べる？");
+
+        // equip / w
+        let p_w = prompt_for_cmdline(&app.game, "w").expect("w should prompt");
+        assert_eq!(p_w.title, "どれを装備する？");
+
+        // unequip / remove
+        let p_rm = prompt_for_cmdline(&app.game, "remove").expect("remove should prompt");
+        assert_eq!(p_rm.title, "どれをはずす？");
+
+        // 既に複数引数がある場合はプロンプトを表示しない
+        assert!(prompt_for_cmdline(&app.game, "read a extra").is_none());
+    }
+
+    #[test]
+    fn single_key_opens_item_command_line_promptly() {
+        let mut app = App::new(1);
+        // 'r' を押すとコマンドラインが 'read ' で開く
+        press(&mut app, "r");
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.cmdline, "read ");
+
+        // Esc でキャンセル
+        app.on_key_command(KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+
+        // 'e' を押すとコマンドラインが 'eat ' で開く
+        press(&mut app, "e");
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.cmdline, "eat ");
+
+        app.on_key_command(KeyCode::Esc);
+
+        // 'w' を押すとコマンドラインが 'equip ' で開く
+        press(&mut app, "w");
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.cmdline, "equip ");
+
+        app.on_key_command(KeyCode::Esc);
+
+        // 'R' を押すとコマンドラインが 'unequip ' で開く
+        press(&mut app, "R");
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.cmdline, "unequip ");
     }
 }

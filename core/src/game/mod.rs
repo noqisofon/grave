@@ -99,6 +99,15 @@ pub struct Cell {
     pub seen: bool,
 }
 
+/// 持ち物の1スロットの情報（TUI オーバーレイなどの絞り込み用）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemEntry {
+    pub letter: char,
+    pub line: String,
+    pub kind: ItemKind,
+    pub equipped: bool,
+}
+
 /// 今見えている敵。
 pub struct EnemyView {
     pub name: &'static str,
@@ -735,6 +744,36 @@ impl Game {
                 self.has_amulet
                     .then(|| "★ 魔除けのアミュレット".to_string()),
             )
+            .collect()
+    }
+
+    /// 持ち物の各スロットの詳細情報（絞り込み用）。
+    pub fn inventory_entries(&self) -> Vec<ItemEntry> {
+        self.inventory
+            .iter()
+            .map(|s| {
+                let equipped = self.is_equipped(s.letter);
+                let line = if let Some(g) = &s.gear {
+                    self.gear_line(s.letter, g)
+                } else if let Some(t) = &s.tool {
+                    self.tool_line(s.letter, t)
+                } else {
+                    let mut l = format!("{}) {}", s.letter, self.display_name(s.kind));
+                    if s.count > 1 {
+                        l.push_str(&format!(" x{}", s.count));
+                    }
+                    if !self.known[s.kind.index()] {
+                        l.push_str(" (未識別)");
+                    }
+                    l
+                };
+                ItemEntry {
+                    letter: s.letter,
+                    line,
+                    kind: s.kind,
+                    equipped,
+                }
+            })
             .collect()
     }
 
