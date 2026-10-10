@@ -29,6 +29,8 @@ const WEAK_AT: i32 = 30;
 /// この HP 以下で毒や飢えが続くと、自動移動を止めて知らせる
 const DANGER_HP: i32 = 5;
 const MAX_MONSTERS: usize = 6;
+/// ログに残す件数の目安。これを超えたぶんは古い方から捨てる（読むのは末尾の数件だけ）。
+const LOG_KEEP: usize = 1000;
 /// 装備して、このターン数が過ぎると、その装備の正体（接尾辞と補正値）が分かる
 const IDENTIFY_AFTER_WORN: u32 = 50;
 /// レベルアップで増える最大HP
@@ -421,6 +423,10 @@ impl Game {
             turn: self.turn,
             text: text.to_string(),
         });
+        // 毎回ではなく、倍に達したときにまとめて捨てる
+        if self.log.len() >= LOG_KEEP * 2 {
+            self.log.drain(..self.log.len() - LOG_KEEP);
+        }
     }
 
     /// ログに残し、Outcome にも添える。
@@ -2235,7 +2241,8 @@ impl Game {
         // 留まるときは、足元にあるアイテムを拾う（拾うこと自体はターンを使わない）
         self.pickup_here();
         for done in 1..=n {
-            self.pass_turn();
+            // `wait` と同じく、加速・減速を考える（n は行動の回数）
+            self.pass_action();
             let why = if self.dead {
                 Some("力尽きた。".to_string())
             } else if std::mem::take(&mut self.hit) {
@@ -2427,7 +2434,7 @@ impl Game {
         }
         if let Some(p) = self.amulet.filter(|p| self.map.is_seen(p.0, p.1)) {
             parts.push(format!(
-                ", 魔除けのアミュレットが{}にある。",
+                "魔除けのアミュレットが{}にある。",
                 rel_text(self.pos, p)
             ));
         }
