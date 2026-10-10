@@ -315,6 +315,29 @@ impl App {
         }
     }
 
+    /// コマンド行での Ctrl+文字（シェル風の編集キー）。Ctrl+W は直前の1語、Ctrl+U は行全体、
+    /// Ctrl+H は Backspace と同じ。ほかの Ctrl+文字は何もしない。
+    fn on_ctrl_command(&mut self, c: char) {
+        match c.to_ascii_lowercase() {
+            'w' => {
+                while self.cmdline.ends_with(char::is_whitespace) {
+                    self.cmdline.pop();
+                }
+                while self
+                    .cmdline
+                    .chars()
+                    .last()
+                    .is_some_and(|c| !c.is_whitespace())
+                {
+                    self.cmdline.pop();
+                }
+            }
+            'u' => self.cmdline.clear(),
+            'h' => self.on_key_command(KeyCode::Backspace),
+            _ => {}
+        }
+    }
+
     /// 先頭の語だけをコマンド名として補完する（候補が一意のときのみ）。
     fn complete(&mut self) {
         if self.cmdline.contains(' ') {
@@ -919,6 +942,9 @@ fn run_watch(path: &str) -> io::Result<()> {
                     if ctrl_c || matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
                         break;
                     }
+                    if is_modified(k.modifiers) {
+                        continue;
+                    }
                     if k.code == KeyCode::Char('i') {
                         show_inv = !show_inv;
                         inv_scroll = 0;
@@ -935,6 +961,11 @@ fn run_watch(path: &str) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Ctrl か Alt だけが付いたキーか。Ctrl+Alt は AltGr の配列があるので、ふつうの文字として扱う。
+fn is_modified(m: KeyModifiers) -> bool {
+    m.contains(KeyModifiers::CONTROL) != m.contains(KeyModifiers::ALT)
 }
 
 fn random_seed() -> u64 {
@@ -977,6 +1008,17 @@ fn main() -> io::Result<()> {
             }
             if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
                 break;
+            }
+            if is_modified(k.modifiers) {
+                // Ctrl+L などを、修飾なしの l などとして動かさない。コマンド行の編集キーだけ働く
+                if let (Mode::Command, true, KeyCode::Char(c)) = (
+                    app.mode,
+                    k.modifiers.contains(KeyModifiers::CONTROL),
+                    k.code,
+                ) {
+                    app.on_ctrl_command(c);
+                }
+                continue;
             }
             match app.mode {
                 Mode::Normal => app.on_key_normal(k.code),
@@ -1322,5 +1364,45 @@ mod tests {
         assert_eq!(app.game.turn(), t);
         app.on_key_normal(KeyCode::Esc);
         assert!(!app.overlay);
+    }
+
+    #[test]
+    fn ctrl_or_alt_alone_counts_as_modified_but_altgr_does_not() {
+        assert!(is_modified(KeyModifiers::CONTROL));
+        assert!(is_modified(KeyModifiers::ALT));
+        assert!(!is_modified(KeyModifiers::NONE));
+        assert!(!is_modified(KeyModifiers::SHIFT));
+        assert!(!is_modified(KeyModifiers::CONTROL | KeyModifiers::ALT));
+    }
+
+    #[test]
+    fn ctrl_w_deletes_a_word_and_ctrl_u_the_whole_line() {
+        let mut app = App::new(1);
+        press(&mut app, ":zap c east");
+        app.on_ctrl_command('w');
+        assert_eq!(app.cmdline, "zap c ");
+        app.on_ctrl_command('w');
+        assert_eq!(app.cmdline, "zap ");
+        app.on_ctrl_command('W');
+        assert_eq!(app.cmdline, "");
+        assert!(app.mode == Mode::Command, "空になっても閉じない");
+        press(&mut app, "stay 3");
+        app.on_ctrl_command('u');
+        assert_eq!(app.cmdline, "");
+        assert!(app.mode == Mode::Command);
+    }
+
+    #[test]
+    fn ctrl_h_is_backspace_and_other_ctrl_keys_do_nothing() {
+        let mut app = App::new(1);
+        press(&mut app, ":wait");
+        app.on_ctrl_command('h');
+        assert_eq!(app.cmdline, "wai");
+        app.on_ctrl_command('l');
+        assert_eq!(app.cmdline, "wai");
+        // 何も入っていないときの Ctrl+H は Backspace と同じく閉じる
+        app.cmdline.clear();
+        app.on_ctrl_command('h');
+        assert!(app.mode == Mode::Normal);
     }
 }
