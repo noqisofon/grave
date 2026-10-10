@@ -1800,6 +1800,11 @@ mod tests {
         }
         // 最後のバリアント (VigorShroom) の番号が COUNT-1 なら、数え間違いはない
         assert_eq!(ItemKind::VigorShroom.index(), ItemKind::COUNT - 1);
+        // 種類を足すと見た目が足りなくなって、ゲームの開始時に落ちる。足りているか確かめる
+        let count = |class: Class| ItemKind::ALL.iter().filter(|k| k.class() == class).count();
+        assert!(count(Class::Potion) <= POTION_LOOKS.len());
+        assert!(count(Class::Scroll) <= SCROLL_LOOKS.len());
+        assert!(count(Class::Mushroom) <= MUSHROOM_LOOKS.len());
         assert!(ItemKind::ALL.iter().filter(|k| k.is_wand()).count() <= WAND_LOOKS.len());
         assert!(ItemKind::ALL.iter().filter(|k| k.is_ring()).count() <= RING_LOOKS.len());
     }
