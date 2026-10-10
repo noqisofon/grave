@@ -51,14 +51,14 @@ dependencies = [
 
 [[package]]
 name = "grave-core"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "grave-mcp"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "grave-core",
  "serde_json",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "grave-tui"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "crossterm",
  "grave-core",

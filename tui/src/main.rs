@@ -824,6 +824,19 @@ fn draw_text_screen(
     out.flush()
 }
 
+/// 観戦中に出す日誌の本文。複数あれば、書かれた順にすべて並べる。
+fn journals_text(journals: &[String]) -> String {
+    match journals {
+        [one] => one.clone(),
+        _ => journals
+            .iter()
+            .enumerate()
+            .map(|(i, t)| format!("── 日誌 {} ──\n{t}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    }
+}
+
 /// 記録から冒険の素材と、書かれた日誌を標準出力に出す。
 fn run_journal(path: &str) -> io::Result<()> {
     let text = std::fs::read_to_string(path)?;
@@ -884,11 +897,11 @@ fn run_watch(path: &str) -> io::Result<()> {
         }
         if dirty {
             if show_journal && !w.journals.is_empty() {
-                let text = w.journals.last().unwrap();
+                let text = journals_text(&w.journals);
                 draw_text_screen(
                     &mut out,
                     "冒険日誌 (↑↓ PgUp PgDn でスクロール / j で戻る / q で終了)",
-                    text,
+                    &text,
                     journal_scroll,
                 )?;
             } else {
@@ -902,12 +915,18 @@ fn run_watch(path: &str) -> io::Result<()> {
                 } else {
                     ""
                 };
+                let skipped = if w.skipped > 0 {
+                    format!("  ※読めない行を{}件飛ばした", w.skipped)
+                } else {
+                    String::new()
+                };
                 let diary = if w.journals.is_empty() {
                     ""
                 } else {
                     "  (j で日誌)"
                 };
-                let footer = format!("観戦中: {path}{state}{diary}  (i で持ち物 / q で終了)");
+                let footer =
+                    format!("観戦中: {path}{state}{skipped}{diary}  (i で持ち物 / q で終了)");
                 let inv_lines;
                 let overlay = if show_inv {
                     inv_lines = w.game.inventory_lines();
@@ -939,14 +958,12 @@ fn run_watch(path: &str) -> io::Result<()> {
                         k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c');
                     // 日誌を開いているときは、方向キーなどで本文をスクロールする
                     if show_journal {
-                        if let Some(text) = w.journals.last() {
-                            let (cols, rows) = text_view_size();
-                            let total = wrap(text, cols).len();
-                            if let Some(next) = scrolled(journal_scroll, total, rows, k.code) {
-                                journal_scroll = next;
-                                dirty = true;
-                                continue;
-                            }
+                        let (cols, rows) = text_view_size();
+                        let total = wrap(&journals_text(&w.journals), cols).len();
+                        if let Some(next) = scrolled(journal_scroll, total, rows, k.code) {
+                            journal_scroll = next;
+                            dirty = true;
+                            continue;
                         }
                     }
                     // 持ち物を開いているときは、方向キーなどで一覧をスクロールする
@@ -1445,5 +1462,14 @@ mod tests {
         let mut out = Vec::new();
         draw_text_screen(&mut out, "題", "短い", 0).unwrap();
         assert!(!String::from_utf8_lossy(&out).contains('/'));
+    }
+
+    #[test]
+    fn journals_text_shows_every_journal_in_order() {
+        assert_eq!(journals_text(&["一つだけ".to_string()]), "一つだけ");
+        let two = journals_text(&["最初".to_string(), "次".to_string()]);
+        assert!(two.contains("日誌 1 ──\n最初"), "{two}");
+        assert!(two.find("最初").unwrap() < two.find("日誌 2").unwrap());
+        assert!(two.ends_with("次"));
     }
 }

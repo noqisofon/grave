@@ -22,6 +22,8 @@ pub struct Watcher {
     pub started: bool,
     /// 今のゲームの記録が、今とは違うルール（RULES_VERSION）で録られている
     pub stale_rules: bool,
+    /// 読めなくて飛ばした行の数（壊れた行や、知らない種類のイベント）
+    pub skipped: usize,
 }
 
 impl Watcher {
@@ -36,6 +38,7 @@ impl Watcher {
             desync: false,
             started: false,
             stale_rules: false,
+            skipped: 0,
         }
     }
 
@@ -55,6 +58,7 @@ impl Watcher {
             self.thoughts.clear();
             self.journals.clear();
             self.started = false;
+            self.skipped = 0;
             changed = true;
         }
         f.seek(SeekFrom::Start(self.offset))?;
@@ -84,6 +88,7 @@ impl Watcher {
                 self.thoughts.clear();
                 self.journals.clear();
                 self.desync = false;
+                self.skipped = 0;
                 self.started = true;
             }
             Ok(Event::Command {
@@ -112,7 +117,7 @@ impl Watcher {
                 self.started = true;
                 self.journals.push(text);
             }
-            Err(_) => {}
+            Err(_) => self.skipped += 1,
         }
     }
 }
@@ -187,6 +192,25 @@ mod tests {
         assert!(w.poll().unwrap());
         assert!(w.journals.is_empty());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreadable_lines_are_counted_not_silently_dropped() {
+        let dir = std::env::temp_dir().join(format!("grave-watch-skip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rec.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "{}", Event::new_game(1).to_line()).unwrap();
+        writeln!(f, "これは JSON ではない").unwrap();
+        writeln!(f, r#"{{"kind":"from_the_future"}}"#).unwrap();
+        let mut w = Watcher::new(path.to_str().unwrap());
+        w.poll().unwrap();
+        assert_eq!(w.skipped, 2);
+        // 新しいゲームが始まれば数え直す
+        writeln!(f, "{}", Event::new_game(2).to_line()).unwrap();
+        w.poll().unwrap();
+        assert_eq!(w.skipped, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

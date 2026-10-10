@@ -36,7 +36,7 @@ impl Game {
                     let (d, reeled) = self.confuse_dir(d);
                     if reeled {
                         self.events
-                            .push(format!("混乱して{}へ向けてしまった。", d.name()));
+                            .push(format!("混乱して{}へ向けてしまった。", d.label()));
                     }
                     Some(ZapTarget::Dir(d))
                 }
@@ -45,7 +45,7 @@ impl Game {
                     if self.status.has(Status::Confused) && self.rng.range(0, 2) == 0 {
                         let d = Dir::ALL[self.rng.range(0, Dir::ALL.len() as i32) as usize];
                         self.events
-                            .push(format!("混乱して{}へ向けてしまった。", d.name()));
+                            .push(format!("混乱して{}へ向けてしまった。", d.label()));
                         Some(ZapTarget::Dir(d))
                     } else {
                         Some(ZapTarget::Nearest)
