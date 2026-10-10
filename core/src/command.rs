@@ -51,6 +51,20 @@ impl Dir {
         }
     }
 
+    /// メッセージに出す日本語の方角。（コマンドの文字列に使う `name` とは別）
+    pub fn label(self) -> &'static str {
+        match self {
+            Dir::N => "北",
+            Dir::S => "南",
+            Dir::E => "東",
+            Dir::W => "西",
+            Dir::NE => "北東",
+            Dir::NW => "北西",
+            Dir::SE => "南東",
+            Dir::SW => "南西",
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Dir> {
         Some(match s {
             "north" | "n" => Dir::N,
@@ -434,6 +448,15 @@ mod tests {
         assert_eq!(parse(":wait"), Ok(Command::Wait));
         // 正本の文字列には頭の記号は付かない
         assert_eq!(parse("`stay 4").unwrap().to_string(), "stay 4");
+    }
+
+    #[test]
+    fn labels_are_japanese_and_distinct_from_command_names() {
+        let labels: std::collections::HashSet<_> = Dir::ALL.iter().map(|d| d.label()).collect();
+        assert_eq!(labels.len(), 8);
+        assert!(Dir::ALL
+            .iter()
+            .all(|d| d.label().chars().all(|c| !c.is_ascii())));
     }
 
     #[test]

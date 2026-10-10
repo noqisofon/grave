@@ -2087,7 +2087,7 @@ impl Game {
             Command::Move(d) => {
                 let (d, reeled) = self.confuse_dir(d);
                 let lead = if reeled {
-                    format!("混乱して{}へ向かってしまった。 ", d.name())
+                    format!("混乱して{}へ向かってしまった。 ", d.label())
                 } else {
                     String::new()
                 };
@@ -2106,7 +2106,7 @@ impl Game {
                         };
                         ActionResult::success(format!("{lead}階段の上にいる。({hint})"), true)
                     } else {
-                        ActionResult::success(format!("{lead}{}へ進んだ。", d.name()), true)
+                        ActionResult::success(format!("{lead}{}へ進んだ。", d.label()), true)
                     }
                 } else if reeled {
                     // 混乱してぶつかったときは、ターンを使う
@@ -2118,7 +2118,7 @@ impl Game {
             Command::Attack(d) => {
                 let (d, reeled) = self.confuse_dir(d);
                 let lead = if reeled {
-                    format!("混乱して{}を攻撃してしまった。 ", d.name())
+                    format!("混乱して{}を攻撃してしまった。 ", d.label())
                 } else {
                     String::new()
                 };
