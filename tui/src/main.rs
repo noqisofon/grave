@@ -802,6 +802,13 @@ fn draw_text_screen(
     let (wrap_cols, page) = text_view_size();
     let lines = wrap(text, wrap_cols);
     let scroll = scroll.min(lines.len().saturating_sub(page));
+    // 1画面に収まらないときは、見えている範囲を添える
+    let title = if lines.len() > page {
+        let end = (scroll + page).min(lines.len());
+        format!("{title}  {}-{end}/{}", scroll + 1, lines.len())
+    } else {
+        title.to_string()
+    };
     queue!(
         out,
         Clear(ClearType::All),
@@ -870,6 +877,7 @@ fn run_watch(path: &str) -> io::Result<()> {
     let mut show_journal = false;
     let mut show_inv = false;
     let mut inv_scroll = 0usize;
+    let mut journal_scroll = 0usize;
     loop {
         if w.poll()? {
             dirty = true;
@@ -877,7 +885,12 @@ fn run_watch(path: &str) -> io::Result<()> {
         if dirty {
             if show_journal && !w.journals.is_empty() {
                 let text = w.journals.last().unwrap();
-                draw_text_screen(&mut out, "冒険日誌 (j で戻る / q で終了)", text, 0)?;
+                draw_text_screen(
+                    &mut out,
+                    "冒険日誌 (↑↓ PgUp PgDn でスクロール / j で戻る / q で終了)",
+                    text,
+                    journal_scroll,
+                )?;
             } else {
                 show_journal = false;
                 let state = if !w.started {
@@ -924,6 +937,18 @@ fn run_watch(path: &str) -> io::Result<()> {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     let ctrl_c =
                         k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c');
+                    // 日誌を開いているときは、方向キーなどで本文をスクロールする
+                    if show_journal {
+                        if let Some(text) = w.journals.last() {
+                            let (cols, rows) = text_view_size();
+                            let total = wrap(text, cols).len();
+                            if let Some(next) = scrolled(journal_scroll, total, rows, k.code) {
+                                journal_scroll = next;
+                                dirty = true;
+                                continue;
+                            }
+                        }
+                    }
                     // 持ち物を開いているときは、方向キーなどで一覧をスクロールする
                     if show_inv {
                         let total = w.game.inventory_lines().len();
@@ -952,6 +977,7 @@ fn run_watch(path: &str) -> io::Result<()> {
                     }
                     if k.code == KeyCode::Char('j') && !w.journals.is_empty() {
                         show_journal = !show_journal;
+                        journal_scroll = 0;
                         dirty = true;
                     }
                 }
@@ -1404,5 +1430,20 @@ mod tests {
         app.cmdline.clear();
         app.on_ctrl_command('h');
         assert!(app.mode == Mode::Normal);
+    }
+
+    #[test]
+    fn text_screen_shows_the_visible_range_when_it_does_not_fit() {
+        let long: String = (0..100).map(|i| format!("行{i}\n")).collect();
+        let mut out = Vec::new();
+        draw_text_screen(&mut out, "題", &long, 10).unwrap();
+        let (_, page) = text_view_size();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains(&format!("11-{}/100", 10 + page)), "{text}");
+        assert!(text.contains("行10"), "{text}");
+        // 収まるときは範囲を出さない
+        let mut out = Vec::new();
+        draw_text_screen(&mut out, "題", "短い", 0).unwrap();
+        assert!(!String::from_utf8_lossy(&out).contains('/'));
     }
 }
