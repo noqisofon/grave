@@ -6,5 +6,5 @@ members = ["core", "tui", "mcp"]
 version = "0.1.25"
 edition = "2021"
 # u32::is_multiple_of を使っている。CI の msrv ジョブがこの版でのビルドを確かめる
-rust-version = "1.90"
+rust-version = "1.87"
 license = "Apache-2.0"
