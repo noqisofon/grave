@@ -238,6 +238,13 @@ impl App {
             KeyCode::Enter => {
                 let line = std::mem::take(&mut self.cmdline);
                 self.mode = Mode::Normal;
+                // 対象が要るコマンドだけを打って Enter したら、実行せずに「何を？」の候補を出す
+                if let Some(head) = item_prompt_head(line.trim()) {
+                    self.mode = Mode::Command;
+                    self.cmdline = format!("{head} ");
+                    self.hist_pos = None;
+                    return;
+                }
                 if !line.trim().is_empty() {
                     self.history.push(line.clone());
                     self.exec_line(&line);
@@ -348,12 +355,28 @@ struct OverlayPrompt {
     items: Vec<String>,
 }
 
+/// 対象の持ち物の文字が要るコマンド名（別名を含む）なら、正式な名前。
+/// `refill` は文字を省いてよいので含めない。
+fn item_prompt_head(word: &str) -> Option<&'static str> {
+    Some(match word {
+        "read" | "r" => "read",
+        "quaff" | "q" | "drink" => "quaff",
+        "eat" | "e" => "eat",
+        "equip" | "w" | "wear" | "wield" => "equip",
+        "unequip" | "remove" => "unequip",
+        "zap" | "aim" => "zap",
+        "drop" => "drop",
+        _ => return None,
+    })
+}
+
 /// コマンドライン入力中のコマンドに応じて、対象アイテムの候補一覧と案内を返す。
 fn prompt_for_cmdline(game: &Game, cmdline: &str) -> Option<OverlayPrompt> {
     let mut parts = cmdline.split_whitespace();
     let head = parts.next()?;
     let args: Vec<&str> = parts.collect();
-    if args.len() > 1 {
+    // コマンド名だけを打っている間は出さない。続きを打つ（空白のあと）か Enter で出す
+    if args.len() > 1 || (args.is_empty() && !cmdline.ends_with(char::is_whitespace)) {
         return None;
     }
     let entries = game.inventory_entries();
@@ -1034,11 +1057,12 @@ mod tests {
     #[test]
     fn quit_exits_but_q_does_not_exit_and_runs_quaff() {
         let mut app = App::new(1);
-        // :q だけ打った場合、終了せず持ち物指定エラーになる（quaff として処理される）
+        // :q だけ打った場合、終了せず quaff の「何を？」が出る
         press(&mut app, ":q");
         app.on_key_command(KeyCode::Enter);
         assert!(!app.quit);
-        assert!(app.status.contains("持ち物の文字が必要"), "{}", app.status);
+        assert_eq!(app.cmdline, "quaff ");
+        app.on_key_command(KeyCode::Esc);
 
         // :q a も終了せず quaff a として処理される
         press(&mut app, ":q a");
@@ -1056,26 +1080,29 @@ mod tests {
     fn item_commands_show_candidate_prompts() {
         let app = App::new(1);
         // read / r
-        let p_r = prompt_for_cmdline(&app.game, "r").expect("r should prompt");
+        let p_r = prompt_for_cmdline(&app.game, "r ").expect("r should prompt");
         assert_eq!(p_r.title, "どれを読む？ (巻物)");
         let p_read = prompt_for_cmdline(&app.game, "read ").expect("read should prompt");
         assert_eq!(p_read.title, "どれを読む？ (巻物)");
 
         // quaff / q
-        let p_q = prompt_for_cmdline(&app.game, "q").expect("q should prompt");
+        let p_q = prompt_for_cmdline(&app.game, "q ").expect("q should prompt");
         assert_eq!(p_q.title, "どれを飲む？ (薬)");
 
         // eat / e
-        let p_e = prompt_for_cmdline(&app.game, "e").expect("e should prompt");
+        let p_e = prompt_for_cmdline(&app.game, "e ").expect("e should prompt");
         assert_eq!(p_e.title, "どれを食べる？");
 
         // equip / w
-        let p_w = prompt_for_cmdline(&app.game, "w").expect("w should prompt");
+        let p_w = prompt_for_cmdline(&app.game, "w ").expect("w should prompt");
         assert_eq!(p_w.title, "どれを装備する？");
 
         // unequip / remove
-        let p_rm = prompt_for_cmdline(&app.game, "remove").expect("remove should prompt");
+        let p_rm = prompt_for_cmdline(&app.game, "remove ").expect("remove should prompt");
         assert_eq!(p_rm.title, "どれをはずす？");
+
+        // コマンド名だけの間は出さない
+        assert!(prompt_for_cmdline(&app.game, "e").is_none());
 
         // 既に複数引数がある場合はプロンプトを表示しない
         assert!(prompt_for_cmdline(&app.game, "read a extra").is_none());
@@ -1111,5 +1138,19 @@ mod tests {
         press(&mut app, "R");
         assert_eq!(app.mode, Mode::Command);
         assert_eq!(app.cmdline, "unequip ");
+    }
+
+    #[test]
+    fn enter_on_a_bare_item_command_opens_the_prompt_instead_of_failing() {
+        let mut app = App::new(1);
+        press(&mut app, ":e");
+        app.on_key_command(KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.cmdline, "eat ");
+        // 続けて文字を打って Enter で実行される
+        press(&mut app, "b");
+        app.on_key_command(KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.status.contains("持ち物 b はない"), "{}", app.status);
     }
 }

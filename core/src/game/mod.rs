@@ -1493,7 +1493,31 @@ impl Game {
         }
         let target = match d {
             Some(d) => (self.pos.0 + d.delta().0, self.pos.1 + d.delta().1),
-            None => self.pos,
+            None => {
+                // 向きを省いたときは足元。足元に見つけた罠がなければ、隣にある見つけた罠を探す
+                let here = self.known_trap_at(self.pos).map(|_| self.pos);
+                let near: Vec<(i32, i32)> = self
+                    .traps
+                    .iter()
+                    .filter(|t| {
+                        t.revealed
+                            && t.pos != self.pos
+                            && (t.pos.0 - self.pos.0).abs() <= 1
+                            && (t.pos.1 - self.pos.1).abs() <= 1
+                    })
+                    .map(|t| t.pos)
+                    .collect();
+                match (here, near.as_slice()) {
+                    (Some(p), _) => p,
+                    (None, [p]) => *p,
+                    (None, []) => self.pos,
+                    (None, _) => {
+                        return ActionResult::failure(
+                            "隣に見つけた罠が複数ある。向きを指定しよう。(例: disarm east)",
+                        )
+                    }
+                }
+            }
         };
         let Some(ti) = self
             .traps

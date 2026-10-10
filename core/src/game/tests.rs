@@ -4436,3 +4436,37 @@ fn travel_stops_before_a_known_trap_when_levitation_wears_off_on_the_way() {
     }
     assert!(tested, "条件に合う seed がない");
 }
+
+#[test]
+fn disarm_without_a_direction_finds_a_single_adjacent_trap() {
+    let mut g = quiet(3);
+    g.hp = 1000;
+    g.max_hp = 1000;
+    put_trap(&mut g, TrapKind::SleepGas);
+    // 見つけていない罠は対象にならない
+    assert!(!g.run("disarm").ok);
+    g.traps[0].revealed = true;
+    let o = g.run("disarm");
+    assert!(o.ok && o.message.contains("眠りガスの罠"), "{}", o.message);
+}
+
+#[test]
+fn disarm_without_a_direction_asks_when_several_traps_are_adjacent() {
+    let mut g = quiet(3);
+    put_trap(&mut g, TrapKind::SleepGas);
+    let (x, y) = g.pos;
+    let other = [(x - 1, y), (x, y - 1), (x, y + 1)]
+        .into_iter()
+        .find(|p| g.map.tile(p.0, p.1).walkable())
+        .expect("隣に歩ける床がある");
+    g.traps.push(Trap {
+        pos: other,
+        kind: TrapKind::Dart,
+        revealed: true,
+    });
+    g.traps[0].revealed = true;
+    let t = g.turn();
+    let o = g.run("disarm");
+    assert!(!o.ok && o.message.contains("向きを指定"), "{}", o.message);
+    assert_eq!(g.turn(), t);
+}
