@@ -2433,7 +2433,7 @@ impl Game {
         }
         if let Some(p) = self.amulet.filter(|p| self.map.is_seen(p.0, p.1)) {
             parts.push(format!(
-                ", 魔除けのアミュレットが{}にある。",
+                "魔除けのアミュレットが{}にある。",
                 rel_text(self.pos, p)
             ));
         }

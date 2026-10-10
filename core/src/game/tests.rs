@@ -4487,3 +4487,19 @@ fn the_log_is_trimmed_but_keeps_the_latest_entries() {
     // 観測は末尾の数件を読むので、切り詰めても変わらない
     assert!(g.observe_text(3).contains(&last.text));
 }
+
+#[test]
+fn look_names_a_seen_amulet_as_its_own_sentence() {
+    let mut g = quiet(3);
+    let p = (g.pos.0 + 1, g.pos.1);
+    assert!(g.map.tile(p.0, p.1).walkable());
+    g.amulet = Some(p);
+    g.map.mark_seen(p.0, p.1);
+    let o = g.run("look");
+    assert!(
+        o.ok && o.message.contains("魔除けのアミュレットが東に1にある。"),
+        "{}",
+        o.message
+    );
+    assert!(!o.message.contains(", "), "{}", o.message);
+}
