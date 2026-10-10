@@ -74,7 +74,7 @@ impl App {
                 true
             }
             "help" => {
-                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 使う(q の後に文字) / i 持ち物 / > 降りる / < 登る(アミュレット所持時) / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new :q".to_string();
+                self.status = "キー: hjklyubn 移動(敵に向かうと攻撃) / q 飲む・R 読む・a 杖を振る(続けて 文字 と向き) / F ランタンに油を継ぐ / i 持ち物 / > 降りる / < 登る(アミュレット所持時) / _ 階段へ / x 探索 / z 待つ / ; 見る / 数字+キーで反復 / . 繰り返し / :map :unmap :new :q".to_string();
                 true
             }
             "new" => {
@@ -405,6 +405,12 @@ fn render_scene(
                 Color::Magenta
             } else if c.ch == '?' {
                 Color::Cyan
+            } else if c.ch == '/' {
+                Color::DarkCyan
+            } else if c.ch == '=' || c.ch == '~' {
+                Color::DarkMagenta
+            } else if c.ch == '^' {
+                Color::DarkRed
             } else if c.ch == ')' || c.ch == '[' {
                 Color::Blue
             } else if c.ch == ',' {
