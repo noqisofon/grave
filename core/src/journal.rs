@@ -10,6 +10,17 @@ const MAX_THOUGHTS: usize = 40;
 const MAX_LINES_PER_DEPTH: usize = 30;
 const MAX_LINE_CHARS: usize = 200;
 
+/// もともとターンを使わない（調べるだけの）コマンド。ターンが進まなくても失敗や空振りではない。
+const FREE_COMMANDS: &[&str] = &["inventory", "i", "look", "l"];
+
+fn is_free_command(command: &str) -> bool {
+    let head = command
+        .trim_start_matches([':', '`'])
+        .split_whitespace()
+        .next();
+    head.is_some_and(|h| FREE_COMMANDS.contains(&h))
+}
+
 /// 日誌に載せる価値のある出来事を示す言葉（core が作るメッセージに含まれる）。
 const MARKERS: &[&str] = &[
     "倒した",
@@ -117,6 +128,7 @@ pub fn digest(events: &[Event]) -> String {
             Event::NewGame { seed: s, .. } => seed = Some(*s),
             Event::Journal { .. } => {}
             Event::Command {
+                command,
                 message,
                 thought,
                 depth,
@@ -125,7 +137,7 @@ pub fn digest(events: &[Event]) -> String {
                 ..
             } => {
                 commands += 1;
-                if prev_turn == Some(*turn) {
+                if prev_turn == Some(*turn) && !is_free_command(command) {
                     idle += 1;
                 }
                 prev_turn = Some(*turn);
@@ -332,6 +344,18 @@ mod tests {
         let d = digest(&evs);
         assert_eq!(d.matches("探索する\n").count(), 2, "{d}"); // 最初と、待つの後の1回
         assert!(d.contains("ターンが進まなかったコマンド: 50回"), "{d}");
+    }
+
+    #[test]
+    fn looking_around_is_not_counted_as_an_idle_command() {
+        let mut evs = vec![Event::new_game(1)];
+        evs.push(cmd("explore", "3歩探索した。", None, 1, 3, 20));
+        evs.push(cmd("inventory", "持ち物はない。", None, 1, 3, 20));
+        evs.push(cmd("look", "階段はまだ見つけていない。", None, 1, 3, 20));
+        evs.push(cmd("descend", "ここに階段はない。", None, 1, 3, 20));
+        let d = digest(&evs);
+        // 数えるのは、ターンを使うはずなのに進まなかった descend だけ
+        assert!(d.contains("ターンが進まなかったコマンド: 1回"), "{d}");
     }
 
     #[test]
