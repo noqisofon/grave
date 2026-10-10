@@ -8,6 +8,8 @@ use grave_core::{journal, Game, COMMAND_HELP};
 use serde_json::{json, Value};
 
 const LOG_LINES: usize = 8;
+/// 対応する MCP のプロトコルバージョン（新しい順）。
+const SUPPORTED_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 const DEFAULT_RECORD_PATH: &str = "grave-record.jsonl";
 
 /// セッション記録 (JSONL)。書き込みに失敗してもゲームは止めない。
@@ -195,10 +197,12 @@ fn handle(game: &mut Game, rec: &mut Recorder, req: &Value) -> Option<Value> {
 
     let result = match method {
         "initialize" => {
+            // 要求された版に対応していればそれを、そうでなければ対応する最新の版を返す
             let version = params
                 .get("protocolVersion")
                 .and_then(Value::as_str)
-                .unwrap_or("2025-06-18");
+                .filter(|v| SUPPORTED_VERSIONS.contains(v))
+                .unwrap_or(SUPPORTED_VERSIONS[0]);
             json!({
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
