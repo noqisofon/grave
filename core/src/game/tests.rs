@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn monster(kind: &'static MonsterKind, pos: (i32, i32), hp: i32) -> Monster {

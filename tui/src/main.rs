@@ -214,6 +214,11 @@ impl App {
             KeyCode::Down => self.run_arrow("move south"),
             KeyCode::Up => self.run_arrow("move north"),
             KeyCode::Right => self.run_arrow("move east"),
+            KeyCode::Home => self.run_arrow("move northwest"),
+            KeyCode::PageUp => self.run_arrow("move northeast"),
+            KeyCode::End => self.run_arrow("move southwest"),
+            KeyCode::PageDown => self.run_arrow("move southeast"),
+            KeyCode::KeypadBegin => self.run_arrow("wait"),
             KeyCode::Esc => self.count = None,
             _ => {}
         }
@@ -891,5 +896,31 @@ mod tests {
         press(&mut app, ":expl");
         app.on_key_command(KeyCode::Tab);
         assert_eq!(app.cmdline, "explore ");
+    }
+
+    #[test]
+    fn keypad_diagonal_movement() {
+        let mut app = App::new(1);
+        let t0 = app.game.turn();
+        app.on_key_normal(KeyCode::KeypadBegin);
+        assert_eq!(app.game.turn(), t0 + 1);
+        assert_eq!(app.last.as_ref().unwrap().0, "wait");
+
+        app.on_key_normal(KeyCode::Home);
+        assert_eq!(app.last.as_ref().unwrap().0, "move northwest");
+
+        app.on_key_normal(KeyCode::PageUp);
+        assert_eq!(app.last.as_ref().unwrap().0, "move northeast");
+
+        app.on_key_normal(KeyCode::End);
+        assert_eq!(app.last.as_ref().unwrap().0, "move southwest");
+
+        app.on_key_normal(KeyCode::PageDown);
+        assert_eq!(app.last.as_ref().unwrap().0, "move southeast");
+
+        // カウント指定との連携 (例: 2歩移動)
+        press(&mut app, "2");
+        app.on_key_normal(KeyCode::Home);
+        assert_eq!(app.last.as_ref().unwrap().1, 2);
     }
 }
