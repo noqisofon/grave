@@ -94,19 +94,13 @@ impl Game {
     }
 
     /// 指輪を指にはめる。
-    pub(super) fn equip_ring(&mut self, letter: char, t: Tool) -> (bool, String, bool) {
+    pub(super) fn equip_ring(&mut self, letter: char, t: Tool) -> ActionResult {
         if self.rings.contains(&Some(letter)) {
-            return (
-                false,
-                format!("{}はすでにはめている。", self.ring_name(&t)),
-                false,
-            );
+            return ActionResult::failure(format!("{}はすでにはめている。", self.ring_name(&t)));
         }
         let Some(slot) = self.rings.iter().position(|r| r.is_none()) else {
-            return (
-                false,
-                "両手の指輪がふさがっている(指輪は2つまで)。先に unequip ではずそう。".to_string(),
-                false,
+            return ActionResult::failure(
+                "両手の指輪がふさがっている(指輪は2つまで)。先に unequip ではずそう。",
             );
         };
         self.rings[slot] = Some(letter);
@@ -136,7 +130,7 @@ impl Game {
         } else {
             msg.push_str(" (効果はまだ分からない。身につけているうちに分かる)");
         }
-        (true, msg, true)
+        ActionResult::success(msg, true)
     }
 
     fn tool_of(&self, letter: char) -> Option<Tool> {
@@ -160,23 +154,18 @@ impl Game {
     }
 
     /// 指輪をはずす。
-    pub(super) fn unequip_ring(&mut self, letter: char, t: Tool) -> (bool, String, bool) {
+    pub(super) fn unequip_ring(&mut self, letter: char, t: Tool) -> ActionResult {
         let Some(slot) = self.rings.iter().position(|r| *r == Some(letter)) else {
-            return (
-                false,
-                format!("{}ははめていない。", self.ring_name(&t)),
-                false,
-            );
+            return ActionResult::failure(format!("{}ははめていない。", self.ring_name(&t)));
         };
         if t.is_sticky() {
-            return (
-                false,
-                format!("{}は呪われていて、はずせない。", self.ring_name(&t)),
-                false,
-            );
+            return ActionResult::failure(format!(
+                "{}は呪われていて、はずせない。",
+                self.ring_name(&t)
+            ));
         }
         self.rings[slot] = None;
-        (true, format!("{}をはずした。", self.ring_name(&t)), true)
+        ActionResult::success(format!("{}をはずした。", self.ring_name(&t)), true)
     }
 
     /// 光源の表示名と燃料。
@@ -186,7 +175,7 @@ impl Game {
     }
 
     /// 持ち物の光源に持ち替える。今の光源は持ち物に戻る。
-    pub(super) fn equip_light(&mut self, letter: char, t: Tool) -> (bool, String, bool) {
+    pub(super) fn equip_light(&mut self, letter: char, t: Tool) -> ActionResult {
         let si = self
             .inventory
             .iter()
@@ -208,37 +197,29 @@ impl Game {
             }
         }
         self.refresh_fov();
-        (true, msg, true)
+        ActionResult::success(msg, true)
     }
 
     /// `refill [油つぼの文字]`: ランタンに油を継ぎ足す。
-    pub(super) fn refill_cmd(&mut self, flask: Option<char>) -> (bool, String, bool) {
+    pub(super) fn refill_cmd(&mut self, flask: Option<char>) -> ActionResult {
         let Some(l) = self.light else {
-            return (false, "光源を持っていない。".to_string(), false);
+            return ActionResult::failure("光源を持っていない。");
         };
         let def = l.kind.light_def().expect("光源には仕様がある");
         if !def.refillable {
-            return (
-                false,
-                format!(
-                    "{}には油を継ぎ足せない。ランタンを装備しよう。",
-                    l.kind.true_name()
-                ),
-                false,
-            );
+            return ActionResult::failure(format!(
+                "{}には油を継ぎ足せない。ランタンを装備しよう。",
+                l.kind.true_name()
+            ));
         }
         if l.val >= def.max_fuel {
-            return (
-                false,
-                format!("{}はもう満タンだ。", l.kind.true_name()),
-                false,
-            );
+            return ActionResult::failure(format!("{}はもう満タンだ。", l.kind.true_name()));
         }
         let si = match flask {
             Some(c) => match self.inventory.iter().position(|s| s.letter == c) {
                 Some(i) if self.inventory[i].kind == ItemKind::OilFlask => i,
-                Some(_) => return (false, format!("{c} は油つぼではない。"), false),
-                None => return (false, format!("持ち物 {c} はない。"), false),
+                Some(_) => return ActionResult::failure(format!("{c} は油つぼではない。")),
+                None => return ActionResult::failure(format!("持ち物 {c} はない。")),
             },
             None => match self
                 .inventory
@@ -246,7 +227,7 @@ impl Game {
                 .position(|s| s.kind == ItemKind::OilFlask)
             {
                 Some(i) => i,
-                None => return (false, "油つぼを持っていない。".to_string(), false),
+                None => return ActionResult::failure("油つぼを持っていない。"),
             },
         };
         let was_dark = l.val <= 0;
@@ -263,8 +244,7 @@ impl Game {
         if was_dark {
             self.refresh_fov();
         }
-        (
-            true,
+        ActionResult::success(
             format!(
                 "油を継ぎ足した。燃料 +{added} ({now}/{}){}",
                 def.max_fuel,

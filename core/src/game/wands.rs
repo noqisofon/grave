@@ -8,42 +8,29 @@ use crate::item::ZapFx;
 const ZAP_RANGE: i32 = 12;
 
 impl Game {
-    /// 杖を振る。(成功か, メッセージ, 1ターン消費するか)
-    pub(super) fn zap_cmd(
-        &mut self,
-        letter: char,
-        target: Option<ZapTarget>,
-    ) -> (bool, String, bool) {
+    /// 杖を振る。
+    pub(super) fn zap_cmd(&mut self, letter: char, target: Option<ZapTarget>) -> ActionResult {
         let Some(si) = self.inventory.iter().position(|s| s.letter == letter) else {
-            return (false, format!("持ち物 {letter} はない。"), false);
+            return ActionResult::failure(format!("持ち物 {letter} はない。"));
         };
         let kind = self.inventory[si].kind;
         let Some(zap) = kind.zap() else {
-            return (
-                false,
-                format!("{letter} は杖ではない。zap は杖に使う。"),
-                false,
-            );
+            return ActionResult::failure(format!("{letter} は杖ではない。zap は杖に使う。"));
         };
         let charges = self.inventory[si].tool.map_or(0, |t| t.val);
         if charges <= 0 {
-            return (
-                false,
-                format!("{}は充填数が0で、もう使えない。", self.display_name(kind)),
-                false,
-            );
+            return ActionResult::failure(format!(
+                "{}は充填数が0で、もう使えない。",
+                self.display_name(kind)
+            ));
         }
         let target = if zap.aimed {
             match target {
                 None => {
-                    return (
-                        false,
-                        format!(
-                            "{}には向きが要る。(例: zap {letter} east / zap {letter} nearest)",
-                            self.display_name(kind)
-                        ),
-                        false,
-                    )
+                    return ActionResult::failure(format!(
+                        "{}には向きが要る。(例: zap {letter} east / zap {letter} nearest)",
+                        self.display_name(kind)
+                    ));
                 }
                 Some(ZapTarget::Dir(d)) => {
                     let (d, reeled) = self.confuse_dir(d);
@@ -71,7 +58,7 @@ impl Game {
         let cells = match target {
             Some(t) => match self.bolt_cells(t) {
                 Ok(c) => c,
-                Err(msg) => return (false, msg, false),
+                Err(msg) => return ActionResult::failure(msg),
             },
             None => Vec::new(),
         };
@@ -104,7 +91,7 @@ impl Game {
         } else {
             format!("(残り{left}回)")
         };
-        (true, format!("{prefix} {body} {tail}"), true)
+        ActionResult::success(format!("{prefix} {body} {tail}"), true)
     }
 
     /// 杖が飛ぶ道筋（壁の手前まで。`Light` のために壁も含めて返し、使う側で切る）。

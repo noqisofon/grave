@@ -6,19 +6,18 @@ use super::*;
 
 impl Game {
     /// 薬を飲む・食べる・巻物を読む。種類が合わないものは失敗（ターン消費なし）。
-    /// (成功か, メッセージ, 1ターン消費するか)
     pub(super) fn consume(
         &mut self,
         letter: char,
         target: Option<char>,
         how: Consume,
-    ) -> (bool, String, bool) {
+    ) -> ActionResult {
         let Some(si) = self.inventory.iter().position(|s| s.letter == letter) else {
-            return (false, format!("持ち物 {letter} はない。"), false);
+            return ActionResult::failure(format!("持ち物 {letter} はない。"));
         };
         let kind = self.inventory[si].kind;
         if matches!(how, Consume::Read) && kind.is_scroll() && self.status.has(Status::Blind) {
-            return (false, "目が見えなくて、巻物が読めない。".to_string(), false);
+            return ActionResult::failure("目が見えなくて、巻物が読めない。");
         }
         let fits = match how {
             Consume::Quaff => kind.is_potion(),
@@ -36,14 +35,10 @@ impl Game {
                 Class::Light => ("光源", "equip"),
                 Class::Fuel => ("油つぼ", "refill"),
             };
-            return (
-                false,
-                format!(
-                    "{letter} は{is}だ。{} ではなく {instead} を使う。",
-                    how.command()
-                ),
-                false,
-            );
+            return ActionResult::failure(format!(
+                "{letter} は{is}だ。{} ではなく {instead} を使う。",
+                how.command()
+            ));
         }
         let k = kind.index();
         let was_known = self.known[k];
@@ -67,7 +62,7 @@ impl Game {
             Class::Potion | Class::Scroll => {
                 match self.run_effects(kind, letter, target, was_known) {
                     Ok(body) => body,
-                    Err(msg) => return (false, msg, false),
+                    Err(msg) => return ActionResult::failure(msg),
                 }
             }
             _ => self.eat_effect(kind),
@@ -78,7 +73,7 @@ impl Game {
         if self.inventory[si].count == 0 {
             self.inventory.remove(si);
         }
-        (true, format!("{prefix} {body}"), true)
+        ActionResult::success(format!("{prefix} {body}"), true)
     }
 
     /// 食べ物とキノコの効果。
