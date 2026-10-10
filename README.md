@@ -242,7 +242,7 @@ cargo run -p grave-tui -- --watch grave-record.jsonl
 cargo run -p grave-tui -- --journal grave-record.jsonl
 ```
 
-観戦中 (`--watch`) に日誌が書かれると、`j` で読める。
+観戦中 (`--watch`) に日誌が書かれると、`j` で読める（全画面。`↑` `↓` `PgUp` `PgDn` `Home` `End` でスクロール、もう一度 `j` で戻る）。
 
 ## 今後
 
