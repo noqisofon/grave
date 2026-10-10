@@ -287,3 +287,179 @@ fn main() -> io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh() -> (Game, Recorder) {
+        let mut rec = Recorder::open(None);
+        rec.write(&Event::new_game(1));
+        (Game::new(1), rec)
+    }
+
+    fn call(game: &mut Game, rec: &mut Recorder, name: &str, args: Value) -> (String, bool) {
+        call_tool(game, rec, name, &args)
+    }
+
+    fn rpc(game: &mut Game, rec: &mut Recorder, req: Value) -> Option<Value> {
+        handle(game, rec, &req)
+    }
+
+    #[test]
+    fn initialize_picks_a_supported_protocol_version() {
+        let (mut g, mut r) = fresh();
+        let ask = |v: &str| json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":v}});
+        let res = rpc(&mut g, &mut r, ask("2025-03-26")).unwrap();
+        assert_eq!(res["result"]["protocolVersion"], "2025-03-26");
+        // 知らない版を要求されたら、対応する最新の版を返す
+        let res = rpc(&mut g, &mut r, ask("1999-01-01")).unwrap();
+        assert_eq!(res["result"]["protocolVersion"], SUPPORTED_VERSIONS[0]);
+        assert_eq!(res["result"]["serverInfo"]["name"], "grave");
+    }
+
+    #[test]
+    fn notifications_get_no_reply_and_unknown_methods_get_an_error() {
+        let (mut g, mut r) = fresh();
+        let note = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+        assert!(rpc(&mut g, &mut r, note).is_none());
+        let res = rpc(
+            &mut g,
+            &mut r,
+            json!({"jsonrpc":"2.0","id":7,"method":"nope"}),
+        )
+        .unwrap();
+        assert_eq!(res["id"], 7);
+        assert_eq!(res["error"]["code"], -32601);
+        let ping = rpc(
+            &mut g,
+            &mut r,
+            json!({"jsonrpc":"2.0","id":8,"method":"ping"}),
+        )
+        .unwrap();
+        assert_eq!(ping["result"], json!({}));
+    }
+
+    #[test]
+    fn tools_list_names_every_tool_the_dispatcher_handles() {
+        let (mut g, mut r) = fresh();
+        let res = rpc(
+            &mut g,
+            &mut r,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .unwrap();
+        let names: Vec<&str> = res["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "command",
+                "observe",
+                "new_game",
+                "journal",
+                "journal_write",
+                "help"
+            ]
+        );
+        for n in names {
+            let (text, is_error) = call(&mut g, &mut r, n, json!({"command": "wait", "text": "x"}));
+            assert!(!is_error, "{n}: {text}");
+        }
+    }
+
+    #[test]
+    fn command_runs_scripts_records_them_and_reports_failures() {
+        let (mut g, mut r) = fresh();
+        let (text, err) = call(
+            &mut g,
+            &mut r,
+            "command",
+            json!({"command": "wait; wait", "thought": " 様子見 "}),
+        );
+        assert!(
+            !err && text.contains("> wait") && text.contains("== 地下1階"),
+            "{text}"
+        );
+        // 最初のコマンドにだけ thought が付き、前後の空白は落ちる
+        let thoughts: Vec<Option<&str>> = r
+            .history
+            .iter()
+            .filter_map(|e| match e {
+                Event::Command { thought, .. } => Some(thought.as_deref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thoughts, [Some("様子見"), None]);
+
+        // 失敗で止まり、実行しなかった分を知らせる
+        let (text, err) = call(
+            &mut g,
+            &mut r,
+            "command",
+            json!({"command": "descend; wait; wait"}),
+        );
+        assert!(err && text.contains("FAILED"), "{text}");
+        assert!(text.contains("remaining 2 command(s)"), "{text}");
+
+        let (text, err) = call(&mut g, &mut r, "command", json!({"command": " ; "}));
+        assert!(err && text.contains("(empty command)"), "{text}");
+        let (_, err) = call(&mut g, &mut r, "command", json!({}));
+        assert!(err);
+    }
+
+    #[test]
+    fn new_game_resets_the_game_and_the_history() {
+        let (mut g, mut r) = fresh();
+        call(&mut g, &mut r, "command", json!({"command": "wait"}));
+        let (text, err) = call(&mut g, &mut r, "new_game", json!({"seed": 5}));
+        assert!(!err && text.contains("seed 5"), "{text}");
+        assert_eq!(g.seed(), 5);
+        assert_eq!(g.turn(), 0);
+        assert_eq!(r.history, [Event::new_game(5)]);
+        // seed が数でなければ 1 になる
+        call(&mut g, &mut r, "new_game", json!({"seed": "x"}));
+        assert_eq!(g.seed(), 1);
+    }
+
+    #[test]
+    fn journal_write_needs_text_and_is_kept_in_the_history() {
+        let (mut g, mut r) = fresh();
+        let (_, err) = call(&mut g, &mut r, "journal_write", json!({"text": "  "}));
+        assert!(err);
+        let (_, err) = call(
+            &mut g,
+            &mut r,
+            "journal_write",
+            json!({"text": " 今日の日誌 "}),
+        );
+        assert!(!err);
+        let (text, _) = call(&mut g, &mut r, "journal", json!({}));
+        assert!(text.contains("保存されている"), "{text}");
+        assert_eq!(
+            grave_core::journal::journal_texts(&r.history),
+            ["今日の日誌"]
+        );
+    }
+
+    #[test]
+    fn unknown_tools_are_errors() {
+        let (mut g, mut r) = fresh();
+        let (text, err) = call(&mut g, &mut r, "dance", json!({}));
+        assert!(err && text.contains("unknown tool"));
+    }
+
+    #[test]
+    fn a_panic_in_a_tool_becomes_an_error_result() {
+        let (text, err) = guarded(|| panic!("boom"));
+        assert!(err && text.contains("new_game"), "{text}");
+        assert_eq!(
+            guarded(|| ("ok".to_string(), false)),
+            ("ok".to_string(), false)
+        );
+    }
+}
