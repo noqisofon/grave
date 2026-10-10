@@ -8,6 +8,8 @@ use grave_core::{journal, Game, COMMAND_HELP};
 use serde_json::{json, Value};
 
 const LOG_LINES: usize = 8;
+/// 対応する MCP のプロトコルバージョン（新しい順）。
+const SUPPORTED_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 const DEFAULT_RECORD_PATH: &str = "grave-record.jsonl";
 
 /// セッション記録 (JSONL)。書き込みに失敗してもゲームは止めない。
@@ -65,7 +67,7 @@ fn tools() -> Value {
         },
         {
             "name": "observe",
-            "description": "Show the current map (@ = you, > = stairs, > = stairs (< once you hold the amulet), , = the Amulet on depth 30, s = slime, ! = potion, ? = scroll, / = wand, = = ring, ~ = light/oil, ^ = known trap; remembered tiles stay), active status effects with remaining turns (poison, confusion, blindness, hallucination, ...; while blind no map is shown), visible enemies, the items under your feet (numbered, as used by pickup), your inventory (wands show remaining charges; the equipped light shows its fuel) and the recent message log. Does not consume a turn.",
+            "description": "Show the current map (@ = you, > = stairs (< once you hold the amulet), , = the Amulet on depth 30, s = slime, ! = potion, ? = scroll, / = wand, = = ring, ~ = light/oil, ^ = known trap; remembered tiles stay), active status effects with remaining turns (poison, confusion, blindness, hallucination, ...; while blind no map is shown), visible enemies, the items under your feet (numbered, as used by pickup), your inventory (wands show remaining charges; the equipped light shows its fuel) and the recent message log. Does not consume a turn.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -126,6 +128,14 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
             if outs.is_empty() {
                 text.push_str("(empty command)\n");
                 is_error = true;
+            }
+            // 失敗で止まったときは、実行しなかった分を知らせる
+            let total = script.split(';').filter(|c| !c.trim().is_empty()).count();
+            if outs.len() < total {
+                text.push_str(&format!(
+                    "(stopped at the failure: the remaining {} command(s) were not run)\n",
+                    total - outs.len()
+                ));
             }
             if game.is_won() {
                 text.push_str(
@@ -188,6 +198,19 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
     }
 }
 
+/// ツールの実行中に panic しても、サーバーごと落とさずエラーとして返す。
+/// （ゲームの状態は panic した時点のまま残る。直らなければ new_game でやり直せる）
+fn guarded(f: impl FnOnce() -> (String, bool)) -> (String, bool) {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        (
+            "internal error: the game panicked while running this tool. \
+             The game state may be inconsistent; call new_game to start over."
+                .to_string(),
+            true,
+        )
+    })
+}
+
 fn handle(game: &mut Game, rec: &mut Recorder, req: &Value) -> Option<Value> {
     let id = req.get("id")?.clone(); // id が無ければ通知なので返信しない
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
@@ -195,10 +218,12 @@ fn handle(game: &mut Game, rec: &mut Recorder, req: &Value) -> Option<Value> {
 
     let result = match method {
         "initialize" => {
+            // 要求された版に対応していればそれを、そうでなければ対応する最新の版を返す
             let version = params
                 .get("protocolVersion")
                 .and_then(Value::as_str)
-                .unwrap_or("2025-06-18");
+                .filter(|v| SUPPORTED_VERSIONS.contains(v))
+                .unwrap_or(SUPPORTED_VERSIONS[0]);
             json!({
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
@@ -210,7 +235,7 @@ fn handle(game: &mut Game, rec: &mut Recorder, req: &Value) -> Option<Value> {
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-            let (text, is_error) = call_tool(game, rec, name, &args);
+            let (text, is_error) = guarded(|| call_tool(game, rec, name, &args));
             json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
         }
         _ => {
@@ -261,4 +286,180 @@ fn main() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh() -> (Game, Recorder) {
+        let mut rec = Recorder::open(None);
+        rec.write(&Event::new_game(1));
+        (Game::new(1), rec)
+    }
+
+    fn call(game: &mut Game, rec: &mut Recorder, name: &str, args: Value) -> (String, bool) {
+        call_tool(game, rec, name, &args)
+    }
+
+    fn rpc(game: &mut Game, rec: &mut Recorder, req: Value) -> Option<Value> {
+        handle(game, rec, &req)
+    }
+
+    #[test]
+    fn initialize_picks_a_supported_protocol_version() {
+        let (mut g, mut r) = fresh();
+        let ask = |v: &str| json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":v}});
+        let res = rpc(&mut g, &mut r, ask("2025-03-26")).unwrap();
+        assert_eq!(res["result"]["protocolVersion"], "2025-03-26");
+        // 知らない版を要求されたら、対応する最新の版を返す
+        let res = rpc(&mut g, &mut r, ask("1999-01-01")).unwrap();
+        assert_eq!(res["result"]["protocolVersion"], SUPPORTED_VERSIONS[0]);
+        assert_eq!(res["result"]["serverInfo"]["name"], "grave");
+    }
+
+    #[test]
+    fn notifications_get_no_reply_and_unknown_methods_get_an_error() {
+        let (mut g, mut r) = fresh();
+        let note = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+        assert!(rpc(&mut g, &mut r, note).is_none());
+        let res = rpc(
+            &mut g,
+            &mut r,
+            json!({"jsonrpc":"2.0","id":7,"method":"nope"}),
+        )
+        .unwrap();
+        assert_eq!(res["id"], 7);
+        assert_eq!(res["error"]["code"], -32601);
+        let ping = rpc(
+            &mut g,
+            &mut r,
+            json!({"jsonrpc":"2.0","id":8,"method":"ping"}),
+        )
+        .unwrap();
+        assert_eq!(ping["result"], json!({}));
+    }
+
+    #[test]
+    fn tools_list_names_every_tool_the_dispatcher_handles() {
+        let (mut g, mut r) = fresh();
+        let res = rpc(
+            &mut g,
+            &mut r,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .unwrap();
+        let names: Vec<&str> = res["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "command",
+                "observe",
+                "new_game",
+                "journal",
+                "journal_write",
+                "help"
+            ]
+        );
+        for n in names {
+            let (text, is_error) = call(&mut g, &mut r, n, json!({"command": "wait", "text": "x"}));
+            assert!(!is_error, "{n}: {text}");
+        }
+    }
+
+    #[test]
+    fn command_runs_scripts_records_them_and_reports_failures() {
+        let (mut g, mut r) = fresh();
+        let (text, err) = call(
+            &mut g,
+            &mut r,
+            "command",
+            json!({"command": "wait; wait", "thought": " 様子見 "}),
+        );
+        assert!(
+            !err && text.contains("> wait") && text.contains("== 地下1階"),
+            "{text}"
+        );
+        // 最初のコマンドにだけ thought が付き、前後の空白は落ちる
+        let thoughts: Vec<Option<&str>> = r
+            .history
+            .iter()
+            .filter_map(|e| match e {
+                Event::Command { thought, .. } => Some(thought.as_deref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thoughts, [Some("様子見"), None]);
+
+        // 失敗で止まり、実行しなかった分を知らせる
+        let (text, err) = call(
+            &mut g,
+            &mut r,
+            "command",
+            json!({"command": "descend; wait; wait"}),
+        );
+        assert!(err && text.contains("FAILED"), "{text}");
+        assert!(text.contains("remaining 2 command(s)"), "{text}");
+
+        let (text, err) = call(&mut g, &mut r, "command", json!({"command": " ; "}));
+        assert!(err && text.contains("(empty command)"), "{text}");
+        let (_, err) = call(&mut g, &mut r, "command", json!({}));
+        assert!(err);
+    }
+
+    #[test]
+    fn new_game_resets_the_game_and_the_history() {
+        let (mut g, mut r) = fresh();
+        call(&mut g, &mut r, "command", json!({"command": "wait"}));
+        let (text, err) = call(&mut g, &mut r, "new_game", json!({"seed": 5}));
+        assert!(!err && text.contains("seed 5"), "{text}");
+        assert_eq!(g.seed(), 5);
+        assert_eq!(g.turn(), 0);
+        assert_eq!(r.history, [Event::new_game(5)]);
+        // seed が数でなければ 1 になる
+        call(&mut g, &mut r, "new_game", json!({"seed": "x"}));
+        assert_eq!(g.seed(), 1);
+    }
+
+    #[test]
+    fn journal_write_needs_text_and_is_kept_in_the_history() {
+        let (mut g, mut r) = fresh();
+        let (_, err) = call(&mut g, &mut r, "journal_write", json!({"text": "  "}));
+        assert!(err);
+        let (_, err) = call(
+            &mut g,
+            &mut r,
+            "journal_write",
+            json!({"text": " 今日の日誌 "}),
+        );
+        assert!(!err);
+        let (text, _) = call(&mut g, &mut r, "journal", json!({}));
+        assert!(text.contains("保存されている"), "{text}");
+        assert_eq!(
+            grave_core::journal::journal_texts(&r.history),
+            ["今日の日誌"]
+        );
+    }
+
+    #[test]
+    fn unknown_tools_are_errors() {
+        let (mut g, mut r) = fresh();
+        let (text, err) = call(&mut g, &mut r, "dance", json!({}));
+        assert!(err && text.contains("unknown tool"));
+    }
+
+    #[test]
+    fn a_panic_in_a_tool_becomes_an_error_result() {
+        let (text, err) = guarded(|| panic!("boom"));
+        assert!(err && text.contains("new_game"), "{text}");
+        assert_eq!(
+            guarded(|| ("ok".to_string(), false)),
+            ("ok".to_string(), false)
+        );
+    }
 }
