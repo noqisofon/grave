@@ -1725,7 +1725,7 @@ impl Tool {
         } else if self.kind.is_ring() {
             base + 25 * self.val.max(0) as u32
         } else if let Some(l) = self.kind.light_def() {
-            // 燃料が半分なら、価値も半分ぶん引く
+            // 満タンで基準の売値、空で基準の3分の1(燃料に応じて直線的に下がる)
             let max = l.max_fuel.max(1);
             base * (max / 2 + self.val.clamp(0, max)) as u32 / (max + max / 2) as u32
         } else {

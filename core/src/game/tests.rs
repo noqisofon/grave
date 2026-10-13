@@ -4534,14 +4534,14 @@ fn each_floor_has_gold_and_it_grows_with_depth() {
         let mut total = 0;
         for d in 1..=5u32 {
             assert_eq!(g.depth(), d);
-            // 山の数は 1 + 階数/3、1山の額は 階数×(5〜10)
+            // 山の数は 1 + 階数/15、1山の額は (階数+6)×(3〜6)
             assert_eq!(
                 g.gold_piles.len() as u32,
-                1 + d / 3,
+                1 + d / 15,
                 "seed {seed} 地下{d}階"
             );
             for (p, a) in &g.gold_piles {
-                assert!((5 * d..=10 * d).contains(a), "{a}");
+                assert!(((d + 6) * 3..=(d + 6) * 6).contains(a), "{a}");
                 assert_eq!(g.map.tile(p.0, p.1), Tile::Floor);
             }
             total += floor_gold(&g);
@@ -4549,7 +4549,7 @@ fn each_floor_has_gold_and_it_grows_with_depth() {
             g.new_level();
         }
         // 地下5階までで合計数百(階数×100の点と釣り合う規模)
-        assert!((100..=500).contains(&total), "seed {seed}: {total}");
+        assert!((150..=300).contains(&total), "seed {seed}: {total}");
     }
 }
 

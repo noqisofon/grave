@@ -45,10 +45,12 @@ const MAX_ENCHANT: i32 = 9;
 const MIN_STRENGTH: i32 = 3;
 /// この階の床に魔除けのアミュレットがある。ここが最深部。
 pub const AMULET_DEPTH: u32 = 30;
-/// 床の金: 1山の額は 階数 × この幅(最小, 最大)、山の数は 1 + 階数 / この値。
-/// 地下5階までの合計がおよそ200前後（階数×100の点と釣り合う規模）になる。
-const GOLD_PER_DEPTH: (i32, i32) = (5, 10);
-const GOLD_PILES_DEPTH_STEP: u32 = 3;
+/// 床の金: 1山の額は (抽選 3〜6) × (階数 + 6)、山の数は 1 + 階数 / 15。
+/// 額も数も深いほど増えるが、金が階数点（階数×100）を食わないよう緩やかにしてある。
+/// 全部拾った累計は、地下5階で約200、10階で約500、30階で約5000。
+const GOLD_ROLL: (i32, i32) = (3, 6);
+const GOLD_DEPTH_OFFSET: u32 = 6;
+const GOLD_PILES_DEPTH_STEP: u32 = 15;
 
 /// コマンドの直接の実行結果（内部処理用）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -530,7 +532,8 @@ impl Game {
         self.gold_piles.clear();
         let piles = 1 + self.depth / GOLD_PILES_DEPTH_STEP;
         for _ in 0..piles {
-            let amount = self.depth * self.rng.range(GOLD_PER_DEPTH.0, GOLD_PER_DEPTH.1 + 1) as u32;
+            let amount = (self.depth + GOLD_DEPTH_OFFSET)
+                * self.rng.range(GOLD_ROLL.0, GOLD_ROLL.1 + 1) as u32;
             for _ in 0..300 {
                 let x = self.rng.range(1, W - 1);
                 let y = self.rng.range(1, H - 1);

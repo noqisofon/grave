@@ -514,7 +514,7 @@ mod tests {
     #[test]
     fn rules_version_matches_golden_run() {
         const GOLDEN_RULES: u32 = 27;
-        const GOLDEN_HASH: u64 = 14346940703349795249;
+        const GOLDEN_HASH: u64 = 9714880283975385458;
         let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
         let mut feed = |bytes: &[u8]| {
             for b in bytes {

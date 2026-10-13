@@ -150,15 +150,18 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
                 text.push_str("\nゲームオーバー。journal ツールで冒険日誌の素材が得られる。\n");
             }
             // 終わったら、結果（墓碑かクリア表示とスコアの内訳）を見せて記録する。記録は1ゲームにつき1回
+            // 結果画面は、終わった直後の1回だけ返す(あとは new_game を促すだけ)
             if let Some(end) = Event::game_end(game) {
-                text.push('\n');
-                text.push_str(&result_lines(game).join("\n"));
-                text.push('\n');
-                if !rec
+                if rec
                     .history
                     .iter()
                     .any(|e| matches!(e, Event::GameEnd { .. }))
                 {
+                    text.push_str("\n(ゲームは終わっている。new_game で新しく始められる)\n");
+                } else {
+                    text.push('\n');
+                    text.push_str(&result_lines(game).join("\n"));
+                    text.push('\n');
                     rec.write(&end);
                 }
             }
@@ -169,12 +172,13 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
         "observe" => (game.observe_text(LOG_LINES), false),
         "new_game" => {
             let seed = args.get("seed").and_then(Value::as_u64).unwrap_or(1);
-            let name = match args.get("name").and_then(Value::as_str) {
-                None => DEFAULT_NAME.to_string(),
-                Some(n) => match validate_name(n) {
+            let name = match args.get("name") {
+                None | Some(Value::Null) => DEFAULT_NAME.to_string(),
+                Some(Value::String(n)) => match validate_name(n) {
                     Ok(n) => n,
                     Err(e) => return (format!("name: {e}"), true),
                 },
+                Some(_) => return ("name: must be a string".to_string(), true),
             };
             *game = Game::new(seed);
             game.set_name(&name);
@@ -468,6 +472,8 @@ mod tests {
             let (text, err) = call(&mut g, &mut r, "new_game", json!({"name": bad}));
             assert!(err && text.starts_with("name:"), "{bad}: {text}");
         }
+        let (text, err) = call(&mut g, &mut r, "new_game", json!({"name": 5}));
+        assert!(err && text.contains("string"), "{text}");
         assert_eq!(g.name(), "claude-opus-5");
         assert_eq!(g.seed(), 2);
     }
@@ -501,8 +507,12 @@ mod tests {
                 .count()
         };
         assert_eq!(ends(&r), 1);
-        // 終わったあとのコマンドで、重ねて記録しない
-        call(&mut g, &mut r, "command", json!({"command": "wait"}));
+        // 終わったあとのコマンドでは、重ねて記録せず、結果画面も繰り返さない
+        let (again, _) = call(&mut g, &mut r, "command", json!({"command": "wait"}));
+        assert!(
+            !again.contains("ここに眠る") && again.contains("new_game"),
+            "{again}"
+        );
         assert_eq!(ends(&r), 1);
         let Some(Event::GameEnd {
             name,

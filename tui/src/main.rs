@@ -1167,11 +1167,31 @@ fn main() -> io::Result<()> {
             .unwrap_or("grave-record.jsonl");
         return run_watch(path);
     }
-    let seed = args
+    // `--name <名前>` で、最初のゲームの名前を決める(省くと「名無し」。:new では聞かれる)
+    let mut name = None;
+    let mut rest: Vec<&String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--name" {
+            name = it.next().map(String::as_str);
+        } else {
+            rest.push(a);
+        }
+    }
+    let seed = rest
         .first()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(random_seed);
     let mut app = App::new(seed);
+    if let Some(n) = name {
+        match validate_name(n) {
+            Ok(n) => app.game.set_name(&n),
+            Err(e) => {
+                eprintln!("--name: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
 
     let _guard = TerminalGuard::enter()?;
     let mut out = io::stdout();
