@@ -8,6 +8,7 @@ use crate::item::{
 use crate::map::{idx, Map, Tile, H, W};
 use crate::monster::{MonsterKind, KINDS};
 use crate::rng::Rng;
+use crate::score::{Ending, Score, DEFAULT_NAME};
 use crate::status::{Change, Status, StatusEvent, StatusSet};
 use crate::trap::{Trap, TrapKind};
 
@@ -44,6 +45,12 @@ const MAX_ENCHANT: i32 = 9;
 const MIN_STRENGTH: i32 = 3;
 /// この階の床に魔除けのアミュレットがある。ここが最深部。
 pub const AMULET_DEPTH: u32 = 30;
+/// 床の金: 1山の額は (抽選 3〜6) × (階数 + 6)、山の数は 1 + 階数 / 15。
+/// 額も数も深いほど増えるが、金が階数点（階数×100）を食わないよう緩やかにしてある。
+/// 全部拾った累計は、地下5階で約200、10階で約500、30階で約5000。
+const GOLD_ROLL: (i32, i32) = (3, 6);
+const GOLD_DEPTH_OFFSET: u32 = 6;
+const GOLD_PILES_DEPTH_STEP: u32 = 15;
 
 /// コマンドの直接の実行結果（内部処理用）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,6 +207,16 @@ pub struct Game {
     has_amulet: bool,
     /// アミュレットを持って地上へ脱出した
     won: bool,
+    /// 名前（記録とスコアに残る）
+    name: String,
+    /// 所持金。床に落ちている金を拾って増える（敵は金を落とさない）
+    gold: u32,
+    /// 今の階の床に落ちている金（位置, 額）
+    gold_piles: Vec<((i32, i32), u32)>,
+    /// これまでに着いた一番深い階（スコアの階数点になる）
+    max_depth: u32,
+    /// 死因（死んだときだけ。「ゴブリンに殺された」のような1行）
+    death_cause: Option<String>,
     /// 種類ごとの見た目（未識別名）。ゲームごとにシャッフルされる。
     looks: [&'static str; ItemKind::COUNT],
     /// 種類ごとに、正体を知っているか
@@ -353,6 +370,11 @@ impl Game {
             amulet: None,
             has_amulet: false,
             won: false,
+            name: DEFAULT_NAME.to_string(),
+            gold: 0,
+            gold_piles: Vec::new(),
+            max_depth: 1,
+            death_cause: None,
             looks,
             known: ItemKind::ALL.map(|k| k.starts_known()),
             weapon: None,
@@ -375,6 +397,7 @@ impl Game {
         game.spawn_monsters();
         game.spawn_items();
         game.spawn_traps();
+        game.spawn_gold();
         game.refresh_fov();
         game.push_log("冒険が始まった。");
         game
@@ -414,6 +437,61 @@ impl Game {
     pub fn is_won(&self) -> bool {
         self.won
     }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// 名前を付ける（[`crate::score::validate_name`] を通した名前を渡す）。
+    pub fn set_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+    pub fn gold(&self) -> u32 {
+        self.gold
+    }
+    /// これまでに着いた一番深い階。
+    pub fn max_depth(&self) -> u32 {
+        self.max_depth
+    }
+    /// 死因（死んでいるときだけ）。
+    pub fn death_cause(&self) -> Option<&str> {
+        self.death_cause.as_deref()
+    }
+    /// 終わり方（続いているなら None）。
+    pub fn ending(&self) -> Option<Ending> {
+        if self.won {
+            Some(Ending::Cleared)
+        } else if self.dead {
+            Some(Ending::Died)
+        } else {
+            None
+        }
+    }
+    /// 持ち物すべての売値の合計（未識別でも本当の価値。呪い装備は 0）。
+    pub fn item_value(&self) -> u32 {
+        self.inventory
+            .iter()
+            .map(|s| match (s.gear, s.tool) {
+                (Some(g), _) => g.sell_value(),
+                (_, Some(t)) => t.sell_value(),
+                _ => s.kind.base_value() * s.count,
+            })
+            .sum::<u32>()
+            + self.light.map_or(0, |t| t.sell_value())
+    }
+    /// 今の終わり方でのスコア。続いているなら、死んだ場合の値（持ち物は数えない）。
+    pub fn score(&self) -> Score {
+        Score::from_parts(
+            self.ending().unwrap_or(Ending::Died),
+            self.max_depth,
+            self.gold,
+            self.item_value(),
+        )
+    }
+
+    /// 死ぬ。最初の死因だけを残す。
+    fn die(&mut self, cause: &str) {
+        self.dead = true;
+        self.death_cause.get_or_insert_with(|| cause.to_string());
+    }
     pub fn log(&self) -> &[LogEntry] {
         &self.log
     }
@@ -443,7 +521,34 @@ impl Game {
         self.spawn_monsters();
         self.spawn_items();
         self.spawn_traps();
+        self.spawn_gold();
+        self.max_depth = self.max_depth.max(self.depth);
         self.refresh_fov();
+    }
+
+    /// 今の階の床に金を撒く。1山の額も山の数も、階が深いほど増える。
+    /// 敵は金を落とさないので、金はここで撒いたものがすべて。
+    fn spawn_gold(&mut self) {
+        self.gold_piles.clear();
+        let piles = 1 + self.depth / GOLD_PILES_DEPTH_STEP;
+        for _ in 0..piles {
+            let amount = (self.depth + GOLD_DEPTH_OFFSET)
+                * self.rng.range(GOLD_ROLL.0, GOLD_ROLL.1 + 1) as u32;
+            for _ in 0..300 {
+                let x = self.rng.range(1, W - 1);
+                let y = self.rng.range(1, H - 1);
+                if self.map.tile(x, y) == Tile::Floor
+                    && (x, y) != self.pos
+                    && self.item_at((x, y)).is_none()
+                    && self.monster_at((x, y)).is_none()
+                    && !self.gold_piles.iter().any(|(p, _)| *p == (x, y))
+                    && self.amulet != Some((x, y))
+                {
+                    self.gold_piles.push(((x, y), amount));
+                    break;
+                }
+            }
+        }
     }
 
     fn spawn_items(&mut self) {
@@ -598,6 +703,11 @@ impl Game {
             );
             self.alert = Some("アミュレットを手に入れて中断した。".to_string());
         }
+        if let Some(k) = self.gold_piles.iter().position(|(p, _)| *p == self.pos) {
+            let (_, amount) = self.gold_piles.remove(k);
+            self.gold += amount;
+            self.note(&format!("金貨を{amount}枚拾った。(所持金 {})", self.gold));
+        }
         // 自動で拾うのは、印のない物の一番上の1個だけ（捨てた物は拾わない）
         let Some(j) = self.auto_pickable(self.pos) else {
             return;
@@ -723,6 +833,7 @@ impl Game {
     fn wants_item_at(&self, p: (i32, i32)) -> bool {
         self.map.is_seen(p.0, p.1)
             && (self.amulet == Some(p)
+                || self.gold_piles.iter().any(|(q, _)| *q == p)
                 // 自動で拾われる物だけを目指す（捨てた物には寄らない）
                 || self.auto_pickable(p).is_some_and(|j| self.can_take(self.floor_items[j].item)))
     }
@@ -1446,7 +1557,7 @@ impl Game {
                 let dmg = self.rng.range(1, 4);
                 self.hp -= dmg;
                 if self.hp <= 0 {
-                    self.dead = true;
+                    self.die("落とし穴に落ちて死んだ");
                     self.note("落とし穴に落ちた！ 打ちどころが悪かった…。ゲームオーバー。");
                     return;
                 }
@@ -1467,7 +1578,7 @@ impl Game {
                     self.max_hp
                 ));
                 if self.hp <= 0 {
-                    self.dead = true;
+                    self.die("毒矢の罠に殺された");
                     self.note("あなたは力尽きた…。ゲームオーバー。");
                 } else if self.try_poison(5) {
                     self.note("毒を受けた！");
@@ -1678,7 +1789,11 @@ impl Game {
             );
             self.note(&msg);
             if self.hp <= 0 {
-                self.dead = true;
+                self.die(if cause == "飢え" {
+                    "飢えて死んだ"
+                } else {
+                    "毒で死んだ"
+                });
                 self.note(&format!("{cause}で力尽きた…。ゲームオーバー。"));
                 return;
             } else if self.hp <= DANGER_HP {
@@ -1850,7 +1965,7 @@ impl Game {
                 }
             }
             if self.hp <= 0 {
-                self.dead = true;
+                self.die(&format!("{}に殺された", kind.name));
                 self.note("あなたは力尽きた…。ゲームオーバー。");
             }
         } else if let Some(np) = self.monster_step(mpos) {
@@ -2452,6 +2567,14 @@ impl Game {
                 ));
             }
         }
+        for (p, amount) in &self.gold_piles {
+            if self.map.is_seen(p.0, p.1) {
+                parts.push(format!(
+                    "$ 金貨{amount}枚が{}にある。",
+                    rel_text(self.pos, *p)
+                ));
+            }
+        }
         parts.join(" ")
     }
 
@@ -2498,6 +2621,13 @@ impl Game {
                 seen,
             };
         }
+        if seen && self.gold_piles.iter().any(|(p, _)| *p == (x, y)) {
+            return Cell {
+                ch: '$',
+                visible: self.map.is_visible(x, y),
+                seen,
+            };
+        }
         if seen {
             if let Some(k) = self.item_at((x, y)) {
                 return Cell {
@@ -2535,7 +2665,7 @@ impl Game {
     pub fn observe_text(&self, log_lines: usize) -> String {
         let (atk_lo, atk_hi) = self.attack_range();
         let mut s = format!(
-            "== 地下{}階 / Lv{} (経験値 {}/{}) / ターン{} / HP {}/{} / 攻撃 {}〜{} / 防御 {} / {} / 位置({},{}) ==\n",
+            "== 地下{}階 / Lv{} (経験値 {}/{}) / ターン{} / HP {}/{} / 攻撃 {}〜{} / 防御 {} / 所持金 {} / {} / 位置({},{}) ==\n",
             self.depth,
             self.level,
             self.xp,
@@ -2546,6 +2676,7 @@ impl Game {
             atk_lo,
             atk_hi,
             self.defense(),
+            self.gold,
             self.status_text(),
             self.pos.0,
             self.pos.1

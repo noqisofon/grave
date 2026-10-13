@@ -117,6 +117,7 @@ pub fn digest(events: &[Event]) -> String {
     let mut last: (u32, u32, Option<i32>) = (1, 0, None);
     let mut death: Option<(u32, u32)> = None;
     let mut cleared: Option<u32> = None;
+    let mut ended: Option<String> = None;
     let mut next_thought_id = 0usize;
     let mut last_thought: Option<&str> = None;
     // ターンが進まなかったコマンドの数（失敗や、すでに探索し尽くした場所での探索など）
@@ -127,6 +128,18 @@ pub fn digest(events: &[Event]) -> String {
         match e {
             Event::NewGame { seed: s, .. } => seed = Some(*s),
             Event::Journal { .. } => {}
+            Event::GameEnd {
+                name, cause, score, ..
+            } => {
+                ended = Some(format!(
+                    "{name} / {}点 (階数{} + 所持金{} + 持ち物{}){}",
+                    score.total(),
+                    score.depth_points,
+                    score.gold,
+                    score.items,
+                    cause.as_ref().map_or(String::new(), |c| format!(" / {c}"))
+                ));
+            }
             Event::Command {
                 command,
                 message,
@@ -194,6 +207,9 @@ pub fn digest(events: &[Event]) -> String {
         last.0,
         last.1
     ));
+    if let Some(e) = ended {
+        out.push_str(&format!("結果: {e}\n"));
+    }
     if idle > 0 {
         out.push_str(&format!(
             "ターンが進まなかったコマンド: {idle}回 (失敗や空振りの繰り返しがないか振り返る材料)\n"

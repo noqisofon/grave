@@ -11,10 +11,12 @@ pub mod map;
 pub mod monster;
 pub mod record;
 pub mod rng;
+pub mod score;
 pub mod status;
 pub mod trap;
 
 pub use command::{Command, Dir, TravelTarget, ZapTarget, COMMAND_HELP, COMMAND_NAMES};
 pub use game::{Cell, EnemyView, Game, ItemEntry, LogEntry, Outcome};
 pub use item::{Class, ItemKind};
+pub use score::{Ending, Score};
 pub use status::{Change, Status, StatusEvent};

@@ -175,7 +175,7 @@ impl Game {
                     self.max_hp
                 );
                 if self.hp <= 0 {
-                    self.dead = true;
+                    self.die("毒の薬を飲んで死んだ");
                     s.push_str(" 毒で力尽きた…。ゲームオーバー。");
                 }
                 s

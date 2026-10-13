@@ -1588,6 +1588,7 @@ fn quiet(seed: u64) -> Game {
     let mut g = Game::new(seed);
     g.monsters.clear();
     g.floor_items.clear();
+    g.gold_piles.clear();
     g.traps.clear();
     g
 }
@@ -4517,4 +4518,244 @@ fn stay_counts_actions_like_wait_so_haste_and_slow_apply() {
     let t = g.turn();
     assert!(g.run("stay 2").ok);
     assert_eq!(g.turn(), t + 4, "減速中は2回の行動で4ターン");
+}
+
+// ---- 金・スコア・死因 ----
+
+/// 今の階の金の合計。
+fn floor_gold(g: &Game) -> u32 {
+    g.gold_piles.iter().map(|(_, a)| a).sum()
+}
+
+#[test]
+fn each_floor_has_gold_and_it_grows_with_depth() {
+    for seed in 1..=8 {
+        let mut g = Game::new(seed);
+        let mut total = 0;
+        for d in 1..=5u32 {
+            assert_eq!(g.depth(), d);
+            // 山の数は 1 + 階数/15、1山の額は (階数+6)×(3〜6)
+            assert_eq!(
+                g.gold_piles.len() as u32,
+                1 + d / 15,
+                "seed {seed} 地下{d}階"
+            );
+            for (p, a) in &g.gold_piles {
+                assert!(((d + 6) * 3..=(d + 6) * 6).contains(a), "{a}");
+                assert_eq!(g.map.tile(p.0, p.1), Tile::Floor);
+            }
+            total += floor_gold(&g);
+            g.depth += 1;
+            g.new_level();
+        }
+        // 地下5階までで合計数百(階数×100の点と釣り合う規模)
+        assert!((150..=300).contains(&total), "seed {seed}: {total}");
+    }
+}
+
+#[test]
+fn walking_onto_gold_picks_it_up_and_monsters_drop_none() {
+    let mut g = quiet(4);
+    let east = (g.pos.0 + 1, g.pos.1);
+    assert!(g.map.tile(east.0, east.1).walkable());
+    g.gold_piles.push((east, 37));
+    g.map.reveal_all();
+    assert_eq!(g.cell(east.0, east.1).ch, '$');
+    let o = g.run("move east");
+    assert!(o.message.contains("金貨を37枚拾った"), "{}", o.message);
+    assert_eq!(g.gold(), 37);
+    assert!(g.gold_piles.is_empty());
+    // 敵を倒しても金は増えない
+    let mut g = quiet(4);
+    let p = (g.pos.0 + 1, g.pos.1);
+    g.add_monster(&crate::monster::SLIME, p);
+    g.monsters[0].hp = 1;
+    let o = g.run("attack east");
+    assert!(o.message.contains("倒した"), "{}", o.message);
+    assert_eq!(g.gold(), 0);
+    assert!(g.gold_piles.is_empty());
+}
+
+#[test]
+fn explore_goes_for_gold() {
+    let mut g = quiet(3);
+    g.map.reveal_all();
+    let far = *g
+        .find_path(&|q| {
+            g.map.tile(q.0, q.1) == Tile::Floor && (q.0 - g.pos.0).abs() + (q.1 - g.pos.1).abs() > 6
+        })
+        .unwrap()
+        .last()
+        .unwrap();
+    g.gold_piles.push((far, 20));
+    g.run("explore");
+    assert_eq!(g.pos, far);
+    assert_eq!(g.gold(), 20);
+}
+
+#[test]
+fn death_records_what_killed_you() {
+    let mut g = quiet(5);
+    let p = (g.pos.0 + 1, g.pos.1);
+    let m = g.add_monster(&crate::monster::SLIME, p);
+    g.monsters[m].hp = 1000;
+    g.hp = 1;
+    for _ in 0..50 {
+        if g.is_dead() {
+            break;
+        }
+        g.run("wait");
+    }
+    assert!(g.is_dead());
+    assert_eq!(g.death_cause(), Some("スライムに殺された"));
+    assert_eq!(g.ending(), Some(Ending::Died));
+    // 飢え
+    let mut g = quiet(5);
+    g.food = 0;
+    g.hp = 1;
+    g.run("wait");
+    assert_eq!(g.death_cause(), Some("飢えて死んだ"));
+}
+
+#[test]
+fn score_counts_deepest_depth_and_gold_but_items_only_on_clear() {
+    let mut g = quiet(6);
+    g.gold = 123;
+    g.depth = 4;
+    g.new_level();
+    g.take(Item::Gear(Gear::plain(ItemKind::Sword)));
+    assert_eq!(g.max_depth(), 4);
+    // 生きている間も、死んだ場合の値を返す(持ち物は数えない)
+    let sc = g.score();
+    assert_eq!((sc.depth_points, sc.gold, sc.items), (400, 123, 0));
+    assert_eq!(sc.total(), 523);
+    g.dead = true;
+    assert_eq!(g.score().total(), 523);
+    // クリア: 持ち物の売値(未識別でも本当の価値)が加わる
+    g.dead = false;
+    g.won = true;
+    assert!(g.item_value() > 0);
+    let sc = g.score();
+    assert_eq!(sc.items, g.item_value());
+    assert_eq!(sc.total(), 523 + g.item_value());
+}
+
+#[test]
+fn clearing_scores_the_deepest_depth_not_the_depth_you_leave_from() {
+    let mut g = quiet(7);
+    g.depth = 9;
+    g.new_level();
+    g.depth = 1; // 登りきった
+    g.won = true;
+    assert_eq!(g.score().depth_points, 900);
+}
+
+#[test]
+fn sell_values_use_true_worth_and_zero_for_cursed() {
+    // 未識別の装備でも本当の価値
+    let mut rng = crate::rng::Rng::new(1);
+    let mut found_cursed = false;
+    let mut found_good = false;
+    for _ in 0..400 {
+        let mut gear = Gear::roll(&mut rng, ItemKind::Sword, 12);
+        let v = gear.sell_value();
+        if gear.is_cursed() {
+            assert_eq!(v, 0);
+            found_cursed = true;
+        } else {
+            assert!(v >= ItemKind::Sword.base_value());
+            found_good = true;
+        }
+        gear.identified = !gear.identified;
+        assert_eq!(gear.sell_value(), v); // 識別状態で変わらない
+        gear.freed = true; // 呪い解除で外せるようになっても 0 のまま
+        assert_eq!(gear.sell_value(), v);
+    }
+    assert!(found_cursed && found_good);
+    // 呪われた・負の指輪は 0、良い指輪は強さで上がる
+    let mut ring = Tool::plain(ItemKind::RingProtection);
+    let base = ring.sell_value();
+    ring.val = 3;
+    assert!(ring.sell_value() > base);
+    ring.val = -2;
+    ring.cursed = true;
+    assert_eq!(ring.sell_value(), 0);
+    // 杖は充填数で上がる
+    let mut w = Tool::charged(ItemKind::WandFire, 2);
+    let low = w.sell_value();
+    w.val = 6;
+    assert!(w.sell_value() > low);
+    // 重なった薬は個数ぶん
+    let mut g = quiet(2);
+    g.inventory.clear();
+    g.light = None;
+    g.take(ItemKind::Healing);
+    g.take(ItemKind::Healing);
+    assert_eq!(g.item_value(), 2 * ItemKind::Healing.base_value());
+}
+
+#[test]
+fn every_item_kind_has_a_value_except_the_junk() {
+    for k in ItemKind::ALL {
+        if !matches!(k, ItemKind::RingAggravate | ItemKind::RingTeleportitis) {
+            assert!(k.base_value() > 0, "{k:?}");
+        }
+    }
+}
+
+#[test]
+fn game_end_record_can_be_rescored() {
+    use crate::record::Event;
+    let mut g = quiet(8);
+    assert!(Event::game_end(&g).is_none());
+    g.set_name("claude-test");
+    g.gold = 50;
+    g.depth = 3;
+    g.new_level();
+    g.hp = 0;
+    g.die("テストに殺された");
+    let ev = Event::game_end(&g).unwrap();
+    let line = ev.to_line();
+    let back = Event::parse(&line).unwrap();
+    assert_eq!(back, ev);
+    assert_eq!(back.rescore(), Some(g.score()));
+    assert_eq!(g.score().total(), 350);
+    assert!(line.contains("\"name\":\"claude-test\""), "{line}");
+    assert!(line.contains("\"cause\":\"テストに殺された\""), "{line}");
+    // 記録の元の値から採点し直せる(内訳は別々に保持される)
+    assert!(line.contains("\"depth_points\":300"), "{line}");
+    assert!(line.contains("\"turns\":0"), "{line}");
+}
+
+#[test]
+fn result_screens_show_a_gravestone_or_a_return() {
+    use crate::score::{cols, result_lines};
+    let mut g = Game::new(1);
+    assert!(result_lines(&g).is_empty());
+    g.set_name("ねっど");
+    g.dead = true;
+    g.death_cause = Some("ゴブリンに殺された".into());
+    let text = result_lines(&g).join("\n");
+    for want in [
+        "ここに眠る",
+        "ねっど",
+        "地下1階",
+        "ゴブリンに殺された",
+        "100点",
+        "生還したときだけ",
+    ] {
+        assert!(text.contains(want), "{want}\n{text}");
+    }
+    // 墓碑の全行が同じ桁幅で、崩れない
+    let stone: Vec<&str> = text
+        .lines()
+        .take_while(|l| l.starts_with(['+', '|']))
+        .collect();
+    assert!(stone.len() >= 8);
+    assert!(stone.iter().all(|l| cols(l) == 34), "{text}");
+    g.dead = false;
+    g.won = true;
+    let text = result_lines(&g).join("\n");
+    assert!(text.contains("生還！") && text.contains("持ち物"), "{text}");
+    assert!(!text.contains("ここに眠る"));
 }
