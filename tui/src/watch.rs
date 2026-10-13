@@ -82,8 +82,11 @@ impl Watcher {
             return;
         }
         match Event::parse(line) {
-            Ok(Event::NewGame { seed, rules }) => {
+            Ok(Event::NewGame { seed, rules, name }) => {
                 self.game = Game::new(seed);
+                if let Some(n) = name {
+                    self.game.set_name(&n);
+                }
                 self.stale_rules = rules != Some(RULES_VERSION);
                 self.thoughts.clear();
                 self.journals.clear();
@@ -113,6 +116,8 @@ impl Watcher {
                     }
                 }
             }
+            // 終わりの記録は、再現したゲームが自分で同じ結果になる。読み飛ばす
+            Ok(Event::GameEnd { .. }) => self.started = true,
             Ok(Event::Journal { text }) => {
                 self.started = true;
                 self.journals.push(text);

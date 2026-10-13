@@ -1229,6 +1229,52 @@ impl ItemKind {
     pub fn weight(self) -> u32 {
         self.def().weight
     }
+
+    /// 売値（ゴールド）。クリア時のスコアに、持ち物の本当の価値として数える。
+    /// 未識別でも本当の価値で数える。装備・杖・指輪は個体ごとの補正を
+    /// [`Gear::sell_value`] / [`Tool::sell_value`] が足す。
+    pub fn base_value(self) -> u32 {
+        use ItemKind::*;
+        match self {
+            Healing => 20,
+            ExtraHealing => 40,
+            Strength => 100,
+            Experience => 120,
+            RestoreStrength | Haste => 40,
+            DetectMonsters | DetectItems | Antidote => 15,
+            SeeInvisible | Levitation => 25,
+            Confusion | Hallucination | Poison | Blindness | Sleep => 5,
+            Identify => 20,
+            MagicMap | Teleport => 30,
+            EnchantWeapon | EnchantArmor => 60,
+            RemoveCurse | ProtectArmor => 40,
+            ConfuseMonster | HoldMonster => 20,
+            ScareMonster => 25,
+            CreateMonster | Aggravate | Slumber => 5,
+            WandLight | WandInvisibility | WandSlow => 30,
+            WandLightning | WandFire | WandCold | WandMissile | WandHaste | WandDrain
+            | WandCancel => 50,
+            WandPolymorph | WandTeleportOther | WandTeleportSelf => 60,
+            RingProtection | RingStrength | RingDexterity | RingDamage | RingRegeneration => 100,
+            RingSlowDigestion | RingStealth | RingSearching | RingSeeInvisible => 70,
+            RingTrinket => 20,
+            RingAggravate | RingTeleportitis => 0,
+            Torch => 5,
+            Lantern => 60,
+            OilFlask => 10,
+            Dagger => 20,
+            Sword => 50,
+            Axe => 70,
+            Leather => 20,
+            Chain => 60,
+            Plate => 100,
+            Bread => 5,
+            Jerky => 8,
+            EdibleShroom => 5,
+            PoisonShroom => 2,
+            VigorShroom => 30,
+        }
+    }
 }
 
 /// 装備の品質ランク。接頭辞の語がランクを表す。
@@ -1478,6 +1524,23 @@ impl Gear {
         self.suffix.is_some_and(Suffix::is_cursed)
     }
 
+    /// 売値。識別済みかどうかによらず本当の価値。品質・補正・強化・接尾辞で上がる。
+    /// 呪われた装備は（呪い解除で外せるようになっていても）0。
+    pub fn sell_value(&self) -> u32 {
+        if self.is_cursed() {
+            return 0;
+        }
+        let quality = match self.quality {
+            Quality::Common => 0,
+            Quality::Uncommon => 30,
+            Quality::Rare => 70,
+            Quality::Ancient => 130,
+        };
+        let plus = 10 * (self.bonus + self.enchant).max(0) as u32;
+        let suffix = if self.suffix.is_some() { 30 } else { 0 };
+        self.kind.base_value() + quality + plus + suffix
+    }
+
     /// 呪いで、はずせなくなっているか（呪い解除の巻物を読むまで）。
     pub fn is_sticky(&self) -> bool {
         self.is_cursed() && !self.freed
@@ -1648,6 +1711,26 @@ impl Tool {
     /// 呪いで外せないか。
     pub fn is_sticky(&self) -> bool {
         self.cursed && !self.freed
+    }
+
+    /// 売値。未識別でも本当の価値。呪われた指輪と、強さが負の指輪は 0。
+    /// 杖は充填数、指輪は強さ、光源は燃料の残りで上がる。
+    pub fn sell_value(&self) -> u32 {
+        if self.cursed || (self.kind.is_ring() && self.val < 0) {
+            return 0;
+        }
+        let base = self.kind.base_value();
+        if self.kind.is_wand() {
+            base + 8 * self.val.max(0) as u32
+        } else if self.kind.is_ring() {
+            base + 25 * self.val.max(0) as u32
+        } else if let Some(l) = self.kind.light_def() {
+            // 燃料が半分なら、価値も半分ぶん引く
+            let max = l.max_fuel.max(1);
+            base * (max / 2 + self.val.clamp(0, max)) as u32 / (max + max / 2) as u32
+        } else {
+            base
+        }
     }
 }
 

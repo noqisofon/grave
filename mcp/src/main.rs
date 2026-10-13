@@ -4,6 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Write};
 
 use grave_core::record::Event;
+use grave_core::score::{result_lines, validate_name, DEFAULT_NAME};
 use grave_core::{journal, Game, COMMAND_HELP};
 use serde_json::{json, Value};
 
@@ -72,10 +73,13 @@ fn tools() -> Value {
         },
         {
             "name": "new_game",
-            "description": "Start a new game. The same seed with the same commands always gives the same result.",
+            "description": "Start a new game. The same seed with the same commands always gives the same result. Pass your model name (or a run label) as `name`: it is shown on your gravestone and stored in the record with your score. Score = deepest depth x 100 + gold carried (+ the sell value of your inventory if you escape alive with the Amulet). Gold ($) lies on the floor only; walk over it to pick it up.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "seed": { "type": "integer", "description": "optional seed (default 1)" } }
+                "properties": {
+                    "seed": { "type": "integer", "description": "optional seed (default 1)" },
+                    "name": { "type": "string", "description": "your name, e.g. a model name (default \"名無し\"). Up to 20 columns (full-width characters count 2); letters, digits, Japanese and - _ . only, no spaces." }
+                }
             }
         },
         {
@@ -145,6 +149,19 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
             if game.is_dead() {
                 text.push_str("\nゲームオーバー。journal ツールで冒険日誌の素材が得られる。\n");
             }
+            // 終わったら、結果（墓碑かクリア表示とスコアの内訳）を見せて記録する。記録は1ゲームにつき1回
+            if let Some(end) = Event::game_end(game) {
+                text.push('\n');
+                text.push_str(&result_lines(game).join("\n"));
+                text.push('\n');
+                if !rec
+                    .history
+                    .iter()
+                    .any(|e| matches!(e, Event::GameEnd { .. }))
+                {
+                    rec.write(&end);
+                }
+            }
             text.push('\n');
             text.push_str(&game.observe_text(LOG_LINES));
             (text, is_error)
@@ -152,12 +169,20 @@ fn call_tool(game: &mut Game, rec: &mut Recorder, name: &str, args: &Value) -> (
         "observe" => (game.observe_text(LOG_LINES), false),
         "new_game" => {
             let seed = args.get("seed").and_then(Value::as_u64).unwrap_or(1);
+            let name = match args.get("name").and_then(Value::as_str) {
+                None => DEFAULT_NAME.to_string(),
+                Some(n) => match validate_name(n) {
+                    Ok(n) => n,
+                    Err(e) => return (format!("name: {e}"), true),
+                },
+            };
             *game = Game::new(seed);
+            game.set_name(&name);
             rec.history.clear();
-            rec.write(&Event::new_game(seed));
+            rec.write(&Event::new_game_named(seed, &name));
             (
                 format!(
-                    "New game (seed {seed}).\n\n{}",
+                    "New game (seed {seed}, name {name}).\n\n{}",
                     game.observe_text(LOG_LINES)
                 ),
                 false,
@@ -264,7 +289,7 @@ fn record_path() -> Option<String> {
 fn main() -> io::Result<()> {
     let mut game = Game::new(1);
     let mut rec = Recorder::open(record_path().as_deref());
-    rec.write(&Event::new_game(1));
+    rec.write(&Event::new_game_named(1, game.name()));
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     for line in stdin.lock().lines() {
@@ -420,10 +445,83 @@ mod tests {
         assert!(!err && text.contains("seed 5"), "{text}");
         assert_eq!(g.seed(), 5);
         assert_eq!(g.turn(), 0);
-        assert_eq!(r.history, [Event::new_game(5)]);
+        assert_eq!(r.history, [Event::new_game_named(5, DEFAULT_NAME)]);
         // seed が数でなければ 1 になる
         call(&mut g, &mut r, "new_game", json!({"seed": "x"}));
         assert_eq!(g.seed(), 1);
+    }
+
+    #[test]
+    fn new_game_takes_a_validated_name_and_records_it() {
+        let (mut g, mut r) = fresh();
+        let (text, err) = call(
+            &mut g,
+            &mut r,
+            "new_game",
+            json!({"seed": 2, "name": "claude-opus-5"}),
+        );
+        assert!(!err && text.contains("claude-opus-5"), "{text}");
+        assert_eq!(g.name(), "claude-opus-5");
+        assert_eq!(r.history, [Event::new_game_named(2, "claude-opus-5")]);
+        // 使えない名前は断って、いまのゲームを壊さない
+        for bad in ["", "two words", "x;quit", "あいうえおかきくけこさ"] {
+            let (text, err) = call(&mut g, &mut r, "new_game", json!({"name": bad}));
+            assert!(err && text.starts_with("name:"), "{bad}: {text}");
+        }
+        assert_eq!(g.name(), "claude-opus-5");
+        assert_eq!(g.seed(), 2);
+    }
+
+    #[test]
+    fn the_end_of_a_game_shows_the_result_and_is_recorded_once() {
+        let (mut g, mut r) = fresh();
+        call(
+            &mut g,
+            &mut r,
+            "new_game",
+            json!({"seed": 3, "name": "tester"}),
+        );
+        // 待ち続けて終わらせる(敵に襲われるか餓死する)
+        let mut text = String::new();
+        for _ in 0..200 {
+            text = call(&mut g, &mut r, "command", json!({"command": "stay 1000"})).0;
+            if g.is_dead() {
+                break;
+            }
+        }
+        assert!(g.is_dead(), "{text}");
+        assert!(
+            text.contains("ここに眠る") && text.contains("tester"),
+            "{text}"
+        );
+        let ends = |r: &Recorder| {
+            r.history
+                .iter()
+                .filter(|e| matches!(e, Event::GameEnd { .. }))
+                .count()
+        };
+        assert_eq!(ends(&r), 1);
+        // 終わったあとのコマンドで、重ねて記録しない
+        call(&mut g, &mut r, "command", json!({"command": "wait"}));
+        assert_eq!(ends(&r), 1);
+        let Some(Event::GameEnd {
+            name,
+            ending,
+            cause,
+            ..
+        }) = r
+            .history
+            .iter()
+            .find(|e| matches!(e, Event::GameEnd { .. }))
+            .cloned()
+        else {
+            panic!("no game_end")
+        };
+        assert_eq!(
+            (name.as_str(), ending),
+            ("tester", grave_core::Ending::Died)
+        );
+        assert!(cause.is_some_and(|c| !c.is_empty()));
     }
 
     #[test]

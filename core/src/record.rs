@@ -5,7 +5,8 @@
 
 use serde_json::{json, Value};
 
-use crate::game::Outcome;
+use crate::game::{Game, Outcome};
+use crate::score::{Ending, Score};
 use crate::status::{Change, Status, StatusEvent};
 
 /// ルールの版。seed とコマンド列から同じ結果にならなくなる変更（マップ・敵・アイテムの
@@ -13,13 +14,32 @@ use crate::status::{Change, Status, StatusEvent};
 /// 記録の `new_game` に入り、観戦側が「古いルールで録られた記録」を見分けるのに使う。
 /// 上げ忘れは `rules_version_matches_golden_run` が検出する。
 /// ソフトウェアのバージョン x.y.z の z（ルートの Cargo.toml の `workspace.package.version`）もこの版に合わせる。
-pub const RULES_VERSION: u32 = 26;
+pub const RULES_VERSION: u32 = 27;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     NewGame {
         seed: u64,
         /// 録ったときの [`RULES_VERSION`]。古い記録には無い
+        rules: Option<u32>,
+        /// 遊んだ人（または AI エージェント）の名前。古い記録には無い
+        name: Option<String>,
+    },
+    /// ゲームの終わり（死亡かクリア）。スコアの内訳と、採点し直すための元の値を持つ
+    GameEnd {
+        name: String,
+        ending: Ending,
+        /// 死因（死亡のときだけ）
+        cause: Option<String>,
+        /// 到達階数（スコアの階数点の元）
+        depth: u32,
+        /// スコアには入らないが記録しておく
+        turns: u32,
+        gold: u32,
+        /// 持ち物の売値の合計（スコアに入るのはクリア時だけ）
+        item_value: u32,
+        /// 終わったときに計算したスコア
+        score: Score,
         rules: Option<u32>,
     },
     /// エージェントが書いた冒険日誌
@@ -73,6 +93,46 @@ impl Event {
         Event::NewGame {
             seed,
             rules: Some(RULES_VERSION),
+            name: None,
+        }
+    }
+
+    /// 名前つきで新しいゲームを始めた記録。
+    pub fn new_game_named(seed: u64, name: &str) -> Event {
+        Event::NewGame {
+            seed,
+            rules: Some(RULES_VERSION),
+            name: Some(name.to_string()),
+        }
+    }
+
+    /// 終わったゲームの記録。続いているゲームには使えない。
+    pub fn game_end(game: &Game) -> Option<Event> {
+        Some(Event::GameEnd {
+            name: game.name().to_string(),
+            ending: game.ending()?,
+            cause: game.death_cause().map(str::to_string),
+            depth: game.max_depth(),
+            turns: game.turn(),
+            gold: game.gold(),
+            item_value: game.item_value(),
+            score: game.score(),
+            rules: Some(RULES_VERSION),
+        })
+    }
+
+    /// 記録された元の値（階数・所持金・持ち物の売値）から、今の式で採点し直す。
+    /// 式を変えても、過去の記録を同じ基準で比べられる。`GameEnd` 以外は None。
+    pub fn rescore(&self) -> Option<Score> {
+        match self {
+            Event::GameEnd {
+                ending,
+                depth,
+                gold,
+                item_value,
+                ..
+            } => Some(Score::from_parts(*ending, *depth, *gold, *item_value)),
+            _ => None,
         }
     }
 
@@ -92,8 +152,45 @@ impl Event {
 
     pub fn to_line(&self) -> String {
         match self {
-            Event::NewGame { seed, rules } => {
+            Event::NewGame { seed, rules, name } => {
                 let mut v = json!({ "kind": "new_game", "seed": seed });
+                if let Some(r) = rules {
+                    v["rules"] = json!(r);
+                }
+                if let Some(n) = name {
+                    v["name"] = json!(n);
+                }
+                v
+            }
+            Event::GameEnd {
+                name,
+                ending,
+                cause,
+                depth,
+                turns,
+                gold,
+                item_value,
+                score,
+                rules,
+            } => {
+                let mut v = json!({
+                    "kind": "game_end",
+                    "name": name,
+                    "ending": ending.key(),
+                    "depth": depth,
+                    "turns": turns,
+                    "gold": gold,
+                    "item_value": item_value,
+                    "score": {
+                        "total": score.total(),
+                        "depth_points": score.depth_points,
+                        "gold": score.gold,
+                        "items": score.items,
+                    },
+                });
+                if let Some(c) = cause {
+                    v["cause"] = json!(c);
+                }
                 if let Some(r) = rules {
                     v["rules"] = json!(r);
                 }
@@ -150,7 +247,34 @@ impl Event {
             Some("new_game") => Ok(Event::NewGame {
                 seed: n("seed").ok_or("seed がない")?,
                 rules: n("rules").map(|r| r as u32),
+                name: s("name"),
             }),
+            Some("game_end") => {
+                let sc = v.get("score").ok_or("score がない")?;
+                let part = |k: &str| {
+                    sc.get(k)
+                        .and_then(Value::as_u64)
+                        .map(|x| x as u32)
+                        .ok_or(format!("score.{k} がない"))
+                };
+                Ok(Event::GameEnd {
+                    name: s("name").unwrap_or_default(),
+                    ending: s("ending")
+                        .and_then(|e| Ending::from_key(&e))
+                        .ok_or("ending が不正")?,
+                    cause: s("cause"),
+                    depth: n("depth").ok_or("depth がない")? as u32,
+                    turns: n("turns").unwrap_or(0) as u32,
+                    gold: n("gold").unwrap_or(0) as u32,
+                    item_value: n("item_value").unwrap_or(0) as u32,
+                    score: Score {
+                        depth_points: part("depth_points")?,
+                        gold: part("gold")?,
+                        items: part("items")?,
+                    },
+                    rules: n("rules").map(|r| r as u32),
+                })
+            }
             Some("command") => Ok(Event::Command {
                 command: s("command").ok_or("command がない")?,
                 thought: s("thought"),
@@ -326,6 +450,7 @@ mod tests {
         for line in &lines {
             match Event::parse(line).unwrap() {
                 Event::NewGame { seed, .. } => replay = Some(Game::new(seed)),
+                Event::GameEnd { .. } => {}
                 Event::Command {
                     command,
                     depth,
@@ -369,7 +494,8 @@ mod tests {
             Event::parse(&line),
             Ok(Event::NewGame {
                 seed: 3,
-                rules: Some(RULES_VERSION)
+                rules: Some(RULES_VERSION),
+                name: None
             })
         );
         // rules のない古い記録も読める
@@ -377,7 +503,8 @@ mod tests {
             Event::parse(r#"{"kind":"new_game","seed":3}"#),
             Ok(Event::NewGame {
                 seed: 3,
-                rules: None
+                rules: None,
+                name: None
             })
         );
     }
@@ -386,8 +513,8 @@ mod tests {
     /// 落ちたら、意図した変更なら RULES_VERSION を上げて GOLDEN_* を更新する。
     #[test]
     fn rules_version_matches_golden_run() {
-        const GOLDEN_RULES: u32 = 26;
-        const GOLDEN_HASH: u64 = 12524778519111002278;
+        const GOLDEN_RULES: u32 = 27;
+        const GOLDEN_HASH: u64 = 14346940703349795249;
         let mut h: u64 = 0xcbf29ce484222325; // FNV-1a
         let mut feed = |bytes: &[u8]| {
             for b in bytes {

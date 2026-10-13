@@ -17,16 +17,21 @@ use crossterm::{
 use grave_core::journal;
 use grave_core::map::{H, W};
 use grave_core::record::Event as RecEvent;
+use grave_core::score::{result_lines, validate_name, DEFAULT_NAME};
 use grave_core::{Class, Game, ItemEntry, ItemKind, COMMAND_HELP, COMMAND_NAMES};
 use keymap::Keymap;
 
 /// ゲームコマンド以外の、TUI 側で処理する組み込みコマンド。
-const BUILTINS: &[&str] = &["map", "unmap", "new", "new_game", "quit", "exit", "help"];
+const BUILTINS: &[&str] = &[
+    "map", "unmap", "new", "new_game", "result", "quit", "exit", "help",
+];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Mode {
     Normal,
     Command,
+    /// `:new` のあと、冒険を始める前に名前を聞いている
+    Name,
 }
 
 struct App {
@@ -46,6 +51,13 @@ struct App {
     overlay_scroll: usize,
     /// `:help` の全画面表示。中身は先頭行の番号（スクロール位置）
     help: Option<usize>,
+    /// 名前の入力中の文字と、そのあと始めるゲームの seed
+    name_input: String,
+    pending_seed: u64,
+    /// 結果画面（墓碑かクリア表示とスコアの内訳）を全画面で出している（次のキーで閉じる）
+    result: bool,
+    /// このゲームの結果画面をもう出した
+    result_shown: bool,
 }
 
 impl App {
@@ -64,6 +76,28 @@ impl App {
             overlay: false,
             overlay_scroll: 0,
             help: None,
+            name_input: String::new(),
+            pending_seed: seed,
+            result: false,
+            result_shown: false,
+        }
+    }
+
+    /// 新しいゲームを始める。
+    fn start_game(&mut self, seed: u64, name: &str) {
+        self.game = Game::new(seed);
+        self.game.set_name(name);
+        self.last = None;
+        self.result = false;
+        self.result_shown = false;
+        self.status = format!("新しい冒険 (seed {seed}, 名前 {name})");
+    }
+
+    /// ゲームが終わったら、結果画面を一度だけ出す。
+    fn show_result_once(&mut self) {
+        if self.game.ending().is_some() && !self.result_shown {
+            self.result_shown = true;
+            self.result = true;
         }
     }
 
@@ -84,14 +118,48 @@ impl App {
                 true
             }
             "new" | "new_game" => {
-                let seed = args
-                    .first()
-                    .and_then(|a| a.parse().ok())
-                    .unwrap_or_else(random_seed);
-                self.game = Game::new(seed);
-                self.last = None;
-                self.status = format!("新しい冒険 (seed {seed})");
-                true
+                // `:new [seed] [name=名前]`。名前を省くと、始める前に聞く
+                let mut seed = None;
+                let mut name = None;
+                for a in &args {
+                    if let Some(n) = a.strip_prefix("name=") {
+                        name = Some(n);
+                    } else if let Ok(v) = a.parse() {
+                        seed = Some(v);
+                    } else {
+                        self.status =
+                            format!("使い方: :new [seed] [name=名前]  ({a} は分からない)");
+                        return false;
+                    }
+                }
+                let seed = seed.unwrap_or_else(random_seed);
+                match name {
+                    Some(n) => match validate_name(n) {
+                        Ok(n) => {
+                            self.start_game(seed, &n);
+                            true
+                        }
+                        Err(e) => {
+                            self.status = e;
+                            false
+                        }
+                    },
+                    None => {
+                        self.mode = Mode::Name;
+                        self.name_input.clear();
+                        self.pending_seed = seed;
+                        true
+                    }
+                }
+            }
+            "result" => {
+                if self.game.ending().is_some() {
+                    self.result = true;
+                    true
+                } else {
+                    self.status = "まだ冒険の途中だ。".to_string();
+                    false
+                }
             }
             "map" => {
                 if args.is_empty() {
@@ -147,6 +215,7 @@ impl App {
             }
             _ => {
                 let outs = self.game.run_script(line);
+                self.show_result_once();
                 let ok = outs.iter().all(|o| o.ok);
                 if let Some(last) = outs.last() {
                     self.status = format!(":{}  {}", last.command, last.message);
@@ -170,7 +239,43 @@ impl App {
         self.last = Some((cmd.to_string(), count));
     }
 
+    /// 名前の入力。Enter で冒険を始め（空なら既定の名前）、Esc でやめる。
+    fn on_key_name(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.status = "新しい冒険をやめた".to_string();
+            }
+            KeyCode::Enter => {
+                let input = self.name_input.trim();
+                let name = if input.is_empty() {
+                    DEFAULT_NAME
+                } else {
+                    input
+                };
+                match validate_name(name) {
+                    Ok(n) => {
+                        self.mode = Mode::Normal;
+                        self.start_game(self.pending_seed, &n);
+                    }
+                    // 直せるように、入力は残したまま入力を続けさせる
+                    Err(e) => self.status = e,
+                }
+            }
+            KeyCode::Backspace => {
+                self.name_input.pop();
+            }
+            KeyCode::Char(c) if self.name_input.chars().count() < 40 => self.name_input.push(c),
+            _ => {}
+        }
+    }
+
     fn on_key_normal(&mut self, code: KeyCode) {
+        if self.result {
+            // 結果画面は、どのキーでも閉じる
+            self.result = false;
+            return;
+        }
         if self.help.is_some() {
             self.on_key_help(code);
             return;
@@ -363,7 +468,26 @@ impl App {
                 scroll,
             );
         }
+        if self.result {
+            let title = if self.game.is_won() {
+                "生還！ (何かキーで戻る。:result でもう一度見る)"
+            } else {
+                "ゲームオーバー (何かキーで戻る。:result でもう一度見る)"
+            };
+            return draw_text_screen(out, title, &result_lines(&self.game).join("\n"), 0);
+        }
         let footer = match self.mode {
+            Mode::Name => {
+                let hint = if self.status.starts_with("名前") {
+                    format!("  [{}]", self.status)
+                } else {
+                    String::new()
+                };
+                format!(
+                    "名前を入力 (Enter で開始、Esc でやめる): {}{hint}",
+                    self.name_input
+                )
+            }
             Mode::Command => format!(":{}", self.cmdline),
             Mode::Normal => {
                 let count = self.count.map(|c| c.to_string()).unwrap_or_default();
@@ -401,7 +525,7 @@ impl App {
             &self.game,
             None,
             &footer,
-            self.mode == Mode::Command,
+            matches!(self.mode, Mode::Command | Mode::Name),
             overlay.as_ref(),
         )
     }
@@ -568,19 +692,26 @@ fn render_scene(
     queue!(
         out,
         Print(format!(
-            "地下{}階  Lv{}  ターン{}  HP {}/{}  {}{}",
+            "地下{}階  Lv{}  ターン{}  HP {}/{}  所持金{}  {}{}",
             game.depth(),
             game.level(),
             game.turn(),
             game.hp().max(0),
             game.max_hp(),
+            game.gold(),
             game.status_text(),
             if game.is_dead() {
-                "  ★ゲームオーバー (:new で再開)"
+                format!(
+                    "  ★ゲームオーバー {}点 (:result で結果、:new で再開)",
+                    game.score().total()
+                )
             } else if game.is_won() {
-                "  ★クリア！ (:new で再開)"
+                format!(
+                    "  ★生還！ {}点 (:result で結果、:new で再開)",
+                    game.score().total()
+                )
             } else {
-                ""
+                String::new()
             }
         ))
     )?;
@@ -604,7 +735,7 @@ fn render_scene(
                 Color::DarkRed
             } else if c.ch == ')' || c.ch == '[' {
                 Color::Blue
-            } else if c.ch == ',' {
+            } else if c.ch == ',' || c.ch == '$' {
                 Color::Yellow
             } else if c.ch == '%' {
                 Color::DarkYellow
@@ -788,7 +919,9 @@ _                 階段へ自動移動    x   自動探索    z   待つ    ;  
 3j                数字+キーで反復   .   直前の操作を繰り返す
 : または `        コマンドライン (Tab 補完、↑↓ 履歴、; で連続実行)
 :map <1文字> <コマンド>   キーの再割り当て    :unmap <1文字>
-:new [seed]       最初からやり直す  :quit   終了 (:q は quaff の略)
+:new [seed] [name=名前]  最初からやり直す (名前を省くと聞かれる)
+:result           終わったゲームの結果 (墓碑とスコア) を見る
+:quit   終了 (:q は quaff の略)
 罠の解除にはキーがない:  :disarm [向き]
 
 == コマンド一覧 ==";
@@ -1066,6 +1199,7 @@ fn main() -> io::Result<()> {
             match app.mode {
                 Mode::Normal => app.on_key_normal(k.code),
                 Mode::Command => app.on_key_command(k.code),
+                Mode::Name => app.on_key_name(k.code),
             }
         }
     }
@@ -1084,6 +1218,7 @@ mod tests {
             match app.mode {
                 Mode::Normal => app.on_key_normal(KeyCode::Char(c)),
                 Mode::Command => app.on_key_command(KeyCode::Char(c)),
+                Mode::Name => app.on_key_name(KeyCode::Char(c)),
             }
         }
     }
@@ -1213,8 +1348,87 @@ mod tests {
         press(&mut app, "zzz");
         press(&mut app, ":new 5");
         app.on_key_command(KeyCode::Enter);
+        // 名前を聞かれる。空のまま Enter なら既定の名前で始まる
+        assert!(app.mode == Mode::Name);
+        assert_eq!(app.game.turn(), 3);
+        app.on_key_name(KeyCode::Enter);
+        assert!(app.mode == Mode::Normal);
         assert_eq!(app.game.seed(), 5);
         assert_eq!(app.game.turn(), 0);
+        assert_eq!(app.game.name(), DEFAULT_NAME);
+    }
+
+    #[test]
+    fn new_asks_for_a_name_and_checks_it() {
+        let mut app = App::new(1);
+        press(&mut app, "zzz:new 8");
+        app.on_key_command(KeyCode::Enter);
+        press(&mut app, "bad name");
+        app.on_key_name(KeyCode::Enter);
+        // 使えない名前は断られ、入力は残る
+        assert!(
+            app.mode == Mode::Name && app.game.turn() == 3,
+            "{}",
+            app.status
+        );
+        assert!(app.status.contains("使えない"), "{}", app.status);
+        for _ in 0..4 {
+            app.on_key_name(KeyCode::Backspace);
+        }
+        app.on_key_name(KeyCode::Enter);
+        assert_eq!(app.game.name(), "bad");
+        assert_eq!(app.game.seed(), 8);
+        // Esc でやめると、いまのゲームが続く
+        press(&mut app, "z:new 9");
+        app.on_key_command(KeyCode::Enter);
+        press(&mut app, "x");
+        app.on_key_name(KeyCode::Esc);
+        assert!(app.mode == Mode::Normal);
+        assert_eq!((app.game.seed(), app.game.turn()), (8, 1));
+    }
+
+    #[test]
+    fn new_takes_the_name_as_an_argument() {
+        let mut app = App::new(1);
+        press(&mut app, ":new 6 name=claude-opus-5");
+        app.on_key_command(KeyCode::Enter);
+        assert!(app.mode == Mode::Normal);
+        assert_eq!((app.game.seed(), app.game.name()), (6, "claude-opus-5"));
+        press(&mut app, ":new name=a;b");
+        app.on_key_command(KeyCode::Enter);
+        assert_eq!(app.game.name(), "claude-opus-5");
+        assert!(app.status.contains("使えない"), "{}", app.status);
+    }
+
+    #[test]
+    fn the_result_screen_opens_once_when_the_game_ends() {
+        let mut app = App::new(1);
+        app.game.set_name("ねっど");
+        // 待ち続けて終わらせる
+        for _ in 0..400 {
+            if app.game.is_dead() {
+                break;
+            }
+            app.exec_line("stay 1000");
+        }
+        assert!(app.game.is_dead());
+        assert!(app.result);
+        let mut frame = Vec::new();
+        app.draw(&mut frame).unwrap();
+        let shown = String::from_utf8_lossy(&frame);
+        assert!(
+            shown.contains("ここに眠る") && shown.contains("ねっど"),
+            "{shown}"
+        );
+        // どのキーでも閉じて、閉じたあとは勝手に開かない。:result で見直せる
+        app.on_key_normal(KeyCode::Char('x'));
+        assert!(!app.result);
+        app.exec_line("wait");
+        assert!(!app.result);
+        assert!(app.exec_line("result") && app.result);
+        // :new で、結果画面の状態も新しくなる
+        app.exec_line("new 2 name=next");
+        assert!(!app.result && !app.result_shown);
     }
 
     #[test]
@@ -1255,7 +1469,7 @@ mod tests {
     fn new_game_command_restarts_like_new() {
         let mut app = App::new(1);
         press(&mut app, "zzz");
-        press(&mut app, ":new_game 7");
+        press(&mut app, ":new_game 7 name=x");
         app.on_key_command(KeyCode::Enter);
         assert_eq!(app.game.seed(), 7);
         assert_eq!(app.game.turn(), 0);
